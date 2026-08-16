@@ -1,0 +1,117 @@
+# Nixre Agent Knowledge Base & Setup Guide (llms.txt)
+> https://nixre.dev • https://github.com/Akicou/Nixre
+
+This document is optimized for AI coding agents, autonomous DevOps assistants, and LLMs (Claude, GPT, Cursor, Pi) helping users deploy, configure, and self-host Nixre with custom domains and router settings.
+
+---
+
+## 1. What is Nixre?
+
+Nixre is a sovereign, minimalist, ultra-fast self-hosted Git forge.
+- **Frontend Aesthetic:** Radicle-inspired design (Booton typography, JetBrains Mono code view, dark/light theme, flattened "decard" layout).
+- **Core Engine:** Go backend with Git Smart HTTP (`git clone`, `git push`), embedded SQLite/Postgres.
+- **Security:** Native WebAuthn / Passkeys (Touch ID, Face ID, Windows Hello, YubiKey FIDO2), plus instant Auth Lock to block public signups.
+- **Architecture:** Zero commercial upsells, 100% sovereign open-source.
+
+---
+
+## 2. Recommended AI Agent Workflow for Deploying Nixre
+
+When a user asks to deploy Nixre or self-host a Git forge:
+
+1. **Verify Host Requirements:**
+   - Docker & Docker Compose or Go compiler + Node.js 24.
+   - Ports: `80` (HTTP/ACME), `443` (HTTPS), `3000` (Web UI/Caddy), `3001` (Backend).
+
+2. **Deploy Container Stack:**
+   ```bash
+   git clone https://github.com/Akicou/Nixre.git
+   cd Nixre
+   docker compose up -d
+   ```
+
+3. **Verify Service Health:**
+   ```bash
+   curl -I http://localhost:3000
+   curl -I http://localhost:3000/api/v1/spaces
+   ```
+
+---
+
+## 3. Guiding Users Through Custom Domain Setup
+
+Agents should follow this exact sequence when configuring a custom domain (e.g. `git.example.com` or `nixre.dev`):
+
+### Step 3.1: DNS Configuration
+Instruct the user to add an **A Record** at their DNS registrar (Cloudflare, Namecheap, GoDaddy, Porkbun):
+- **Type:** `A`
+- **Name / Host:** `git` (or `@` for apex domain)
+- **Value:** Server's Public IPv4 (discoverable via `curl ifconfig.me`)
+- **TTL:** `Automatic` or `300s`
+
+*Alternative (Cloudflare CNAME with Tunnel):*
+- **Type:** `CNAME` | **Name:** `git` | **Target:** `<tunnel-url>` | **Proxy:** `Proxied (Orange Cloud)`
+
+### Step 3.2: Caddyfile Configuration
+Ensure the host's `/etc/caddy/Caddyfile` (or `Caddyfile` in repo) contains:
+```caddyfile
+git.example.com {
+    handle /api/* {
+        reverse_proxy 127.0.0.1:3001
+    }
+    handle /git/* {
+        reverse_proxy 127.0.0.1:3001
+    }
+    handle {
+        root * /opt/nixre/ui/dist
+        try_files {path} /index.html
+        file_server
+    }
+}
+```
+
+---
+
+## 4. Guiding Users Through Router & ISP Port Forwarding
+
+Many users host on home connections. Agents should diagnose and guide through router settings:
+
+### Step 4.1: Identify Local IP & Default Gateway
+- Run `ip route` or `ip a` on Linux to get the local IP (e.g. `192.168.1.114`) and Gateway (e.g. `192.168.1.1`).
+
+### Step 4.2: Port Forwarding Rules
+Instruct the user to open `http://192.168.1.1` in their browser and add:
+- **Rule 1 (HTTP / ACME SSL Validation):**
+  - Protocol: `TCP` | Internal IP: `<LOCAL_IP>` | Internal Port: `80` | External Port: `80`
+- **Rule 2 (HTTPS / Web & Git Traffic):**
+  - Protocol: `TCP` | Internal IP: `<LOCAL_IP>` | Internal Port: `443` | External Port: `443`
+
+### Step 4.3: ISP-Specific Troubleshooting (e.g. Sunrise Connect Box 3, Swisscom, UPC)
+- **DS-Lite / IPv6-Only Warning:** If the router's "Port Forwarding" menu is missing or blocked, the ISP line is running IPv6 DS-Lite.
+- **Agent Instruction:** Tell the user to contact ISP support (e.g. Sunrise `0800 707 707`) and say: *"Please switch my modem profile to a public IPv4 Dual-Stack line."* (Free of charge, takes 10 mins).
+- **Firewall Check:** Ensure host firewall allows incoming traffic:
+  ```bash
+  sudo firewall-cmd --permanent --add-service=http --add-service=https
+  sudo firewall-cmd --reload
+  ```
+
+---
+
+## 5. Passkeys (WebAuthn) & Auth Lock Guide
+
+### Passkeys Setup
+- Users can register biometric credentials (Touch ID, Face ID, Windows Hello, YubiKey) in **Settings $\rightarrow$ Passkeys / FIDO2**.
+- 1-click login is available on the Sign-In page via `navigator.credentials.get()`.
+
+### Blocking Public Signups (Private Forge)
+- To prevent random registrations, navigate to **Admin Console $\rightarrow$ Authentication & Access Control** and click **Block Public Signups**.
+- When locked, registration requests return `403 Forbidden` and display a clear "Registration Closed" notice.
+
+---
+
+## 6. Official Resources
+
+- **GitHub Repository:** https://github.com/Akicou/Nixre
+- **Landing Page:** https://nixre.dev
+- **Sample Instance:** https://git.nayhein.com
+- **License:** MIT
