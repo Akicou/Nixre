@@ -1,19 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
-import { 
-  KeyRound, 
-  Key, 
-  User as UserIcon, 
-  Shield, 
-  Trash2, 
-  Plus, 
-  Check, 
-  Fingerprint,
-  Smartphone,
-  Laptop
+import {
+  KeyRound,
+  Key,
+  User as UserIcon,
+  Shield,
+  Trash2,
+  Fingerprint
 } from 'lucide-react';
 import { api, User, PublicKey, Token } from '../lib/api';
 import { WebAuthnService, StoredPasskey } from '../lib/webauthn';
+import { daysToNanoseconds } from '../lib/duration';
 
 interface SettingsProps {
   user: User | null;
@@ -113,7 +110,7 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
     e.preventDefault();
     if (!tokenTitle) return;
     try {
-      const res = await api.createToken(tokenTitle, 2592000); // 30 days
+      const res = await api.createToken(tokenTitle, daysToNanoseconds(30));
       setGeneratedToken(res.access_token);
       setTokenTitle('');
       loadAll();
@@ -153,7 +150,7 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
               <KeyRound className="w-4 h-4 text-txt-brand" />
               <span>Passkeys / FIDO2</span>
             </div>
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-surface-open text-txt-open">
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-open text-txt-open">
               {passkeys.length}
             </span>
           </button>

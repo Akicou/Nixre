@@ -1,21 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { 
-  GitBranch, 
-  Layers, 
-  Settings, 
-  Shield, 
-  LogOut, 
-  Sun, 
-  Moon, 
-  KeyRound, 
-  Plus, 
-  User as UserIcon,
-  Search,
-  Check,
+import React, { useState, useEffect, useRef } from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import {
+  Layers,
+  Settings,
+  Shield,
+  LogOut,
+  Sun,
+  Moon,
+  KeyRound,
+  Plus,
   ChevronDown
 } from 'lucide-react';
 import { api, User, Space } from '../lib/api';
+import { currentSpaceFromPathname } from '../lib/repoPath';
+import { useOutsideClick } from '../lib/useOutsideClick';
 
 interface NavbarProps {
   currentUser: User | null;
@@ -23,18 +21,26 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
-  const navigate = useNavigate();
   const location = useLocation();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [isDark, setIsDark] = useState(true);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [spaceDropdownOpen, setSpaceDropdownOpen] = useState(false);
+  const spaceMenuRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useOutsideClick(spaceMenuRef, () => setSpaceDropdownOpen(false), spaceDropdownOpen);
+  useOutsideClick(userMenuRef, () => setUserDropdownOpen(false), userDropdownOpen);
 
   useEffect(() => {
     if (currentUser) {
       api.listSpaces().then(setSpaces).catch(() => {});
     }
   }, [currentUser]);
+
+  const activeSpaceUid = currentSpaceFromPathname(location.pathname);
+  const activeSpace = spaces.find(s => s.uid === activeSpaceUid);
+  const switcherLabel = activeSpace?.uid || spaces[0]?.uid || 'Spaces';
 
   const toggleTheme = () => {
     const nextTheme = isDark ? 'light' : 'dark';
@@ -59,21 +65,21 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
               NX
             </div>
             <span className="text-base font-semibold tracking-wide">Nixre</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-surface-subtle text-txt-tertiary border border-border-subtle hidden sm:inline">
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-subtle text-txt-tertiary border border-border-subtle hidden sm:inline">
               nixre.dev
             </span>
           </Link>
 
           {currentUser && (
-            <div className="relative">
-              <button 
+            <div className="relative" ref={spaceMenuRef}>
+              <button
                 onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
                 className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium text-txt-primary bg-surface-base border border-border-subtle hover:border-border-strong transition"
               >
                 <Layers className="w-3.5 h-3.5 text-brand" />
-                <span className="font-semibold">{spaces.length > 0 ? (spaces[0]?.uid || 'Spaces') : 'Spaces'}</span>
+                <span className="font-semibold">{switcherLabel}</span>
                 {spaces.length > 1 && (
-                  <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-surface-subtle text-txt-tertiary">
+                  <span className="text-[10px] font-mono px-1 py-0.5 rounded bg-surface-subtle text-txt-tertiary">
                     +{spaces.length - 1}
                   </span>
                 )}
@@ -82,7 +88,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
 
               {spaceDropdownOpen && (
                 <div 
-                  className="absolute left-0 mt-1.5 w-60 rounded-md bg-surface-canvas border border-border-mid shadow-xl py-1 z-50 animate-in fade-in zoom-in-95 duration-100"
+                  className="absolute left-0 mt-1.5 w-60 rounded-md bg-surface-canvas border border-border-mid shadow-xl py-1 z-50 animate-pop"
                   onClick={() => setSpaceDropdownOpen(false)}
                 >
                   <div className="px-3 py-1.5 text-[10px] font-semibold text-txt-tertiary uppercase tracking-wider border-b border-border-subtle flex justify-between items-center">
@@ -141,7 +147,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
               </button>
 
               {/* User Dropdown */}
-              <div className="relative">
+              <div className="relative" ref={userMenuRef}>
                 <button
                   onClick={() => setUserDropdownOpen(!userDropdownOpen)}
                   className="flex items-center gap-2 pl-2 pr-1.5 py-1 rounded hover:bg-surface-subtle transition border border-transparent hover:border-border-subtle"
@@ -155,7 +161,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
 
                 {userDropdownOpen && (
                   <div 
-                    className="absolute right-0 mt-1.5 w-60 rounded-md bg-surface-canvas border border-border-mid shadow-lg py-1 z-50 animate-in fade-in zoom-in-95 duration-100"
+                    className="absolute right-0 mt-1.5 w-60 rounded-md bg-surface-canvas border border-border-mid shadow-lg py-1 z-50 animate-pop"
                     onClick={() => setUserDropdownOpen(false)}
                   >
                     <div className="px-3 py-2 border-b border-border-subtle">

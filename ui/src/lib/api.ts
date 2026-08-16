@@ -98,6 +98,20 @@ export interface PullRequest {
   };
 }
 
+export interface FileDiff {
+  sha: string;
+  old_sha?: string;
+  path: string;
+  old_path?: string;
+  status: 'UNDEFINED' | 'ADDED' | 'MODIFIED' | 'DELETED' | 'RENAMED' | 'COPIED';
+  additions: number;
+  deletions: number;
+  changes: number;
+  patch?: string; // base64-encoded unified diff, see lib/diff.ts
+  is_binary: boolean;
+  is_submodule: boolean;
+}
+
 export interface PublicKey {
   id: number;
   identifier: string;
@@ -118,7 +132,7 @@ class ApiClient {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
-    const token = localStorage.getItem('aether_token');
+    const token = localStorage.getItem('nixre_token');
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
@@ -137,8 +151,8 @@ class ApiClient {
 
     if (res.status === 401) {
       // Unauthorized
-      localStorage.removeItem('aether_token');
-      localStorage.removeItem('aether_user');
+      localStorage.removeItem('nixre_token');
+      localStorage.removeItem('nixre_user');
       if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
         window.location.href = '/login';
       }
@@ -167,9 +181,9 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ login_identifier, password }),
     });
-    localStorage.setItem('aether_token', data.access_token);
+    localStorage.setItem('nixre_token', data.access_token);
     const user = await this.currentUser();
-    localStorage.setItem('aether_user', JSON.stringify(user));
+    localStorage.setItem('nixre_user', JSON.stringify(user));
     return { access_token: data.access_token, user };
   }
 
@@ -178,9 +192,9 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ uid, email, display_name, password }),
     });
-    localStorage.setItem('aether_token', data.access_token);
+    localStorage.setItem('nixre_token', data.access_token);
     const user = await this.currentUser();
-    localStorage.setItem('aether_user', JSON.stringify(user));
+    localStorage.setItem('nixre_user', JSON.stringify(user));
     return { access_token: data.access_token, user };
   }
 
@@ -192,8 +206,8 @@ class ApiClient {
     try {
       await this.request('/logout', { method: 'POST' });
     } catch {}
-    localStorage.removeItem('aether_token');
-    localStorage.removeItem('aether_user');
+    localStorage.removeItem('nixre_token');
+    localStorage.removeItem('nixre_user');
   }
 
   // Spaces (Organizations)
@@ -309,6 +323,14 @@ class ApiClient {
       headers: this.getHeaders(),
     });
     const text = await res.text();
+    if (!res.ok) {
+      let msg = `HTTP error ${res.status}`;
+      try {
+        const body = JSON.parse(text);
+        if (body.message) msg = body.message;
+      } catch {}
+      throw new Error(msg);
+    }
     return { content: text, name: path.split('/').pop() || '', size: text.length };
   }
 
@@ -349,6 +371,11 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ method }),
     });
+  }
+
+  async getPullRequestDiff(repoRef: string, prNumber: number): Promise<FileDiff[]> {
+    const res = await this.request<FileDiff[]>(`/repos/${repoRef}/+/pullreq/${prNumber}/diff?include_patch=true`);
+    return Array.isArray(res) ? res : [];
   }
 
   // Keys & Tokens

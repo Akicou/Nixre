@@ -1,4 +1,4 @@
-// WebAuthn / Passkeys implementation for AetherForge
+// WebAuthn / Passkeys implementation for Nixre
 
 export interface StoredPasskey {
   id: string; // Base64URL credential ID
@@ -10,7 +10,7 @@ export interface StoredPasskey {
   publicKey?: string;
 }
 
-const STORAGE_KEY = 'aether_passkeys_vault';
+const STORAGE_KEY = 'nixre_passkeys_vault';
 
 export class WebAuthnService {
   // Check if WebAuthn is supported in current browser
@@ -51,7 +51,7 @@ export class WebAuthnService {
     const encoder = new TextEncoder();
     const userIdBuffer = encoder.encode(user.uid);
 
-    const rpName = 'AetherForge';
+    const rpName = 'Nixre';
     const rpId = window.location.hostname;
 
     const createOptions: CredentialCreationOptions = {
@@ -138,13 +138,10 @@ export class WebAuthnService {
     }
 
     const assertionId = this.bufferToBase64URL(assertion.rawId);
-    const matchedKey = keys.find(k => k.id === assertionId) || keys[0] || {
-      id: assertionId,
-      name: 'Hardware Passkey',
-      userUid: userUid || 'Akicou',
-      userEmail: '',
-      createdAt: Date.now(),
-    };
+    const matchedKey = keys.find(k => k.id === assertionId) || keys[0];
+    if (!matchedKey) {
+      throw new Error('No passkeys registered on this device. Please add one in Settings first.');
+    }
 
     matchedKey.lastUsedAt = Date.now();
     const allKeys = this.getRegisteredPasskeys();

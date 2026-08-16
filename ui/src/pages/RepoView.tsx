@@ -1,26 +1,24 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
-import { 
-  FolderGit2, 
-  GitBranch, 
-  GitCommit, 
-  GitPullRequest, 
-  Settings, 
-  File, 
-  Folder, 
-  Copy, 
-  Check, 
-  ChevronDown, 
-  Clock, 
-  Terminal, 
-  Download, 
-  ExternalLink,
+import {
+  GitBranch,
+  GitCommit,
+  GitPullRequest,
+  File,
+  Folder,
+  Copy,
+  Check,
+  ChevronDown,
+  Download,
   Plus,
   ArrowLeft,
-  FileCode,
-  Tag
+  FileCode
 } from 'lucide-react';
 import { api, Repository, TreeEntry, Commit, Branch, PullRequest } from '../lib/api';
+import { resolveNodeType } from '../lib/repoPath';
+import { useOutsideClick } from '../lib/useOutsideClick';
+import { PullRequestForm } from '../components/PullRequestForm';
+import { PullRequestDetail } from '../components/PullRequestDetail';
 
 export const RepoView: React.FC = () => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
@@ -30,6 +28,9 @@ export const RepoView: React.FC = () => {
   const activeTab = searchParams.get('tab') || 'code';
   const currentBranch = searchParams.get('branch') || 'main';
   const currentPath = searchParams.get('path') || '';
+  const currentNodeType = resolveNodeType(searchParams.get('type'));
+  const prParam = searchParams.get('pr');
+  const selectedPrNumber: number | 'new' | null = prParam === 'new' ? 'new' : prParam ? Number(prParam) : null;
 
   const [repo, setRepo] = useState<Repository | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -45,6 +46,11 @@ export const RepoView: React.FC = () => {
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [cloneProtocol, setCloneProtocol] = useState<'http' | 'ssh'>('http');
+  const cloneMenuRef = useRef<HTMLDivElement>(null);
+  const branchMenuRef = useRef<HTMLDivElement>(null);
+
+  useOutsideClick(cloneMenuRef, () => setCloneDropdownOpen(false), cloneDropdownOpen);
+  useOutsideClick(branchMenuRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
 
   // Load Repo Base Data
   useEffect(() => {
@@ -70,7 +76,7 @@ export const RepoView: React.FC = () => {
     if (!repo) return;
 
     if (activeTab === 'code') {
-      if (currentPath.includes('.') && !currentPath.endsWith('/')) {
+      if (currentNodeType === 'blob') {
         // Fetch Blob
         api.getRawBlob(repoPath, currentBranch, currentPath)
           .then(blob => {
@@ -104,7 +110,7 @@ export const RepoView: React.FC = () => {
         .then(prs => setPullRequests(prs))
         .catch(() => setPullRequests([]));
     }
-  }, [repo, activeTab, currentBranch, currentPath]);
+  }, [repo, activeTab, currentBranch, currentPath, currentNodeType]);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -160,7 +166,7 @@ export const RepoView: React.FC = () => {
         </div>
 
         {/* Clone Button & Dropdown */}
-        <div className="relative">
+        <div className="relative" ref={cloneMenuRef}>
           <button
             onClick={() => setCloneDropdownOpen(!cloneDropdownOpen)}
             className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-brand text-white hover:bg-brand-hover text-xs font-medium transition shadow-sm"
@@ -171,7 +177,7 @@ export const RepoView: React.FC = () => {
           </button>
 
           {cloneDropdownOpen && (
-            <div className="absolute right-0 mt-2 w-80 rounded-md bg-surface-canvas border border-border-mid shadow-xl p-3 z-50 animate-in fade-in zoom-in-95 duration-100">
+            <div className="absolute right-0 mt-2 w-80 rounded-md bg-surface-canvas border border-border-mid shadow-xl p-3 z-50 animate-pop">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-txt-primary">Clone with Git</span>
                 <div className="flex items-center rounded border border-border-subtle bg-surface-base p-0.5 text-[11px] font-mono">
@@ -213,7 +219,7 @@ export const RepoView: React.FC = () => {
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-border-subtle">
         <button
-          onClick={() => { setSearchParams({ tab: 'code', branch: currentBranch }); }}
+          onClick={() => { setSearchParams({ tab: 'code', branch: currentBranch, type: 'tree' }); }}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px ${
             activeTab === 'code' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
           }`}
@@ -241,7 +247,7 @@ export const RepoView: React.FC = () => {
           <GitPullRequest className="w-4 h-4" />
           <span>Pull Requests</span>
           {repo.num_open_pulls > 0 && (
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-surface-open text-txt-open">
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-surface-open text-txt-open">
               {repo.num_open_pulls}
             </span>
           )}
@@ -265,7 +271,7 @@ export const RepoView: React.FC = () => {
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-2 flex-wrap">
               {/* Branch Picker */}
-              <div className="relative">
+              <div className="relative" ref={branchMenuRef}>
                 <button
                   onClick={() => setBranchDropdownOpen(!branchDropdownOpen)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-canvas border border-border-subtle text-xs font-mono font-medium text-txt-primary hover:bg-surface-subtle transition"
@@ -284,7 +290,7 @@ export const RepoView: React.FC = () => {
                       <button
                         key={b.name}
                         onClick={() => {
-                          setSearchParams({ tab: 'code', branch: b.name });
+                          setSearchParams({ tab: 'code', branch: b.name, type: 'tree' });
                           setBranchDropdownOpen(false);
                         }}
                         className="w-full text-left px-3 py-1.5 text-xs font-mono text-txt-primary hover:bg-surface-subtle transition flex items-center justify-between"
@@ -300,7 +306,7 @@ export const RepoView: React.FC = () => {
               {/* Breadcrumb Path */}
               <div className="flex items-center gap-1.5 text-xs font-mono text-txt-secondary">
                 <button
-                  onClick={() => setSearchParams({ tab: 'code', branch: currentBranch })}
+                  onClick={() => setSearchParams({ tab: 'code', branch: currentBranch, type: 'tree' })}
                   className="hover:text-txt-brand transition"
                 >
                   {repo.uid}
@@ -311,7 +317,7 @@ export const RepoView: React.FC = () => {
                     <React.Fragment key={partPath}>
                       <span className="text-txt-tertiary">/</span>
                       <button
-                        onClick={() => setSearchParams({ tab: 'code', branch: currentBranch, path: partPath })}
+                        onClick={() => setSearchParams({ tab: 'code', branch: currentBranch, path: partPath, type: 'tree' })}
                         className={`hover:text-txt-brand transition ${index === pathParts.length - 1 ? 'font-semibold text-txt-primary' : ''}`}
                       >
                         {part}
@@ -359,7 +365,7 @@ export const RepoView: React.FC = () => {
                     <tr
                       onClick={() => {
                         const parentPath = pathParts.slice(0, -1).join('/');
-                        setSearchParams({ tab: 'code', branch: currentBranch, path: parentPath });
+                        setSearchParams({ tab: 'code', branch: currentBranch, path: parentPath, type: 'tree' });
                       }}
                       className="hover:bg-surface-subtle/50 cursor-pointer transition"
                     >
@@ -375,7 +381,7 @@ export const RepoView: React.FC = () => {
                       key={entry.name}
                       onClick={() => {
                         const nextPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
-                        setSearchParams({ tab: 'code', branch: currentBranch, path: nextPath });
+                        setSearchParams({ tab: 'code', branch: currentBranch, path: nextPath, type: entry.type });
                       }}
                       className="hover:bg-surface-subtle/50 cursor-pointer transition"
                     >
@@ -406,7 +412,7 @@ export const RepoView: React.FC = () => {
                 <File className="w-4 h-4 text-brand" />
                 <span>README.md</span>
               </div>
-              <div className="p-6 prose dark:prose-invert max-w-none text-sm text-txt-primary whitespace-pre-line leading-relaxed">
+              <div className="p-6 max-w-none text-sm text-txt-primary whitespace-pre-line leading-relaxed">
                 {readmeContent}
               </div>
             </div>
@@ -440,40 +446,69 @@ export const RepoView: React.FC = () => {
 
       {/* TAB CONTENT: PULL REQUESTS */}
       {activeTab === 'pulls' && (
-        <div className="space-y-4">
-          <div className="flex justify-between items-center">
-            <h3 className="text-xs font-semibold text-txt-tertiary uppercase tracking-wider">Pull Requests</h3>
-          </div>
-          <div className="border border-border-subtle rounded-lg bg-surface-canvas divide-y divide-border-subtle overflow-hidden">
-            {pullRequests.length === 0 ? (
-              <div className="p-12 text-center text-xs text-txt-tertiary font-mono">
-                No pull requests found.
+        <>
+          {selectedPrNumber === 'new' ? (
+            <PullRequestForm
+              repoPath={repoPath}
+              branches={branches}
+              defaultBranch={repo.default_branch}
+              onCreated={created => setSearchParams({ tab: 'pulls', pr: String(created.number) })}
+              onCancel={() => setSearchParams({ tab: 'pulls' })}
+            />
+          ) : typeof selectedPrNumber === 'number' ? (
+            <PullRequestDetail
+              repoPath={repoPath}
+              prNumber={selectedPrNumber}
+              onBack={() => setSearchParams({ tab: 'pulls' })}
+            />
+          ) : (
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xs font-semibold text-txt-tertiary uppercase tracking-wider">Pull Requests</h3>
+                <button
+                  onClick={() => setSearchParams({ tab: 'pulls', pr: 'new' })}
+                  className="px-3 py-1.5 rounded text-xs font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>New Pull Request</span>
+                </button>
               </div>
-            ) : (
-              pullRequests.map(pr => (
-                <div key={pr.number} className="p-4 hover:bg-surface-subtle/50 transition flex items-center justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <GitPullRequest className="w-4 h-4 text-txt-open" />
-                      <span className="text-sm font-semibold text-txt-primary font-mono">#{pr.number}</span>
-                      <span className="text-sm font-medium text-txt-primary">{pr.title}</span>
-                    </div>
-                    <div className="text-xs text-txt-tertiary font-mono">
-                      <span>by {pr.author?.display_name || pr.author?.uid}</span>
-                      <span className="mx-2">•</span>
-                      <span>{pr.source_branch} → {pr.target_branch}</span>
-                    </div>
+              <div className="border border-border-subtle rounded-lg bg-surface-canvas divide-y divide-border-subtle overflow-hidden">
+                {pullRequests.length === 0 ? (
+                  <div className="p-12 text-center text-xs text-txt-tertiary font-mono">
+                    No pull requests found.
                   </div>
-                  <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold ${
-                    pr.state === 'open' ? 'bg-surface-open text-txt-open' : 'bg-surface-merged text-txt-merged'
-                  }`}>
-                    {pr.state}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+                ) : (
+                  pullRequests.map(pr => (
+                    <button
+                      key={pr.number}
+                      onClick={() => setSearchParams({ tab: 'pulls', pr: String(pr.number) })}
+                      className="w-full p-4 hover:bg-surface-subtle/50 transition flex items-center justify-between gap-4 text-left"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <GitPullRequest className="w-4 h-4 text-txt-open" />
+                          <span className="text-sm font-semibold text-txt-primary font-mono">#{pr.number}</span>
+                          <span className="text-sm font-medium text-txt-primary">{pr.title}</span>
+                        </div>
+                        <div className="text-xs text-txt-tertiary font-mono">
+                          <span>by {pr.author?.display_name || pr.author?.uid}</span>
+                          <span className="mx-2">•</span>
+                          <span>{pr.source_branch} → {pr.target_branch}</span>
+                        </div>
+                      </div>
+                      <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold ${
+                        pr.state === 'open' ? 'bg-surface-open text-txt-open' : 'bg-surface-merged text-txt-merged'
+                      }`}>
+                        {pr.state}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* TAB CONTENT: BRANCHES */}
@@ -485,7 +520,7 @@ export const RepoView: React.FC = () => {
                 <GitBranch className="w-4 h-4 text-brand" />
                 <span>{b.name}</span>
                 {b.name === repo.default_branch && (
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface-subtle text-txt-tertiary border border-border-subtle">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-subtle text-txt-tertiary border border-border-subtle">
                     default
                   </span>
                 )}

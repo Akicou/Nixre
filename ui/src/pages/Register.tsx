@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Lock, ArrowRight, UserPlus, AlertCircle } from 'lucide-react';
+import { Lock, ArrowRight } from 'lucide-react';
 import { api, User } from '../lib/api';
+import { isRegistrationHidden } from '../lib/authLock';
 
 interface RegisterProps {
   onRegisterSuccess: (user: User) => void;
@@ -18,9 +19,7 @@ export const Register: React.FC<RegisterProps> = ({ onRegisterSuccess }) => {
   const [isBlocked, setIsBlocked] = useState(false);
 
   useEffect(() => {
-    if (localStorage.getItem('nixre_auth_blocked') === 'true') {
-      setIsBlocked(true);
-    }
+    setIsBlocked(isRegistrationHidden());
   }, []);
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -45,7 +44,7 @@ export const Register: React.FC<RegisterProps> = ({ onRegisterSuccess }) => {
 
   return (
     <div className="min-h-[85vh] flex items-center justify-center px-4 py-12">
-      <div className="max-w-md w-full border border-border-subtle rounded-xl bg-surface-canvas p-8 shadow-xl space-y-6 animate-in fade-in zoom-in-95 duration-150">
+      <div className="max-w-md w-full border border-border-subtle rounded-xl bg-surface-canvas p-8 shadow-xl space-y-6 animate-pop">
         <div className="text-center space-y-2">
           <div className="w-10 h-10 rounded-lg bg-brand mx-auto flex items-center justify-center text-white font-mono text-base font-bold shadow-sm">
             NX
@@ -86,7 +85,7 @@ export const Register: React.FC<RegisterProps> = ({ onRegisterSuccess }) => {
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. Akicou"
+                  placeholder="e.g. jsmith"
                   value={uid}
                   onChange={e => setUid(e.target.value)}
                   className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
@@ -100,7 +99,7 @@ export const Register: React.FC<RegisterProps> = ({ onRegisterSuccess }) => {
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. Akicou"
+                  placeholder="e.g. jsmith"
                   value={displayName}
                   onChange={e => setDisplayName(e.target.value)}
                   className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs focus:border-brand transition"

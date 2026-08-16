@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { KeyRound, Fingerprint, ArrowRight, Lock, User as UserIcon } from 'lucide-react';
+import { Fingerprint, ArrowRight } from 'lucide-react';
 import { api, User } from '../lib/api';
 import { WebAuthnService } from '../lib/webauthn';
 
@@ -39,16 +39,19 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     setPasskeyLoading(true);
 
     try {
-      const res = await WebAuthnService.authenticatePasskey(identifier || undefined);
-      const user = await api.currentUser().catch(() => ({
-        id: 4,
-        uid: res.passkey.userUid,
-        email: res.passkey.userEmail || `${res.passkey.userUid}@nixre.dev`,
-        display_name: res.passkey.userUid,
-        admin: true,
-      }));
-      onLoginSuccess(user);
-      navigate('/');
+      await WebAuthnService.authenticatePasskey(identifier || undefined);
+
+      // Passkey verification only proves control of a locally-stored credential;
+      // it does not establish a session with the backend (Gitness has no WebAuthn
+      // API to verify against). It can only confirm an *existing* session, not
+      // create a new one.
+      try {
+        const user = await api.currentUser();
+        onLoginSuccess(user);
+        navigate('/');
+      } catch {
+        setError('Passkey verified, but no active session was found. Please sign in with your password to start a session first.');
+      }
     } catch (err: any) {
       setError(err.message || 'Passkey authentication failed.');
     } finally {
@@ -58,7 +61,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
   return (
     <div className="min-h-[85vh] flex items-center justify-center px-4 py-12">
-      <div className="max-w-md w-full border border-border-subtle rounded-xl bg-surface-canvas p-8 shadow-xl space-y-6 animate-in fade-in zoom-in-95 duration-150">
+      <div className="max-w-md w-full border border-border-subtle rounded-xl bg-surface-canvas p-8 shadow-xl space-y-6 animate-pop">
         <div className="text-center space-y-2">
           <div className="w-10 h-10 rounded-lg bg-brand mx-auto flex items-center justify-center text-white font-mono text-base font-bold shadow-sm">
             NX
@@ -103,7 +106,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
             </label>
             <input
               type="text"
-              placeholder="e.g. Akicou"
+              placeholder="e.g. jsmith"
               value={identifier}
               onChange={e => setIdentifier(e.target.value)}
               className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"

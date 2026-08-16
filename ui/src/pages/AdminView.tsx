@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Lock, Unlock, Users, KeyRound, Check, AlertCircle } from 'lucide-react';
+import { Shield, Lock, Unlock, Users, Check } from 'lucide-react';
 import { api, User } from '../lib/api';
+import { isRegistrationHidden, setRegistrationHidden } from '../lib/authLock';
 
 export const AdminView: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
@@ -9,9 +10,7 @@ export const AdminView: React.FC = () => {
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
-    // Check saved state for auth blocking
-    const isBlocked = localStorage.getItem('aether_auth_blocked') === 'true';
-    setAuthBlocked(isBlocked);
+    setAuthBlocked(isRegistrationHidden());
 
     api.listUsers()
       .then(res => {
@@ -24,9 +23,11 @@ export const AdminView: React.FC = () => {
   const toggleAuthBlocking = () => {
     const nextState = !authBlocked;
     setAuthBlocked(nextState);
-    localStorage.setItem('aether_auth_blocked', String(nextState));
-    setMsg(nextState ? 'Public signups are now BLOCKED (Instance is Closed/Invite-only).' : 'Public signups are now ALLOWED.');
-    setTimeout(() => setMsg(''), 4000);
+    setRegistrationHidden(nextState);
+    setMsg(nextState
+      ? 'Registration page is now hidden in this browser. This does NOT stop the API — set GITNESS_USER_SIGNUP_ENABLED=false on the server for real enforcement.'
+      : 'Registration page is visible again in this browser.');
+    setTimeout(() => setMsg(''), 6000);
   };
 
   return (
@@ -57,17 +58,17 @@ export const AdminView: React.FC = () => {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded bg-surface-base border border-border-subtle gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-txt-primary">Public User Registration</span>
+              <span className="text-sm font-semibold text-txt-primary">Registration Page (this browser only)</span>
               <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold ${
                 authBlocked ? 'bg-surface-closed text-txt-closed' : 'bg-surface-open text-txt-open'
               }`}>
-                {authBlocked ? 'BLOCKED' : 'OPEN'}
+                {authBlocked ? 'HIDDEN' : 'VISIBLE'}
               </span>
             </div>
             <p className="text-xs text-txt-secondary">
-              {authBlocked 
-                ? 'New user self-registration is currently disabled. Only administrators can add accounts.'
-                : 'Anyone with network access can register a new account on this instance.'}
+              This only hides the sign-up page in browsers where it's toggled &mdash; it does not stop
+              account creation via the API. To actually close the instance, set{' '}
+              <code className="font-mono text-txt-primary">GITNESS_USER_SIGNUP_ENABLED=false</code> on the server and restart.
             </p>
           </div>
 
@@ -80,7 +81,7 @@ export const AdminView: React.FC = () => {
             }`}
           >
             {authBlocked ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-            <span>{authBlocked ? 'Enable Public Signups' : 'Block Public Signups'}</span>
+            <span>{authBlocked ? 'Show Registration Page' : 'Hide Registration Page'}</span>
           </button>
         </div>
       </div>
@@ -95,7 +96,9 @@ export const AdminView: React.FC = () => {
         </div>
 
         <div className="border border-border-subtle rounded-md bg-surface-base divide-y divide-border-subtle overflow-hidden">
-          {users.map(u => (
+          {loading ? (
+            <div className="p-8 text-center text-xs text-txt-tertiary font-mono">Loading accounts...</div>
+          ) : users.map(u => (
             <div key={u.id} className="p-3 flex items-center justify-between gap-4 text-xs font-mono">
               <div className="flex items-center gap-3">
                 <div className="w-7 h-7 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center font-bold text-txt-primary uppercase">

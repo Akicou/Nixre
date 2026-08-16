@@ -1,17 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { 
-  GitFork, 
-  GitPullRequest, 
-  FolderGit2, 
-  Layers, 
-  Plus, 
-  Search, 
-  Globe, 
-  Lock, 
-  Clock, 
+import {
+  GitPullRequest,
+  FolderGit2,
+  Layers,
+  Plus,
+  Search,
   Terminal,
-  KeyRound,
   ArrowRight
 } from 'lucide-react';
 import { api, Repository, Space, User } from '../lib/api';
@@ -20,7 +15,7 @@ interface DashboardProps {
   user: User | null;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
+export const Dashboard: React.FC<DashboardProps> = () => {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [repos, setRepos] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,7 +32,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
     });
   }, []);
 
-  const filteredRepos = repos.filter(r => 
+  const quickStartRepoPath = repos[0]?.path || 'your-space/your-repo';
+
+  const filteredRepos = repos.filter(r =>
     r.uid.toLowerCase().includes(search.toLowerCase()) || 
     (r.description && r.description.toLowerCase().includes(search.toLowerCase())) ||
     (r.path && r.path.toLowerCase().includes(search.toLowerCase()))
@@ -123,7 +120,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
                       >
                         {repo.path}
                       </Link>
-                      <span className="text-[10px] uppercase font-mono px-1.5 py-0.2 rounded border border-border-subtle text-txt-tertiary">
+                      <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-border-subtle text-txt-tertiary">
                         {repo.is_public ? 'Public' : 'Private'}
                       </span>
                     </div>
@@ -200,9 +197,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
 
             <div className="bg-surface-base border border-border-subtle rounded p-2.5 font-mono text-[11px] text-txt-secondary space-y-2 overflow-x-auto">
               <p className="text-txt-tertiary font-sans text-xs"># Clone existing repo:</p>
-              <p className="text-txt-primary">git clone {window.location.origin}/git/Nayhein/demo-project.git</p>
+              <p className="text-txt-primary">git clone {window.location.origin}/git/{quickStartRepoPath}.git</p>
               <p className="text-txt-tertiary font-sans text-xs pt-1"># Push existing local repo:</p>
-              <p>git remote add origin {window.location.origin}/git/Nayhein/demo-project.git</p>
+              <p>git remote add origin {window.location.origin}/git/{quickStartRepoPath}.git</p>
               <p>git push -u origin main</p>
             </div>
           </div>

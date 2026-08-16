@@ -35,7 +35,26 @@ export default {
         brand: {
           DEFAULT: 'var(--color-brand-bg)',
           hover: 'var(--color-brand-hover)',
-        }
+        },
+        feedback: {
+          error: {
+            bg: 'var(--color-feedback-error-bg)',
+            'bg-selected': 'var(--color-feedback-error-bg-selected)',
+            border: 'var(--color-feedback-error-border)',
+            text: 'var(--color-feedback-error-text)',
+          },
+          success: {
+            bg: 'var(--color-feedback-success-bg)',
+            'bg-selected': 'var(--color-feedback-success-bg-selected)',
+            border: 'var(--color-feedback-success-border)',
+            text: 'var(--color-feedback-success-text)',
+          },
+          warning: {
+            bg: 'var(--color-feedback-warning-bg)',
+            border: 'var(--color-feedback-warning-border)',
+            text: 'var(--color-feedback-warning-text)',
+          },
+        },
       },
       fontFamily: {
         sans: ['Booton', 'sans-serif'],

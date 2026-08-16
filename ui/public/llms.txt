@@ -7,10 +7,12 @@ This document is optimized for AI coding agents, autonomous DevOps assistants, a
 
 ## 1. What is Nixre?
 
-Nixre is a sovereign, minimalist, ultra-fast self-hosted Git forge.
+Nixre is a self-hosted Git forge UI (React/TypeScript) on top of a [Gitness](https://github.com/harness/harness) backend.
 - **Frontend Aesthetic:** Radicle-inspired design (Booton typography, JetBrains Mono code view, dark/light theme, flattened "decard" layout).
-- **Core Engine:** Go backend with Git Smart HTTP (`git clone`, `git push`), embedded SQLite/Postgres.
-- **Security:** Native WebAuthn / Passkeys (Touch ID, Face ID, Windows Hello, YubiKey FIDO2), plus instant Auth Lock to block public signups.
+- **Core Engine:** Gitness (Go) with Git Smart HTTP (`git clone`, `git push`) and SSH, embedded SQLite/Postgres.
+- **Passkeys:** local, browser-stored credentials that can re-confirm an *already active* session. Gitness has no WebAuthn API, so this cannot start a fresh login — sign in with a password/token first.
+- **Registration toggle:** the Admin Console can hide the sign-up page per-browser. This is UI-only; it does not block `/api/v1/register`. Real enforcement is the `GITNESS_USER_SIGNUP_ENABLED` env var on the backend.
+- **Pull Requests:** create, view unified diffs, and merge, backed by Gitness's `/pullreq` API.
 - **Architecture:** Zero commercial upsells, 100% sovereign open-source.
 
 ---
@@ -97,15 +99,15 @@ Instruct the user to open `http://192.168.1.1` in their browser and add:
 
 ---
 
-## 5. Passkeys (WebAuthn) & Auth Lock Guide
+## 5. Passkeys & Registration Toggle Guide
 
 ### Passkeys Setup
-- Users can register biometric credentials (Touch ID, Face ID, Windows Hello, YubiKey) in **Settings $\rightarrow$ Passkeys / FIDO2**.
-- 1-click login is available on the Sign-In page via `navigator.credentials.get()`.
+- Users can register a device credential (Touch ID, Face ID, Windows Hello, YubiKey) in **Settings → Passkeys**.
+- The passkey button on the Sign-In page calls `navigator.credentials.get()`, but this only *re-confirms* a session that already exists in that browser (via `api.currentUser()`). Gitness has no WebAuthn backend to verify against, so a passkey cannot create a brand-new session — the user must have signed in with a password/token at some point already.
 
-### Blocking Public Signups (Private Forge)
-- To prevent random registrations, navigate to **Admin Console $\rightarrow$ Authentication & Access Control** and click **Block Public Signups**.
-- When locked, registration requests return `403 Forbidden` and display a clear "Registration Closed" notice.
+### Hiding the Registration Page (client-side only)
+- **Admin Console → Registration Page** toggles whether `/register` is shown in that browser. It does **not** block account creation via the API — anyone can still `POST /api/v1/register` directly.
+- To actually close an instance to new signups, set `GITNESS_USER_SIGNUP_ENABLED=false` in the Gitness backend's environment and restart the `nixre-backend` container. There is no runtime API for this in Gitness.
 
 ---
 

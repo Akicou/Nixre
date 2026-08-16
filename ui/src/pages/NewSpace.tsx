@@ -56,7 +56,7 @@ export const NewSpace: React.FC = () => {
             </label>
             <input
               type="text"
-              placeholder="e.g. Nayhein or my-team"
+              placeholder="e.g. my-team"
               value={uid}
               onChange={e => setUid(e.target.value)}
               className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-sm font-mono focus:border-brand transition"

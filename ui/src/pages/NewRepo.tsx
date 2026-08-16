@@ -11,7 +11,7 @@ export const NewRepo: React.FC = () => {
   const [description, setDescription] = useState('');
   const [isPublic, setIsPublic] = useState(true);
   const [readme, setReadme] = useState(true);
-  const [defaultBranch, setDefaultBranch] = useState('main');
+  const defaultBranch = 'main';
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 

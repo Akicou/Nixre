@@ -3,20 +3,21 @@
 > **Sovereign, minimalist, and ultra-fast code collaboration forge.**  
 > Official site: **[nixre.dev](https://nixre.dev)** • Live Instance: **[git.nayhein.com](https://git.nayhein.com)**
 
-Nixre is a modern open-source Git forge that combines the **clean, typography-driven aesthetic of Radicle and Linear** with the **familiar workflows of GitHub** (Spaces, Pull Requests, Issues, and CI/CD).
+Nixre is a modern open-source Git forge UI that combines the **clean, typography-driven aesthetic of Radicle and Linear** with a **[Gitness](https://github.com/harness/harness) backend** (Spaces, Repositories, Pull Requests).
 
 ---
 
 ## ✨ Features
 
 - **🎨 Minimalist Radicle-Inspired UI**: Booton typography, JetBrains Mono code rendering, flat layout (`decard`), dark/light theme.
-- **🔑 WebAuthn / Passkeys**: 1-click biometric sign-in using Touch ID, Face ID, Windows Hello, or YubiKey hardware tokens.
+- **🔑 Passkeys (device convenience, not a login backend)**: registered passkeys can re-confirm an *already active* session (e.g. before a sensitive settings change). Gitness has no WebAuthn API, so a passkey alone cannot start a brand-new session — sign in with a password (or token) first.
 - **🛡️ 100% Sovereign & Unbranded**: Zero commercial upsell remarks, enterprise tracking, or proprietary vendor locks.
-- **🔒 Auth Lock & Registration Controls**: Instant admin toggle in the Admin Console to block public registrations and run a private, invite-only forge.
-- **⚡ Git Smart HTTP Engine**: Fast cloning and pushing with standard `git clone` / `git push`.
-- **🔄 GitHub-Style Pull Requests**: Side-by-side diff code reviews, branch comparisons, commit logs, and 1-click merging.
+- **🔒 Registration Page Toggle (client-side only)**: the Admin Console can hide the sign-up page in a given browser. This is a UI convenience, not access control — the `/api/v1/register` endpoint is unaffected. To actually close an instance to new signups, set `GITNESS_USER_SIGNUP_ENABLED=false` on the backend and restart it.
+- **⚡ Git Smart HTTP & SSH**: Clone/push over HTTPS (`/git/<space>/<repo>.git`) or SSH (port `3022`).
+- **🔄 Pull Requests**: create PRs between branches, view a unified diff per changed file, and merge with one click.
 - **📁 Spaces & Organizations**: Multi-tenant workspace organization for projects and teams.
-- **🚀 Native CI/CD Engine**: Declarative YAML build pipelines.
+
+Not implemented yet: Issues, CI/CD pipeline UI (Gitness itself supports CI; this UI doesn't expose it), inline PR review comments.
 
 ---
 
@@ -103,13 +104,22 @@ Restart Caddy (`sudo systemctl restart caddy`). Caddy will automatically complet
 
 ```
 Nixre Architecture
- ├── ui/                  # React + TypeScript + Tailwind + Radicle Design System
- │    ├── src/lib/api.ts         # REST API client
- │    ├── src/lib/webauthn.ts    # FIDO2 / WebAuthn Passkeys vault
- │    ├── src/pages/             # Modern views (RepoView, PullRequests, Settings, Admin)
- │    └── dist/                  # Production build output
- ├── docker-compose.yml   # Unified container stack
+ ├── ui/                          # React + TypeScript + Tailwind
+ │    ├── src/lib/api.ts          # REST API client (talks to Gitness)
+ │    ├── src/lib/webauthn.ts     # Local passkey vault (session re-confirmation only)
+ │    ├── src/components/         # PullRequestForm, PullRequestDetail (diff + merge)
+ │    ├── src/pages/               # Views (RepoView, Settings, Admin, ...)
+ │    └── dist/                   # Production build output (committed; no build step in the container)
+ ├── docker-compose.yml   # Gitness backend + Caddy-served static UI
  └── Caddyfile            # Reverse proxy & static SPA handler
+```
+
+### Running tests
+
+```bash
+cd ui
+npm install
+npm test
 ```
 
 ---

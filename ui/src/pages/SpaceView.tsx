@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Layers, FolderGit2, Plus, ArrowRight, Globe, Lock, ArrowLeft } from 'lucide-react';
+import { FolderGit2, Plus, ArrowRight, ArrowLeft } from 'lucide-react';
 import { api, Space, Repository } from '../lib/api';
 
 export const SpaceView: React.FC = () => {
@@ -106,7 +106,7 @@ export const SpaceView: React.FC = () => {
                     >
                       {r.uid}
                     </Link>
-                    <span className="text-[10px] font-mono uppercase px-1.5 py-0.2 rounded border border-border-subtle text-txt-tertiary">
+                    <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded border border-border-subtle text-txt-tertiary">
                       {r.is_public ? 'Public' : 'Private'}
                     </span>
                   </div>
