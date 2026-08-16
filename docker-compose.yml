@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  nixre-backend:
+    image: harness/gitness:latest
+    container_name: nixre-backend
+    restart: always
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["server", "--enable-ci"]
+
+  nixre-web:
+    image: caddy:2-alpine
+    container_name: nixre-web
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./ui/dist:/usr/share/caddy
+      - ./Caddyfile:/etc/caddy/Caddyfile
+    depends_on:
+      - nixre-backend

@@ -1,0 +1,16 @@
+:3000 {
+    # Proxy API and Git Smart HTTP traffic to backend
+    handle /api/* {
+        reverse_proxy nixre-backend:3000
+    }
+    handle /git/* {
+        reverse_proxy nixre-backend:3000
+    }
+
+    # Serve Nixre SPA Web UI
+    handle {
+        root * /usr/share/caddy
+        try_files {path} /index.html
+        file_server
+    }
+}

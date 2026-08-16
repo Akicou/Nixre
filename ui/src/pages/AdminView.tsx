@@ -1,0 +1,123 @@
+import React, { useState, useEffect } from 'react';
+import { Shield, Lock, Unlock, Users, KeyRound, Check, AlertCircle } from 'lucide-react';
+import { api, User } from '../lib/api';
+
+export const AdminView: React.FC = () => {
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [authBlocked, setAuthBlocked] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    // Check saved state for auth blocking
+    const isBlocked = localStorage.getItem('aether_auth_blocked') === 'true';
+    setAuthBlocked(isBlocked);
+
+    api.listUsers()
+      .then(res => {
+        setUsers(res);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const toggleAuthBlocking = () => {
+    const nextState = !authBlocked;
+    setAuthBlocked(nextState);
+    localStorage.setItem('aether_auth_blocked', String(nextState));
+    setMsg(nextState ? 'Public signups are now BLOCKED (Instance is Closed/Invite-only).' : 'Public signups are now ALLOWED.');
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+      <div className="border-b border-border-subtle pb-4">
+        <h1 className="text-xl font-bold text-txt-primary flex items-center gap-2">
+          <Shield className="w-5 h-5 text-brand" />
+          <span>Instance Administration & Security</span>
+        </h1>
+        <p className="text-xs text-txt-secondary mt-1">
+          Manage system security, user registrations, and platform configuration.
+        </p>
+      </div>
+
+      {msg && (
+        <div className="p-3 rounded bg-feedback-success-bg border border-feedback-success-border text-feedback-success-text text-xs flex items-center gap-2">
+          <Check className="w-4 h-4 shrink-0" />
+          <span>{msg}</span>
+        </div>
+      )}
+
+      {/* Security Controls */}
+      <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
+        <h2 className="text-sm font-semibold text-txt-primary uppercase tracking-wider">
+          Authentication & Access Control
+        </h2>
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded bg-surface-base border border-border-subtle gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-txt-primary">Public User Registration</span>
+              <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold ${
+                authBlocked ? 'bg-surface-closed text-txt-closed' : 'bg-surface-open text-txt-open'
+              }`}>
+                {authBlocked ? 'BLOCKED' : 'OPEN'}
+              </span>
+            </div>
+            <p className="text-xs text-txt-secondary">
+              {authBlocked 
+                ? 'New user self-registration is currently disabled. Only administrators can add accounts.'
+                : 'Anyone with network access can register a new account on this instance.'}
+            </p>
+          </div>
+
+          <button
+            onClick={toggleAuthBlocking}
+            className={`px-4 py-2 rounded text-xs font-semibold transition flex items-center gap-2 shrink-0 ${
+              authBlocked
+                ? 'bg-surface-open text-txt-open hover:bg-surface-subtle border border-border-subtle'
+                : 'bg-feedback-error-bg text-feedback-error-text hover:bg-feedback-error-bg-selected border border-feedback-error-border'
+            }`}
+          >
+            {authBlocked ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+            <span>{authBlocked ? 'Enable Public Signups' : 'Block Public Signups'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Registered Users */}
+      <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-txt-secondary uppercase tracking-wider flex items-center gap-2">
+            <Users className="w-4 h-4 text-brand" />
+            <span>Registered Accounts ({users.length})</span>
+          </h2>
+        </div>
+
+        <div className="border border-border-subtle rounded-md bg-surface-base divide-y divide-border-subtle overflow-hidden">
+          {users.map(u => (
+            <div key={u.id} className="p-3 flex items-center justify-between gap-4 text-xs font-mono">
+              <div className="flex items-center gap-3">
+                <div className="w-7 h-7 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center font-bold text-txt-primary uppercase">
+                  {u.uid.slice(0, 2)}
+                </div>
+                <div>
+                  <p className="font-semibold text-txt-primary">{u.display_name || u.uid} <span className="text-txt-tertiary">(@{u.uid})</span></p>
+                  <p className="text-[11px] text-txt-tertiary">{u.email}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] uppercase font-mono px-2 py-0.5 rounded border border-border-subtle ${
+                  u.admin ? 'bg-surface-merged text-txt-merged font-bold' : 'text-txt-secondary'
+                }`}>
+                  {u.admin ? 'Admin' : 'User'}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
