@@ -68,37 +68,48 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
             <div className="relative">
               <button 
                 onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
-                className="flex items-center gap-2 px-2.5 py-1 rounded text-sm text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition border border-transparent hover:border-border-subtle"
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium text-txt-primary bg-surface-base border border-border-subtle hover:border-border-strong transition"
               >
-                <Layers className="w-4 h-4 text-txt-tertiary" />
-                <span>Spaces</span>
-                <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+                <Layers className="w-3.5 h-3.5 text-brand" />
+                <span className="font-semibold">{spaces.length > 0 ? (spaces[0]?.uid || 'Spaces') : 'Spaces'}</span>
+                {spaces.length > 1 && (
+                  <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-surface-subtle text-txt-tertiary">
+                    +{spaces.length - 1}
+                  </span>
+                )}
+                <ChevronDown className="w-3 h-3 opacity-60 ml-0.5" />
               </button>
 
               {spaceDropdownOpen && (
                 <div 
-                  className="absolute left-0 mt-1.5 w-56 rounded-md bg-surface-canvas border border-border-mid shadow-lg py-1 z-50 animate-in fade-in zoom-in-95 duration-100"
+                  className="absolute left-0 mt-1.5 w-60 rounded-md bg-surface-canvas border border-border-mid shadow-xl py-1 z-50 animate-in fade-in zoom-in-95 duration-100"
                   onClick={() => setSpaceDropdownOpen(false)}
                 >
-                  <div className="px-3 py-1.5 text-xs font-semibold text-txt-tertiary uppercase tracking-wider border-b border-border-subtle">
-                    Organizations & Spaces
+                  <div className="px-3 py-1.5 text-[10px] font-semibold text-txt-tertiary uppercase tracking-wider border-b border-border-subtle flex justify-between items-center">
+                    <span>Organizations & Spaces</span>
+                    <span className="font-mono">{spaces.length}</span>
                   </div>
                   {spaces.map(s => (
                     <Link
                       key={s.uid}
                       to={`/${s.uid}`}
-                      className="flex items-center justify-between px-3 py-2 text-sm text-txt-primary hover:bg-surface-subtle transition"
+                      className="flex items-center justify-between px-3 py-2 text-xs text-txt-primary hover:bg-surface-subtle transition font-mono"
                     >
-                      <span className="font-medium">{s.uid}</span>
-                      <span className="text-xs text-txt-tertiary">{s.is_public ? 'Public' : 'Private'}</span>
+                      <div className="flex items-center gap-2">
+                        <div className="w-5 h-5 rounded bg-surface-subtle border border-border-subtle flex items-center justify-center text-[10px] font-bold text-txt-brand">
+                          {s.uid.slice(0, 2).toUpperCase()}
+                        </div>
+                        <span className="font-semibold">{s.uid}</span>
+                      </div>
+                      <span className="text-[10px] text-txt-tertiary uppercase">{s.is_public ? 'Public' : 'Private'}</span>
                     </Link>
                   ))}
                   <div className="border-t border-border-subtle pt-1 mt-1">
                     <Link
                       to="/new-space"
-                      className="flex items-center gap-2 px-3 py-2 text-sm text-txt-brand hover:bg-surface-subtle transition"
+                      className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-txt-brand hover:bg-surface-subtle transition"
                     >
-                      <Plus className="w-4 h-4" />
+                      <Plus className="w-3.5 h-3.5" />
                       <span>Create New Space</span>
                     </Link>
                   </div>

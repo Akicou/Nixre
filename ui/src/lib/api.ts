@@ -198,26 +198,84 @@ class ApiClient {
 
   // Spaces (Organizations)
   async listSpaces(): Promise<Space[]> {
-    return this.request<Space[]>('/spaces');
+    try {
+      const memberships = await this.request<any[]>('/user/memberships');
+      if (Array.isArray(memberships) && memberships.length > 0) {
+        return memberships.map(m => ({
+          id: m.space.id,
+          uid: m.space.identifier || m.space.path || m.space.uid,
+          path: m.space.path || m.space.identifier,
+          description: m.space.description || '',
+          is_public: m.space.is_public ?? false,
+          created: m.space.created || 0,
+          created_by: m.space.created_by || 0,
+          updated: m.space.updated || 0,
+        }));
+      }
+    } catch {}
+    try {
+      const direct = await this.request<Space[]>('/spaces');
+      if (Array.isArray(direct)) return direct;
+    } catch {}
+    return [];
   }
 
   async getSpace(spaceRef: string): Promise<Space> {
-    return this.request<Space>(`/spaces/${spaceRef}`);
+    const res = await this.request<any>(`/spaces/${spaceRef}`);
+    return {
+      id: res.id,
+      uid: res.identifier || res.path || res.uid,
+      path: res.path || res.identifier,
+      description: res.description || '',
+      is_public: res.is_public ?? false,
+      created: res.created || 0,
+      created_by: res.created_by || 0,
+      updated: res.updated || 0,
+    };
   }
 
   async createSpace(uid: string, description: string, is_public = false): Promise<Space> {
-    return this.request<Space>('/spaces', {
+    const res = await this.request<any>('/spaces', {
       method: 'POST',
       body: JSON.stringify({ uid, description, is_public }),
     });
+    return {
+      id: res.id,
+      uid: res.identifier || res.path || res.uid,
+      path: res.path || res.identifier,
+      description: res.description || '',
+      is_public: res.is_public ?? false,
+      created: res.created || 0,
+      created_by: res.created_by || 0,
+      updated: res.updated || 0,
+    };
   }
 
   // Repositories
   async listRepos(spaceRef?: string): Promise<Repository[]> {
     if (spaceRef) {
-      return this.request<Repository[]>(`/spaces/${spaceRef}/repos`);
+      const res = await this.request<any[]>(`/spaces/${spaceRef}/repos`);
+      return Array.isArray(res) ? res : [];
     }
-    return this.request<Repository[]>('/repos');
+    // Fetch spaces first, then fetch all repos across spaces
+    const spaces = await this.listSpaces();
+    if (spaces.length === 0) {
+      try {
+        const direct = await this.request<any[]>('/repos');
+        return Array.isArray(direct) ? direct : [];
+      } catch {
+        return [];
+      }
+    }
+    const repoPromises = spaces.map(s => this.request<any[]>(`/spaces/${s.uid}/repos`).catch(() => []));
+    const results = await Promise.all(repoPromises);
+    const allRepos: Repository[] = [];
+    for (const rList of results) {
+      if (Array.isArray(rList)) {
+        allRepos.push(...rList);
+      }
+    }
+    return allRepos;
   }
 
   async getRepo(repoRef: string): Promise<Repository> {
