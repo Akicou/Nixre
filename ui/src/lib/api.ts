@@ -310,11 +310,22 @@ class ApiClient {
     });
   }
 
+  async updateRepo(repoRef: string, update: { description?: string; is_public?: boolean }): Promise<Repository> {
+    return this.request<Repository>(`/repos/${repoRef}/+`, {
+      method: 'PATCH',
+      body: JSON.stringify(update),
+    });
+  }
+
+  async deleteRepo(repoRef: string): Promise<void> {
+    await this.request(`/repos/${repoRef}/+`, { method: 'DELETE' });
+  }
+
   // Git / Code Explorer
   async getTree(repoRef: string, gitRef = 'main', path = ''): Promise<{ entries: TreeEntry[] }> {
     const qPath = path ? `?path=${encodeURIComponent(path)}` : '';
     const res = await this.request<any>(`/repos/${repoRef}/+/content/${gitRef}${qPath}`);
-    return { entries: res.content?.entries || [] };
+    return { entries: res.entries || [] };
   }
 
   async getRawBlob(repoRef: string, gitRef = 'main', path = ''): Promise<{ content: string; name: string; size: number }> {

@@ -12,7 +12,8 @@ import {
   Download,
   Plus,
   ArrowLeft,
-  FileCode
+  FileCode,
+  Settings
 } from 'lucide-react';
 import { api, Repository, TreeEntry, Commit, Branch, PullRequest } from '../lib/api';
 import { resolveNodeType } from '../lib/repoPath';
@@ -262,6 +263,14 @@ export const RepoView: React.FC = () => {
           <GitBranch className="w-4 h-4" />
           <span>Branches ({branches.length})</span>
         </button>
+
+        <Link
+          to={`/${repoPath}/settings`}
+          className="flex items-center gap-2 px-4 py-2.5 text-xs font-medium text-txt-secondary hover:text-txt-primary transition"
+        >
+          <Settings className="w-4 h-4" />
+          <span>Settings</span>
+        </Link>
       </div>
 
       {/* TAB CONTENT: CODE */}
