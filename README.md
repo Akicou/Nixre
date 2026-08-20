@@ -16,8 +16,9 @@ Nixre is a modern open-source Git forge UI that combines the **clean, typography
 - **⚡ Git Smart HTTP & SSH**: Clone/push over HTTPS (`/git/<space>/<repo>.git`) or SSH (port `3022`).
 - **🔄 Pull Requests**: create PRs between branches, view a unified diff per changed file, and merge with one click.
 - **📁 Spaces & Organizations**: Multi-tenant workspace organization for projects and teams.
+- **🧩 Plugin System**: Bundled plugins that stay inert until enabled. Ships with an AI engineering copilot (Nixre Assistant) plus CI/CD, security scanning, issues, code review, members, and webhooks plugins — each with configuration forms and per-repo profiles.
 
-Not implemented yet: Issues, CI/CD pipeline UI (Gitness itself supports CI; this UI doesn't expose it), inline PR review comments.
+Plugins are **baked into the repo** but only activated behind a two-layer gate: (1) the operator enables a plugin for the instance, and (2) each user toggles it on from **Plugins** (`/plugins`). Every plugin is disabled by default. Manage them at `/plugins`; the Nixre Assistant's per-repository profile (provider, tools, merge gate) is configured inside a repository's **Settings**.
 
 ---
 
@@ -100,15 +101,48 @@ Restart Caddy (`sudo systemctl restart caddy`). Caddy will automatically complet
 
 ---
 
+## 🧩 Plugins
+
+Plugins ship inside the repo but stay dormant until the two-layer gate opens.
+
+### Activation layers
+| Layer | Who | Where it lives |
+| --- | --- | --- |
+| **Server gate** | operator | which bundled plugins the instance serves |
+| **User toggle** | any logged-in user | `/plugins` (off by default) |
+
+A plugin is only *live* when **both** allow it. The server gate is a UI mirror of a real operator setting — in this self-hosted build there is no Nixre backend, so both layers persist to `localStorage` (`nixre_plugins_available`, `nixre_plugins_enabled`) and real enforcement happens on the server. See `ui/src/lib/pluginPreferences.ts`.
+
+### Bundled plugins
+| Plugin | What it does | Configuration |
+| --- | --- | --- |
+| **Nixre Assistant** | AI copilot for agentic engineering work. Runs in an isolated Docker environment with the tools `file_read` (reads images too), `file_write`, `bash`, `run_tests`, `web_search`, and `git`. Per-repo profiles choose the AI provider and what it may do (edit, run bash/tests, push, merge, auto-merge-on-green, auto-fix bugs, path allow/block lists). | per-repo profile (`/plugins` + repo **Settings**) |
+| **CI/CD Pipelines** | Trigger/re-run Gitness pipelines, watch status, read logs without leaving Nixre. | settings form |
+| **Security Scanner** | Scan repos/PRs for secrets, dependency CVEs, and static-analysis issues. | settings form |
+| **Issues Tracker** | Create, list, assign, label and close issues. | settings form |
+| **Code Review** | Inline, line-level review threads with auto-assignment and required reviewers. | settings form |
+| **Members & Access** | Manage space members, roles, and per-repo permissions. | settings form |
+| **Webhooks & Integrations** | Subscribe repo events to signed external URLs (Slack, Discord, …). | settings form |
+
+### Adding a plugin
+1. Describe it in `ui/src/lib/plugins.ts` (id, name, icon, category, tools, `profileFields`/`accessFields`, and whether it is repo-scoped).
+2. It appears on `/plugins` once the operator flips the server gate on.
+3. Render its surface with `PluginConfigForm` (generic key/value) or `AssistantProfileForm` (provider + per-repo access).
+
+---
+
 ## 🏗️ Project Architecture
 
 ```
 Nixre Architecture
  ├── ui/                          # React + TypeScript + Tailwind
  │    ├── src/lib/api.ts          # REST API client (talks to Gitness)
+  │    ├── src/lib/plugins.ts      # Plugin registry (bundled plugin definitions)
+  │    ├── src/lib/pluginPreferences.ts  # Two-layer plugin activation (localStorage)
+  │    ├── src/lib/assistantProfiles.ts  # Nixre Assistant provider + per-repo profiles
  │    ├── src/lib/webauthn.ts     # Local passkey vault (session re-confirmation only)
- │    ├── src/components/         # PullRequestForm, PullRequestDetail (diff + merge)
- │    ├── src/pages/               # Views (RepoView, Settings, Admin, ...)
+ │    ├── src/components/         # PullRequestForm, PullRequestDetail (diff + merge), PluginToggle, PluginConfigForm
+ │    ├── src/pages/               # Views (RepoView, Settings, Admin, Plugins, ...)
  │    └── dist/                   # Production build output (committed; no build step in the container)
  ├── docker-compose.yml   # Gitness backend + Caddy-served static UI
  └── Caddyfile            # Reverse proxy & static SPA handler

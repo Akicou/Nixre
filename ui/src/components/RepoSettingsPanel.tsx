@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Trash2, Save, Globe, Lock } from 'lucide-react';
+import { Trash2, Save, Globe, Lock, Bot } from 'lucide-react';
 import { api, Repository } from '../lib/api';
+import { getPlugin } from '../lib/plugins';
+import { isPluginLive } from '../lib/pluginPreferences';
+import { AssistantProfileForm } from './assistant/AssistantProfileForm';
 
 interface RepoSettingsPanelProps {
   repo: Repository;
@@ -21,6 +24,10 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const [deleting, setDeleting] = useState(false);
+
+  const assistant = getPlugin('nixre-assistant');
+  const assistantLive = Boolean(assistant && isPluginLive(assistant.id));
+  const [showAssistantConfig, setShowAssistantConfig] = useState(false);
 
   useEffect(() => {
     setDescription(repo.description || '');
@@ -134,6 +141,45 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
           </button>
         </div>
       </form>
+
+      {/* Nixre Assistant (per-repo) */}
+      {assistantLive && (
+        <div className="space-y-4">
+          {showAssistantConfig ? (
+            <AssistantProfileForm
+              mode="full"
+              repoPath={repoPath}
+              onClose={() => setShowAssistantConfig(false)}
+            />
+          ) : (
+            <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded bg-surface-subtle border border-border-subtle text-txt-brand">
+                    <Bot className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-semibold text-txt-primary flex items-center gap-2">
+                      Nixre Assistant
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-open text-txt-open font-bold">ACTIVE</span>
+                    </h2>
+                    <p className="text-xs text-txt-secondary mt-0.5">
+                      The assistant is active in this repository. Configure its provider and what it may do below.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAssistantConfig(true)}
+                  className="px-3 py-1.5 rounded text-xs font-medium border border-border-subtle text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition shrink-0"
+                >
+                  Configure
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="border border-feedback-error-border rounded-lg bg-surface-canvas p-6 space-y-4">
         <div>

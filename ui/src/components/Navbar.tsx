@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import {
   Layers,
   Settings,
+  Settings2,
   Shield,
   LogOut,
   Sun,
@@ -184,6 +185,14 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
                       <KeyRound className="w-4 h-4 text-txt-brand" />
                       <span className="flex-1">Passkeys / FIDO2</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-open text-txt-open font-semibold">Active</span>
+                    </Link>
+
+                    <Link
+                      to="/plugins"
+                      className="flex items-center gap-2.5 px-3 py-2 text-sm text-txt-primary hover:bg-surface-subtle transition"
+                    >
+                      <Settings2 className="w-4 h-4 text-txt-tertiary" />
+                      <span>Plugins</span>
                     </Link>
 
                     {currentUser.admin && (

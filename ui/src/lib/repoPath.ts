@@ -1,6 +1,6 @@
 export type NodeType = 'blob' | 'tree';
 
-const NON_SPACE_ROUTES = new Set(['new-repo', 'new-space', 'settings', 'admin', 'login', 'register']);
+const NON_SPACE_ROUTES = new Set(['new-repo', 'new-space', 'settings', 'admin', 'plugins', 'login', 'register']);
 
 // Navbar renders outside the <Routes> tree, so it can't use useParams() to
 // know which space is currently open - it has to read the URL itself.
