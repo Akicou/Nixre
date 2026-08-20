@@ -4,7 +4,6 @@ import { Navbar } from './components/Navbar';
 import { Dashboard } from './pages/Dashboard';
 import { SpaceView } from './pages/SpaceView';
 import { RepoView } from './pages/RepoView';
-import { RepoSettings } from './pages/RepoSettings';
 import { NewRepo } from './pages/NewRepo';
 import { NewSpace } from './pages/NewSpace';
 import { Settings } from './pages/Settings';
@@ -60,7 +59,6 @@ export const App: React.FC = () => {
             <Route path="/register" element={currentUser ? <Navigate to="/" /> : <Register onRegisterSuccess={setCurrentUser} />} />
 
             <Route path="/:space" element={<SpaceView />} />
-            <Route path="/:space/:repo/settings" element={<RepoSettings />} />
             <Route path="/:space/:repo" element={<RepoView />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Routes>

@@ -34,24 +34,49 @@ describe('api.getTree', () => {
     localStorage.clear();
   });
 
-  it('reads the entries array at the top level of the Gitness content response', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+  it('reads entries nested under content.entries and maps dir/file to tree/blob', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
       json: () => Promise.resolve({
-        path: '.',
-        type: 'tree',
-        entries: [
-          { path: 'README.md', name: 'README.md', type: 'blob', mode: 33188, sha: 'abc', size: 1 },
-          { path: 'ui', name: 'ui', type: 'tree', mode: 168777, sha: 'def', size: 0 },
-        ],
+        type: 'dir',
+        sha: 'f0f8',
+        name: '',
+        path: '',
+        content: {
+          entries: [
+            { type: 'file', sha: 'abc', name: 'README.md', path: 'README.md' },
+            { type: 'dir', sha: 'def', name: 'ui', path: 'ui' },
+          ],
+        },
       }),
-    }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
 
     const res = await api.getTree('space/repo', 'main', '');
+
     expect(res.entries).toHaveLength(2);
     expect(res.entries.map(e => e.name)).toEqual(['README.md', 'ui']);
+    expect(res.entries.map(e => e.type)).toEqual(['blob', 'tree']);
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/repos/space/repo/+/content?git_ref=main');
+  });
+
+  it('puts the path in the URL segment and the git ref in the query string', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ type: 'dir', content: { entries: [] } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.getTree('space/repo', 'feature/x', 'backend/src');
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/repos/space/repo/+/content/backend/src?git_ref=feature%2Fx');
   });
 
   it('returns an empty list when the response has no entries', async () => {
@@ -59,7 +84,7 @@ describe('api.getTree', () => {
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: () => Promise.resolve({ path: '.', type: 'tree' }),
+      json: () => Promise.resolve({ type: 'dir' }),
     }));
 
     const res = await api.getTree('space/repo', 'main', '');

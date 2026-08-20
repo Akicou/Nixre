@@ -322,15 +322,26 @@ class ApiClient {
   }
 
   // Git / Code Explorer
+  // Gitness serves repo content at /repos/{ref}/+/content/{path}?git_ref={ref}
+  // and nests the listing under `content.entries` with `file`/`dir` types.
   async getTree(repoRef: string, gitRef = 'main', path = ''): Promise<{ entries: TreeEntry[] }> {
-    const qPath = path ? `?path=${encodeURIComponent(path)}` : '';
-    const res = await this.request<any>(`/repos/${repoRef}/+/content/${gitRef}${qPath}`);
-    return { entries: res.entries || [] };
+    const pathSegment = path ? `/${path.split('/').map(encodeURIComponent).join('/')}` : '';
+    const res = await this.request<any>(`/repos/${repoRef}/+/content${pathSegment}?git_ref=${encodeURIComponent(gitRef)}`);
+    const rawEntries: any[] = res.content?.entries || [];
+    const entries: TreeEntry[] = rawEntries.map(e => ({
+      path: e.path,
+      name: e.name,
+      type: e.type === 'dir' ? 'tree' : 'blob',
+      mode: e.mode ?? 0,
+      sha: e.sha,
+      size: e.size,
+    }));
+    return { entries };
   }
 
   async getRawBlob(repoRef: string, gitRef = 'main', path = ''): Promise<{ content: string; name: string; size: number }> {
-    const qPath = path ? `?path=${encodeURIComponent(path)}` : '';
-    const res = await fetch(`/api/v1/repos/${repoRef}/+/raw/${gitRef}${qPath}`, {
+    const pathSegment = path ? `/${path.split('/').map(encodeURIComponent).join('/')}` : '';
+    const res = await fetch(`/api/v1/repos/${repoRef}/+/raw${pathSegment}?git_ref=${encodeURIComponent(gitRef)}`, {
       headers: this.getHeaders(),
     });
     const text = await res.text();

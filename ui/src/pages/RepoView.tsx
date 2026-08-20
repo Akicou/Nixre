@@ -20,6 +20,7 @@ import { resolveNodeType } from '../lib/repoPath';
 import { useOutsideClick } from '../lib/useOutsideClick';
 import { PullRequestForm } from '../components/PullRequestForm';
 import { PullRequestDetail } from '../components/PullRequestDetail';
+import { RepoSettingsPanel } from '../components/RepoSettingsPanel';
 
 export const RepoView: React.FC = () => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
@@ -264,13 +265,15 @@ export const RepoView: React.FC = () => {
           <span>Branches ({branches.length})</span>
         </button>
 
-        <Link
-          to={`/${repoPath}/settings`}
-          className="flex items-center gap-2 px-4 py-2.5 text-xs font-medium text-txt-secondary hover:text-txt-primary transition"
+        <button
+          onClick={() => { setSearchParams({ tab: 'settings' }); }}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px ${
+            activeTab === 'settings' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
         >
           <Settings className="w-4 h-4" />
           <span>Settings</span>
-        </Link>
+        </button>
       </div>
 
       {/* TAB CONTENT: CODE */}
@@ -538,6 +541,16 @@ export const RepoView: React.FC = () => {
             </div>
           ))}
         </div>
+      )}
+
+      {/* TAB CONTENT: SETTINGS */}
+      {activeTab === 'settings' && space && (
+        <RepoSettingsPanel
+          repo={repo}
+          repoPath={repoPath}
+          space={space}
+          onUpdated={setRepo}
+        />
       )}
     </div>
   );

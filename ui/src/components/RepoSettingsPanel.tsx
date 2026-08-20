@@ -1,17 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Settings as SettingsIcon, Trash2, Save, Globe, Lock } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Trash2, Save, Globe, Lock } from 'lucide-react';
 import { api, Repository } from '../lib/api';
 
-export const RepoSettings: React.FC = () => {
-  const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
-  const navigate = useNavigate();
-  const repoPath = `${space}/${repoUid}`;
+interface RepoSettingsPanelProps {
+  repo: Repository;
+  repoPath: string;
+  space: string;
+  onUpdated: (repo: Repository) => void;
+}
 
-  const [repo, setRepo] = useState<Repository | null>(null);
-  const [description, setDescription] = useState('');
-  const [isPublic, setIsPublic] = useState(true);
-  const [loading, setLoading] = useState(true);
+export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repoPath, space, onUpdated }) => {
+  const navigate = useNavigate();
+  const [description, setDescription] = useState(repo.description || '');
+  const [isPublic, setIsPublic] = useState(repo.is_public);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -21,20 +23,9 @@ export const RepoSettings: React.FC = () => {
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    if (!space || !repoUid) return;
-    setLoading(true);
-    api.getRepo(repoPath)
-      .then(r => {
-        setRepo(r);
-        setDescription(r.description || '');
-        setIsPublic(r.is_public);
-        setLoading(false);
-      })
-      .catch(err => {
-        setError(err.message || 'Failed to load repository');
-        setLoading(false);
-      });
-  }, [repoPath]);
+    setDescription(repo.description || '');
+    setIsPublic(repo.is_public);
+  }, [repo.id, repo.description, repo.is_public]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,7 +34,7 @@ export const RepoSettings: React.FC = () => {
     setSaving(true);
     try {
       const updated = await api.updateRepo(repoPath, { description, is_public: isPublic });
-      setRepo(updated);
+      onUpdated(updated);
       setSuccess('Repository settings saved.');
     } catch (err: any) {
       setError(err.message || 'Failed to save repository settings.');
@@ -53,7 +44,7 @@ export const RepoSettings: React.FC = () => {
   };
 
   const handleDelete = async () => {
-    if (!repo || confirmText !== repo.uid) return;
+    if (confirmText !== repo.uid) return;
     setError('');
     setDeleting(true);
     try {
@@ -65,53 +56,8 @@ export const RepoSettings: React.FC = () => {
     }
   };
 
-  if (loading && !repo) {
-    return <div className="max-w-7xl mx-auto px-4 py-16 text-center text-sm text-txt-tertiary">Loading repository settings...</div>;
-  }
-
-  if (error && !repo) {
-    return (
-      <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-4">
-        <h2 className="text-lg font-bold text-txt-primary">Repository not found</h2>
-        <p className="text-sm text-txt-secondary">{error}</p>
-        <Link to="/" className="inline-flex items-center gap-1.5 text-xs text-txt-brand hover:underline">
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back to Dashboard</span>
-        </Link>
-      </div>
-    );
-  }
-
-  if (!repo) return null;
-
   return (
-    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 space-y-8">
-      {/* Header */}
-      <div>
-        <Link
-          to={`/${repoPath}`}
-          className="inline-flex items-center gap-1.5 text-xs text-txt-secondary hover:text-txt-primary mb-4 transition"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back to repository</span>
-        </Link>
-
-        <div className="border-b border-border-subtle pb-4 flex items-center justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="text-xl font-bold text-txt-primary flex items-center gap-2">
-              <SettingsIcon className="w-5 h-5 text-brand" />
-              <span>Repository Settings</span>
-            </h1>
-            <p className="text-xs font-mono text-txt-secondary">
-              {repoPath}
-              <span className={`ml-2 text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-border-subtle ${repo.is_public ? 'text-txt-tertiary' : 'text-txt-tertiary'}`}>
-                {repo.is_public ? 'Public' : 'Private'}
-              </span>
-            </p>
-          </div>
-        </div>
-      </div>
-
+    <div className="max-w-3xl space-y-6">
       {error && (
         <div className="p-3 rounded bg-feedback-error-bg border border-feedback-error-border text-feedback-error-text text-xs">
           {error}
@@ -123,7 +69,6 @@ export const RepoSettings: React.FC = () => {
         </div>
       )}
 
-      {/* General */}
       <form onSubmit={handleSave} className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-5">
         <div>
           <h2 className="text-sm font-semibold text-txt-primary uppercase tracking-wider">General</h2>
@@ -190,7 +135,6 @@ export const RepoSettings: React.FC = () => {
         </div>
       </form>
 
-      {/* Danger Zone */}
       <div className="border border-feedback-error-border rounded-lg bg-surface-canvas p-6 space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-feedback-error-text uppercase tracking-wider">Danger Zone</h2>
