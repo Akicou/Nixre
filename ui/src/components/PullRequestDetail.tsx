@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, GitMerge, Plus, Minus, FileDiff as FileDiffIcon } from 'lucide-react';
+import { ArrowLeft, GitMerge, Plus, Minus, FileDiff as FileDiffIcon, Sparkles } from 'lucide-react';
 import { api, PullRequest, FileDiff } from '../lib/api';
 import { decodeBase64Patch, parsePatchLines } from '../lib/diff';
+import { PRReviewPanel } from './assistant/PRReviewPanel';
 
 interface PullRequestDetailProps {
   repoPath: string;
@@ -23,6 +24,7 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
   const [loading, setLoading] = useState(true);
   const [merging, setMerging] = useState(false);
   const [error, setError] = useState('');
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -86,6 +88,14 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
               {pr.source_branch} → {pr.target_branch} &bull; by {pr.author?.display_name || pr.author?.uid}
             </p>
           </div>
+          <button
+            onClick={() => setCopilotOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm shrink-0"
+            title="Review with Nixre Assistant"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            Assistant
+          </button>
           <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold shrink-0 ${
             pr.state === 'open' ? 'bg-surface-open text-txt-open' : pr.state === 'merged' ? 'bg-surface-merged text-txt-merged' : 'bg-surface-closed text-txt-closed'
           }`}>
@@ -140,6 +150,7 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
           </div>
         ))}
       </div>
+      {copilotOpen && <PRReviewPanel repoPath={repoPath} pr={pr} onClose={() => setCopilotOpen(false)} />}
     </div>
   );
 };

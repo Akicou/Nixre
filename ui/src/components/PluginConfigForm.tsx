@@ -79,16 +79,31 @@ export const PluginConfigForm: React.FC<PluginConfigFormProps> = ({
                 className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
               />
             ) : field.type === 'select' ? (
-              <select
-                id={field.key}
-                value={String(values[field.key] ?? field.default)}
-                onChange={e => set(field.key, e.target.value)}
-                className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs focus:border-brand transition"
-              >
-                {(field.options ?? []).map(o => (
-                  <option key={o} value={o}>{o}</option>
-                ))}
-              </select>
+              // Provider-scoped selects (e.g. the assistant model picker) show
+              // only the options for the currently-selected provider.
+              field.modelsByProvider ? (
+                <select
+                  id={field.key}
+                  value={String(values[field.key] ?? field.default)}
+                  onChange={e => set(field.key, e.target.value)}
+                  className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs focus:border-brand transition"
+                >
+                  {(field.modelsByProvider[String(values.provider) ?? ''] ?? []).map(o => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+              ) : (
+                <select
+                  id={field.key}
+                  value={String(values[field.key] ?? field.default)}
+                  onChange={e => set(field.key, e.target.value)}
+                  className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs focus:border-brand transition"
+                >
+                  {(field.options ?? []).map(o => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+              )
             ) : field.type === 'secret' ? (
               <input
                 id={field.key}

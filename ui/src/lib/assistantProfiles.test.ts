@@ -26,6 +26,23 @@ describe('assistantProfiles', () => {
     expect(active.model).toBe('claude-sonnet');
   });
 
+  it('defaults reasoning off with no reasoning effort', () => {
+    const def = defaultProviderProfile();
+    expect(def.reasoningLevel).toBe('none');
+    expect(def.interleavedReasoning).toBe(false);
+  });
+
+  it('round-trips reasoning controls', () => {
+    setActiveProviderProfile({
+      ...defaultProviderProfile(),
+      reasoningLevel: 'high',
+      interleavedReasoning: true,
+    });
+    const active = getActiveProviderProfile();
+    expect(active.reasoningLevel).toBe('high');
+    expect(active.interleavedReasoning).toBe(true);
+  });
+
   it('stores per-repo access profiles keyed by repo path', () => {
     expect(getRepoProfile('acme/website')).toBeUndefined();
 

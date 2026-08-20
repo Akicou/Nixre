@@ -21,6 +21,9 @@ export interface AssistantProviderProfile {
   model: string;
   temperature: number;
   maxTokens: number;
+  // Reasoning controls (see plugins.ts providerFields).
+  reasoningLevel: string; // none | low | medium | high
+  interleavedReasoning: boolean; // stream the model's thinking inline
 }
 
 export interface AssistantRepoProfile {

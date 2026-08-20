@@ -43,6 +43,9 @@ export interface ProfileField {
   type: ProfileFieldType;
   // Options for `select`.
   options?: string[];
+  // When set, a `select` renders provider-scoped options: only the models for
+  // the currently-selected provider are shown (used by the assistant model picker).
+  modelsByProvider?: Record<string, string[]>;
   // Bounds for `range` / `number`.
   min?: number;
   max?: number;
@@ -119,8 +122,15 @@ const providerFields: ProfileField[] = [
   {
     key: 'model',
     label: 'Model',
-    type: 'text',
-    placeholder: 'e.g. deepseek-chat',
+    description: 'Models are scoped to the selected provider.',
+    type: 'select',
+    modelsByProvider: {
+      deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+      anthropic: ['claude-opus-4-8', 'claude-sonnet-4-2', 'claude-3-7-sonnet-latest'],
+      openai: ['gpt-5', 'gpt-5-mini', 'gpt-4o', 'o4-mini'],
+      'github-copilot': ['copilot-agent', 'gpt-4o'],
+      ollama: ['llama3.1', 'qwen2.5', 'mistral'],
+    },
     default: 'deepseek-chat',
   },
   {
@@ -141,6 +151,21 @@ const providerFields: ProfileField[] = [
     max: 128000,
     step: 256,
     default: 8192,
+  },
+  {
+    key: 'reasoningLevel',
+    label: 'Reasoning Level',
+    description: 'How much the model thinks before answering. Higher = deeper reasoning, slower.',
+    type: 'select',
+    options: ['none', 'low', 'medium', 'high'],
+    default: 'none',
+  },
+  {
+    key: 'interleavedReasoning',
+    label: 'Interleaved Reasoning',
+    description: 'Stream the model step-by-step thinking inline, like Claude Code and Cursor.',
+    type: 'toggle',
+    default: false,
   },
 ];
 

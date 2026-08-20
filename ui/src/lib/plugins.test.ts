@@ -44,6 +44,19 @@ describe('plugin registry', () => {
     ]);
   });
 
+  it('scopes the model picker to the selected provider and adds reasoning controls', () => {
+    const assistant = getPlugin('nixre-assistant')!;
+    const modelField = assistant.providerFields!.find(f => f.key === 'model');
+    expect(modelField?.type).toBe('select');
+    expect(modelField?.modelsByProvider).toBeDefined();
+    expect(modelField?.modelsByProvider?.deepseek).toContain('deepseek-reasoner');
+
+    const reasoningLevel = assistant.providerFields!.find(f => f.key === 'reasoningLevel');
+    const interleaved = assistant.providerFields!.find(f => f.key === 'interleavedReasoning');
+    expect(reasoningLevel?.options).toEqual(['none', 'low', 'medium', 'high']);
+    expect(interleaved?.type).toBe('toggle');
+  });
+
   it('gives form plugins a profile-fields schema', () => {
     const ci = getPlugin('ci-cd-pipelines');
     expect(ci?.hasForm).toBe(true);
