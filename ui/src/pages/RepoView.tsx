@@ -21,6 +21,7 @@ import { useOutsideClick } from '../lib/useOutsideClick';
 import { PullRequestForm } from '../components/PullRequestForm';
 import { PullRequestDetail } from '../components/PullRequestDetail';
 import { RepoSettingsPanel } from '../components/RepoSettingsPanel';
+import { Markdown, isMarkdownFile } from '../components/Markdown';
 
 export const RepoView: React.FC = () => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
@@ -358,9 +359,15 @@ export const RepoView: React.FC = () => {
                   {copied ? <Check className="w-3.5 h-3.5 text-txt-open" /> : <Copy className="w-3.5 h-3.5" />}
                 </button>
               </div>
-              <div className="p-4 overflow-x-auto font-mono text-xs text-txt-primary leading-relaxed bg-surface-base/30">
-                <pre><code>{fileBlob.content}</code></pre>
-              </div>
+              {isMarkdownFile(fileBlob.name) ? (
+                <div className="p-6">
+                  <Markdown content={fileBlob.content} />
+                </div>
+              ) : (
+                <div className="p-4 overflow-x-auto font-mono text-xs text-txt-primary leading-relaxed bg-surface-base/30">
+                  <pre><code>{fileBlob.content}</code></pre>
+                </div>
+              )}
             </div>
           ) : (
             /* File Tree Table */
@@ -424,8 +431,8 @@ export const RepoView: React.FC = () => {
                 <File className="w-4 h-4 text-brand" />
                 <span>README.md</span>
               </div>
-              <div className="p-6 max-w-none text-sm text-txt-primary whitespace-pre-line leading-relaxed">
-                {readmeContent}
+              <div className="p-6">
+                <Markdown content={readmeContent} />
               </div>
             </div>
           )}
