@@ -173,3 +173,108 @@ export async function resolveDefaultBranch(space, repo, fallback = 'main') {
     return fallback;
   }
 }
+
+// --- pull request support (phase 3) --------------------------------------------
+
+export async function mergeBase(space, repo, target, source) {
+  const out = await git(repoDir(space, repo), ['merge-base', target, source]);
+  return out.trim();
+}
+
+export async function branchExists(space, repo, branch) {
+  try {
+    await git(repoDir(space, repo), ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Per-file stats + unified patch between two refs (three-dot semantics).
+// Returns [{ path, old_path, status, additions, deletions, patch }] where
+// patch is the raw unified diff for that file (base64-encoded by the caller
+// to match the UI's wire format).
+export async function diffRefs(space, repo, target, source) {
+  const base = await mergeBase(space, repo, target, source);
+  const dir = repoDir(space, repo);
+  // numstat: <adds> <dels> <path> (binary -> "- - path")
+  const numstat = await git(dir, ['diff', '--numstat', '-z', `${base}...${source}`]);
+  const stats = [];
+  let i = 0;
+  const parts = numstat.split('\0');
+  while (i < parts.length) {
+    if (!parts[i]) {
+      i++;
+      continue;
+    }
+    const m = parts[i].match(/^(\d+|-)\t(\d+|-)\t(.*)$/);
+    if (m) {
+      stats.push({ additions: m[1] === '-' ? 0 : Number(m[1]), deletions: m[2] === '-' ? 0 : Number(m[2]), path: m[3] });
+      i++;
+    } else {
+      // rename/copy entries: path then the real path follows in the next slot
+      const a = parts[i];
+      const b = parts[i + 1] ?? '';
+      stats.push({ additions: 0, deletions: 0, path: b, oldPath: a });
+      i += 2;
+    }
+  }
+
+  // One combined patch; split per-file on `diff --git` boundaries.
+  const patch = await git(dir, ['diff', '--find-renames', `${base}...${source}`]);
+  const patches = {};
+  let current = null;
+  const lines = patch.split('\n');
+  const buf = [];
+  const flush = () => {
+    if (current) patches[current] = buf.join('\n');
+    buf.length = 0;
+  };
+  for (const line of lines) {
+    const m = line.match(/^diff --git a\/(.*) b\/(.*)$/);
+    if (m) {
+      flush();
+      current = m[2];
+    }
+    if (current) buf.push(line);
+  }
+  flush();
+
+  return stats.map(s => ({
+    path: s.path,
+    old_path: s.oldPath ?? s.path,
+    status: 'MODIFIED',
+    additions: s.additions,
+    deletions: s.deletions,
+    changes: s.additions + s.deletions,
+    patch: patches[s.path] ?? '',
+    is_binary: s.additions === 0 && s.deletions === 0 && !patches[s.path],
+    is_submodule: false,
+  }));
+}
+
+// Merge source into target in a temp clone and push the result.
+// method: 'merge' (merge commit) | 'squash' (single commit). Returns the
+// resulting target sha.
+export async function mergeBranches(space, repo, target, source, method, { authorName, authorEmail }) {
+  const dir = repoDir(space, repo);
+  const tmp = `${dir}-merge-${crypto.randomBytes(4).toString('hex')}`;
+  const { rm } = await import('node:fs/promises');
+  const identity = ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`];
+  try {
+    await exec('git', ['clone', dir, tmp]);
+    await exec('git', ['-C', tmp, 'fetch', 'origin', target, source]);
+    await exec('git', ['-C', tmp, 'checkout', '-B', target, `origin/${target}`]);
+    if (method === 'squash') {
+      await exec('git', ['-C', tmp, ...identity, 'merge', '--squash', `origin/${source}`]);
+      await exec('git', ['-C', tmp, ...identity, 'commit', '-m', `Squash merge ${source} into ${target}`]);
+    } else {
+      await exec('git', ['-C', tmp, ...identity, 'merge', '--no-ff', '-m', `Merge branch '${source}' into ${target}`, `origin/${source}`]);
+    }
+    await exec('git', ['-C', tmp, 'push', 'origin', target]);
+    const { stdout } = await exec('git', ['-C', tmp, 'rev-parse', target]);
+    return stdout.trim();
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}

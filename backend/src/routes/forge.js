@@ -13,6 +13,7 @@ import {
   resolveDefaultBranch,
   validRefSegment,
 } from '../git/repo.js';
+import { openPrCounts } from './pullreq.js';
 
 function now() {
   return Date.now();
@@ -156,7 +157,8 @@ export function forgeRoutes(pool, authenticate) {
       'SELECT * FROM repos WHERE space_uid = $1 ORDER BY uid',
       [req.params.spaceUid],
     );
-    res.json(rows.map(r => rowToRepo(r)));
+    const counts = await openPrCounts(pool, rows.map(r => Number(r.id)));
+    res.json(rows.map(r => rowToRepo(r, { openPulls: counts.get(Number(r.id)) ?? 0 })));
   });
 
   api.post('/repos', auth, async (req, res) => {
@@ -216,7 +218,8 @@ export function forgeRoutes(pool, authenticate) {
       res.status(404).json({ message: 'Repository not found' });
       return;
     }
-    res.json(rowToRepo(repo));
+    const counts = await openPrCounts(pool, [Number(repo.id)]);
+    res.json(rowToRepo(repo, { openPulls: counts.get(Number(repo.id)) ?? 0 }));
   });
 
   api.patch('/repos/:space/:repo/\\+', auth, async (req, res) => {

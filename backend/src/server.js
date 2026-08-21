@@ -19,6 +19,7 @@ import { resolveBearer } from './lib/auth.js';
 import { authRoutes, adminRoutes } from './routes/auth.js';
 import { syncRoutes } from './routes/sync.js';
 import { forgeRoutes } from './routes/forge.js';
+import { pullRequestRoutes } from './routes/pullreq.js';
 import { smartHttp } from './git/smartHttp.js';
 
 const PORT = Number(process.env.PORT || 3002);
@@ -124,10 +125,12 @@ app.use('/api/v1', adminApi);
 // transition.
 app.use('/api/sync/v1', syncApi);
 
-// Phase 2: spaces, repos and git data are core-owned now. Pull requests and
-// account endpoints still fall through to the Gitness proxy (phase 3).
+// Phase 2: spaces, repos and git data are core-owned now.
+// Phase 3: pull requests too — the last Gitness API dependency is gone;
+// only account keys/tokens still fall through to the proxy.
 const forgeApi = forgeRoutes(pool, authenticate);
 app.use('/api/v1', forgeApi);
+app.use('/api/v1', pullRequestRoutes(pool, authenticate));
 
 // Git Smart HTTP transport (/git/{space}/{repo}.git). No body parser — the
 // request stream is piped straight into git http-backend (CGI); express.json
