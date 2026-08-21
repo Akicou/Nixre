@@ -128,23 +128,55 @@ export interface Token {
 }
 
 class ApiClient {
+  // Transition note (sovereignty plan phase 1): nixre-core owns auth + sync;
+  // spaces/repos/git/PR endpoints still live on Gitness. Both systems share
+  // the same credentials, and login stores both tokens:
+  //   nixre_token         - nixre-core session (auth, sync, future routes)
+  //   nixre_gitness_token - legacy forge token (proxied by core, phase 2-3)
+  // The legacy token disappears when phase 4 removes Gitness.
   private getHeaders(): HeadersInit {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
-    const token = localStorage.getItem('nixre_token');
+    const coreToken = localStorage.getItem('nixre_token');
+    const gitnessToken = localStorage.getItem('nixre_gitness_token');
+    const token = gitnessToken ?? coreToken;
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
     return headers;
   }
 
+  // Core-owned routes (auth + sync) must carry the core session even when a
+  // legacy Gitness token is also present.
+  private isCoreOwned(path: string): boolean {
+    return (
+      path === '/login' ||
+      path === '/register' ||
+      path === '/logout' ||
+      path === '/user' ||
+      path === '/webauthn/login' ||
+      path.startsWith('/admin/users') ||
+      path.startsWith('/prefs') ||
+      path.startsWith('/conversations') ||
+      path.startsWith('/passkeys')
+    );
+  }
+
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    const token = this.isCoreOwned(path)
+      ? localStorage.getItem('nixre_token')
+      : localStorage.getItem('nixre_gitness_token') ?? localStorage.getItem('nixre_token');
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     const res = await fetch(`/api/v1${path}`, {
       ...options,
       headers: {
-        ...this.getHeaders(),
-        ...(options.headers || {}),
+        ...headers,
+        ...(options.headers as Record<string, string> | undefined),
       },
       credentials: 'include',
     });
@@ -177,22 +209,33 @@ class ApiClient {
 
   // Auth endpoints
   async login(login_identifier: string, password: string):Promise<{ access_token: string; user: User }> {
-    const data = await this.request<{ access_token: string }>('/login', {
+    // nixre-core owns authentication. During the Gitness transition it also
+    // opens a legacy forge session server-side and returns it as
+    // legacy_token for the still-proxied endpoints (phase 2-3 removes it).
+    const data = await this.request<{ access_token: string; legacy_token?: string }>('/login', {
       method: 'POST',
       body: JSON.stringify({ login_identifier, password }),
     });
     localStorage.setItem('nixre_token', data.access_token);
+    if (data.legacy_token) {
+      localStorage.setItem('nixre_gitness_token', data.legacy_token);
+    } else {
+      localStorage.removeItem('nixre_gitness_token');
+    }
     const user = await this.currentUser();
     localStorage.setItem('nixre_user', JSON.stringify(user));
     return { access_token: data.access_token, user };
   }
 
   async register(uid: string, email: string, display_name: string, password: string): Promise<{ access_token: string; user: User }> {
-    const data = await this.request<{ access_token: string }>('/register', {
+    const data = await this.request<{ access_token: string; legacy_token?: string }>('/register', {
       method: 'POST',
       body: JSON.stringify({ uid, email, display_name, password }),
     });
     localStorage.setItem('nixre_token', data.access_token);
+    if (data.legacy_token) {
+      localStorage.setItem('nixre_gitness_token', data.legacy_token);
+    }
     const user = await this.currentUser();
     localStorage.setItem('nixre_user', JSON.stringify(user));
     return { access_token: data.access_token, user };
@@ -207,6 +250,7 @@ class ApiClient {
       await this.request('/logout', { method: 'POST' });
     } catch {}
     localStorage.removeItem('nixre_token');
+    localStorage.removeItem('nixre_gitness_token');
     localStorage.removeItem('nixre_user');
   }
 

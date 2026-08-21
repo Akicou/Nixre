@@ -1,120 +1,101 @@
-// Nixre Sync Ã¢â‚¬â€ backend persistence for account-scoped UI state.
+// nixre-core — the sovereign Nixre backend.
 //
-// Gitness exposes no user-preferences API (only user info, SSH keys,
-// memberships, tokens), so Nixre ships this small companion service.
-// Authentication is delegated to Gitness: every request must carry the
-// Gitness Bearer token, which we validate against Gitness /api/v1/user.
-// The resolved Gitness user id scopes every query.
+// Phase 1 scope: first-party auth (users/sessions in Postgres, argon2) plus
+// the absorbed sync API (prefs / conversations / passkeys). Spaces, repos,
+// git data and pull requests still come from Gitness until later phases;
+// those routes are proxied transparently so the UI needs no branching.
 //
-// Data owned by this service:
-//   prefs          - plugin toggles, plugin configs, assistant profiles
-//   conversations  - assistant chat sessions
-//   passkeys       - WebAuthn credential metadata (the vault listing)
+// Route map:
+//   /api/v1/login | /register | /logout | /user | /webauthn/login   (auth)
+//   /api/v1/admin/users                                              (admin)
+//   /api/v1/prefs | /conversations | /passkeys                       (sync)
+//   /api/v1/* (everything else)                                      -> Gitness proxy
+//   /api/sync/v1/*                                                   (compat alias)
 
 import express from 'express';
 import pg from 'pg';
+import { migrate } from './db/migrate.js';
+import { resolveBearer } from './lib/auth.js';
+import { authRoutes, adminRoutes } from './routes/auth.js';
+import { syncRoutes } from './routes/sync.js';
 
 const PORT = Number(process.env.PORT || 3002);
-const GITNESS_URL = process.env.GITNESS_URL || 'http://nixre-backend:3000';
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://nixre:nixre@localhost:5432/nixre';
+const GITNESS_URL = process.env.GITNESS_URL || 'http://nixre-backend:3000';
+const PROXY_GITNESS = (process.env.PROXY_GITNESS ?? 'true') !== 'false';
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
 // ---------------------------------------------------------------------------
-// Schema (idempotent, applied on boot)
+// Auth middleware — first-party bearer resolution (session or PAT).
 // ---------------------------------------------------------------------------
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS prefs (
-  user_id    TEXT         NOT NULL,
-  key        TEXT         NOT NULL,
-  value      JSONB        NOT NULL,
-  updated_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, key)
-);
-CREATE TABLE IF NOT EXISTS conversations (
-  id         TEXT         NOT NULL,
-  user_id    TEXT         NOT NULL,
-  repo_path  TEXT         NOT NULL,
-  title      TEXT         NOT NULL DEFAULT 'Untitled',
-  messages   JSONB        NOT NULL DEFAULT '[]'::jsonb,
-  updated_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  PRIMARY KEY (id)
-);
-CREATE INDEX IF NOT EXISTS conversations_by_repo
-  ON conversations (user_id, repo_path, updated_at DESC);
-CREATE TABLE IF NOT EXISTS passkeys (
-  id           TEXT    NOT NULL,
-  user_id      TEXT    NOT NULL,
-  name         TEXT    NOT NULL,
-  user_uid     TEXT    NOT NULL,
-  user_email   TEXT    NOT NULL DEFAULT '',
-  public_key   TEXT,
-  created_at   BIGINT  NOT NULL,
-  last_used_at BIGINT,
-  PRIMARY KEY (id)
-);
-`;
-
-// ---------------------------------------------------------------------------
-// Auth: validate the Gitness session token
-// ---------------------------------------------------------------------------
-
-async function authenticate(req, res, next) {
-  const auth = req.headers.authorization || '';
-  if (!auth.startsWith('Bearer ')) {
-    res.status(401).json({ message: 'Missing bearer token' });
-    return;
-  }
-  try {
-    const r = await fetch(`${GITNESS_URL}/api/v1/user`, {
-      headers: { Authorization: auth },
-    });
-    if (!r.ok) {
-      res.status(401).json({ message: 'Invalid or expired token' });
+function authenticate(required = true) {
+  return async (req, res, next) => {
+    const auth = req.headers.authorization || '';
+    if (auth.startsWith('Bearer ')) {
+      try {
+        const resolved = await resolveBearer(pool, auth.slice('Bearer '.length));
+        if (resolved) {
+          req.auth = resolved;
+          next();
+          return;
+        }
+      } catch (err) {
+        console.error('auth resolution failed:', err.message);
+        res.status(500).json({ message: 'Auth lookup failed' });
+        return;
+      }
+    }
+    if (required) {
+      res.status(401).json({ message: 'Missing or invalid bearer token' });
       return;
     }
-    const user = await r.json();
-    if (typeof user?.uid !== 'string' || user.uid.length === 0) {
-      res.status(401).json({ message: 'Unexpected user payload' });
-      return;
-    }
-    req.gitnessUser = user;
     next();
-  } catch {
-    res.status(502).json({ message: 'Cannot reach Gitness to validate the token' });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const nowMs = () => Date.now();
-
-function conversationId() {
-  return `conv_${nowMs().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function rowToConversation(row) {
-  return {
-    id: row.id,
-    repoPath: row.repo_path,
-    title: row.title,
-    messages: row.messages,
-    updatedAt: new Date(row.updated_at).getTime(),
   };
 }
 
-function rowToPasskey(row) {
-  return {
-    id: row.id,
-    name: row.name,
-    userUid: row.user_uid,
-    userEmail: row.user_email,
-    publicKey: row.public_key,
-    createdAt: Number(row.created_at),
-    lastUsedAt: row.last_used_at == null ? undefined : Number(row.last_used_at),
+function requireAdmin(req, res, next) {
+  if (!req.auth?.user?.admin) {
+    res.status(403).json({ message: 'Admin access required' });
+    return;
+  }
+  next();
+}
+
+// ---------------------------------------------------------------------------
+// Gitness passthrough for not-yet-migrated endpoints (phases 2-3).
+// The UI keeps calling /api/v1/...; core owns some paths and forwards the rest.
+// Gitness tokens are forwarded as-is; when the UI migrates fully to core
+// sessions this proxy disappears (phase 4).
+// ---------------------------------------------------------------------------
+
+function gitnessProxy() {
+  return async (req, res) => {
+    if (!PROXY_GITNESS) {
+      res.status(404).json({ message: 'Not implemented in nixre-core yet' });
+      return;
+    }
+    try {
+      const url = new URL(req.originalUrl, GITNESS_URL);
+      const headers = { ...req.headers };
+      delete headers.host;
+      delete headers.connection;
+      delete headers['content-length'];
+      const r = await fetch(url, {
+        method: req.method,
+        headers,
+        body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body ?? {}),
+        redirect: 'manual',
+      });
+      res.status(r.status);
+      const contentType = r.headers.get('content-type');
+      if (contentType) res.set('content-type', contentType);
+      const buf = Buffer.from(await r.arrayBuffer());
+      res.send(buf);
+    } catch {
+      res.status(502).json({ message: 'Gitness unreachable' });
+    }
   };
 }
 
@@ -125,192 +106,38 @@ function rowToPasskey(row) {
 const app = express();
 app.use(express.json({ limit: '4mb' }));
 
-// Health check (no auth) for container orchestration.
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-const api = express.Router();
-api.use(authenticate);
+// First-party auth endpoints (must be registered before the proxy).
+app.use('/api/v1', authRoutes(pool, authenticate));
 
-// --- prefs ------------------------------------------------------------------
+// Sync + admin routes: per-route authentication (defined inside the routers)
+// so requests core does NOT own fall through to the Gitness proxy untouched.
+const syncApi = syncRoutes(pool, authenticate);
+const adminApi = adminRoutes(pool, authenticate);
+app.use('/api/v1', syncApi);
+app.use('/api/v1', adminApi);
 
-api.get('/prefs', async (req, res) => {
-  const { rows } = await pool.query(
-    'SELECT key, value FROM prefs WHERE user_id = $1',
-    [req.gitnessUser.uid],
-  );
-  const out = {};
-  for (const row of rows) out[row.key] = row.value;
-  res.json(out);
-});
+// Compat alias so existing clients (/api/sync/v1) keep working during the
+// transition.
+app.use('/api/sync/v1', syncApi);
 
-api.put('/prefs/:key', async (req, res) => {
-  const key = req.params.key;
-  if (!/^[a-z0-9_.:-]{1,128}$/i.test(key)) {
-    res.status(400).json({ message: 'Invalid prefs key' });
-    return;
-  }
-  const value = req.body?.value;
-  if (value === undefined) {
-    res.status(400).json({ message: 'Body must be { "value": ... }' });
-    return;
-  }
-  await pool.query(
-    `INSERT INTO prefs (user_id, key, value, updated_at)
-     VALUES ($1, $2, $3::jsonb, now())
-     ON CONFLICT (user_id, key)
-     DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
-    [req.gitnessUser.uid, key, JSON.stringify(value)],
-  );
-  res.json({ key, value });
-});
-
-api.delete('/prefs/:key', async (req, res) => {
-  await pool.query('DELETE FROM prefs WHERE user_id = $1 AND key = $2', [
-    req.gitnessUser.uid,
-    req.params.key,
-  ]);
-  res.json({ ok: true });
-});
-
-// --- conversations ----------------------------------------------------------
-
-api.get('/conversations', async (req, res) => {
-  const repo = typeof req.query.repo === 'string' ? req.query.repo : null;
-  const { rows } = await pool.query(
-    `SELECT * FROM conversations
-     WHERE user_id = $1 AND ($2::text IS NULL OR repo_path = $2)
-     ORDER BY updated_at DESC`,
-    [req.gitnessUser.uid, repo],
-  );
-  res.json(rows.map(rowToConversation));
-});
-
-api.get('/conversations/:id', async (req, res) => {
-  const { rows } = await pool.query(
-    'SELECT * FROM conversations WHERE user_id = $1 AND id = $2',
-    [req.gitnessUser.uid, req.params.id],
-  );
-  if (rows.length === 0) {
-    res.status(404).json({ message: 'Conversation not found' });
-    return;
-  }
-  res.json(rowToConversation(rows[0]));
-});
-
-api.post('/conversations', async (req, res) => {
-  const repoPath = String(req.body?.repoPath || '');
-  if (!repoPath) {
-    res.status(400).json({ message: 'repoPath is required' });
-    return;
-  }
-  const id = typeof req.body?.id === 'string' && req.body.id ? req.body.id : conversationId();
-  const title = String(req.body?.title || 'Untitled').slice(0, 128);
-  const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
-  const { rows } = await pool.query(
-    `INSERT INTO conversations (id, user_id, repo_path, title, messages)
-     VALUES ($1, $2, $3, $4, $5::jsonb)
-     ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, updated_at = now()
-     RETURNING *`,
-    [id, req.gitnessUser.uid, repoPath, title, JSON.stringify(messages)],
-  );
-  res.status(201).json(rowToConversation(rows[0]));
-});
-
-api.put('/conversations/:id', async (req, res) => {
-  const values = [];
-  const updates = [];
-  if (req.body?.title !== undefined) {
-    values.push(String(req.body.title).slice(0, 128));
-    updates.push(`title = $${values.length}`);
-  }
-  if (req.body?.messages !== undefined) {
-    if (!Array.isArray(req.body.messages)) {
-      res.status(400).json({ message: 'messages must be an array' });
-      return;
+// Everything else under /api/v1 goes to Gitness until phases 2-3 own it.
+app.use('/api/v1', express.raw({ type: '*/*' }), async (req, _res, next) => {
+  // Re-parse JSON bodies for the proxy (express.raw consumed the stream).
+  if (Buffer.isBuffer(req.body) && (req.headers['content-type'] || '').includes('application/json')) {
+    try {
+      req.body = JSON.parse(req.body.toString('utf8'));
+    } catch {
+      req.body = undefined;
     }
-    values.push(JSON.stringify(req.body.messages));
-    updates.push(`messages = $${values.length}::jsonb`);
   }
-  if (updates.length === 0) {
-    res.status(400).json({ message: 'Nothing to update' });
-    return;
-  }
-  const setSql = updates.join(', ');
-  const { rows } = await pool.query(
-    `UPDATE conversations SET ${setSql}, updated_at = now()
-     WHERE user_id = $${values.length + 1} AND id = $${values.length + 2} RETURNING *`,
-    [...values, req.gitnessUser.uid, req.params.id],
-  );
-  if (rows.length === 0) {
-    res.status(404).json({ message: 'Conversation not found' });
-    return;
-  }
-  res.json(rowToConversation(rows[0]));
-});
-
-api.delete('/conversations/:id', async (req, res) => {
-  await pool.query('DELETE FROM conversations WHERE user_id = $1 AND id = $2', [
-    req.gitnessUser.uid,
-    req.params.id,
-  ]);
-  res.json({ ok: true });
-});
-
-// --- passkeys ---------------------------------------------------------------
-
-api.get('/passkeys', async (req, res) => {
-  const { rows } = await pool.query(
-    'SELECT * FROM passkeys WHERE user_id = $1 ORDER BY created_at DESC',
-    [req.gitnessUser.uid],
-  );
-  res.json(rows.map(rowToPasskey));
-});
-
-api.post('/passkeys', async (req, res) => {
-  const b = req.body || {};
-  const id = String(b.id || '');
-  const name = String(b.name || 'Passkey').slice(0, 128);
-  const userUid = String(b.userUid || req.gitnessUser.uid);
-  const userEmail = String(b.userEmail || '');
-  if (!id) {
-    res.status(400).json({ message: 'id is required' });
-    return;
-  }
-  const { rows } = await pool.query(
-    `INSERT INTO passkeys (id, user_id, name, user_uid, user_email, public_key, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
-     RETURNING *`,
-    [id, req.gitnessUser.uid, name, userUid, userEmail, b.publicKey ?? null, nowMs()],
-  );
-  res.status(201).json(rowToPasskey(rows[0]));
-});
-
-api.put('/passkeys/:id/last-used', async (req, res) => {
-  const { rows } = await pool.query(
-    'UPDATE passkeys SET last_used_at = $3 WHERE user_id = $1 AND id = $2 RETURNING *',
-    [req.gitnessUser.uid, req.params.id, nowMs()],
-  );
-  if (rows.length === 0) {
-    res.status(404).json({ message: 'Passkey not found' });
-    return;
-  }
-  res.json(rowToPasskey(rows[0]));
-});
-
-api.delete('/passkeys/:id', async (req, res) => {
-  await pool.query('DELETE FROM passkeys WHERE user_id = $1 AND id = $2', [
-    req.gitnessUser.uid,
-    req.params.id,
-  ]);
-  res.json({ ok: true });
-});
-
-app.use('/api/sync/v1', api);
+  next();
+}, gitnessProxy());
 
 app.use((err, _req, res, _next) => {
   console.error(err);
-  res.status(500).json({ message: 'Internal sync service error' });
+  res.status(500).json({ message: 'Internal nixre-core error' });
 });
 
 // ---------------------------------------------------------------------------
@@ -322,21 +149,23 @@ async function boot() {
   while (retries-- > 0) {
     try {
       const client = await pool.connect();
-      await client.query(SCHEMA);
+      await migrate(pool);
       client.release();
       break;
     } catch (err) {
       if (retries === 0) throw err;
-      console.log('Database not ready, retrying...');
+      console.log(`Database not ready (${err.message}), retrying...`);
       await new Promise(r => setTimeout(r, 2000));
     }
   }
   app.listen(PORT, () => {
-    console.log(`nixre-sync listening on :${PORT} (gitness at ${GITNESS_URL})`);
+    console.log(
+      `nixre-core listening on :${PORT} (db ready, gitness proxy ${PROXY_GITNESS ? 'on' : 'off'})`,
+    );
   });
 }
 
 boot().catch(err => {
-  console.error('Failed to start nixre-sync:', err);
+  console.error('Failed to start nixre-core:', err);
   process.exit(1);
 });

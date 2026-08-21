@@ -1,13 +1,11 @@
 :3000 {
-    # Account-scoped UI state (plugin prefs, chats, passkey vault)
-    handle /api/sync/* {
-        reverse_proxy nixre-sync:3002
+    # All API traffic flows through nixre-core; it owns auth + sync and
+    # transparently proxies not-yet-migrated endpoints to Gitness.
+    handle /api/* {
+        reverse_proxy nixre-core:3002
     }
 
-    # Proxy API and Git Smart HTTP traffic to backend
-    handle /api/* {
-        reverse_proxy nixre-backend:3000
-    }
+    # Git Smart HTTP traffic to Gitness (moves to core in phase 2)
     handle /git/* {
         reverse_proxy nixre-backend:3000
     }
