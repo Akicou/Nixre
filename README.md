@@ -111,7 +111,7 @@ Plugins ship inside the repo but stay dormant until the two-layer gate opens.
 | **Server gate** | operator | which bundled plugins the instance serves |
 | **User toggle** | any logged-in user | `/plugins` (off by default) |
 
-A plugin is only *live* when **both** allow it. The server gate is a UI mirror of a real operator setting — in this self-hosted build there is no Nixre backend, so both layers persist to `localStorage` (`nixre_plugins_available`, `nixre_plugins_enabled`) and real enforcement happens on the server. See `ui/src/lib/pluginPreferences.ts`.
+A plugin is only *live* when **both** allow it. Activation state is stored **server-side**: Gitness exposes no user-preferences API, so Nixre ships **nixre-sync** — a small companion service (Express + Postgres) that validates the caller's Gitness Bearer token against `/api/v1/user` and stores account-scoped state in Postgres. That covers plugin toggles/configs, assistant profiles, chat sessions, and the passkey vault — so all of it follows the account across browsers and devices. See `backend/` and `ui/src/lib/syncApi.ts`. A one-time migration uploads any `localStorage`-era data on first login. Real plugin enforcement still happens on the server.
 
 ### Bundled plugins
 | Plugin | What it does | Configuration |
@@ -138,7 +138,7 @@ Nixre Architecture
  ├── ui/                          # React + TypeScript + Tailwind
  │    ├── src/lib/api.ts          # REST API client (talks to Gitness)
   │    ├── src/lib/plugins.ts      # Plugin registry (bundled plugin definitions)
-  │    ├── src/lib/pluginPreferences.ts  # Two-layer plugin activation (localStorage)
+  │    ├── src/lib/pluginPreferences.ts  # Two-layer plugin activation (server-backed)
   │    ├── src/lib/assistantProfiles.ts  # Nixre Assistant provider + per-repo profiles
  │    ├── src/lib/webauthn.ts     # Local passkey vault (session re-confirmation only)
  │    ├── src/components/         # PullRequestForm, PullRequestDetail (diff + merge), PluginToggle, PluginConfigForm

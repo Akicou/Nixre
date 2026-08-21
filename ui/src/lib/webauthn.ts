@@ -1,16 +1,15 @@
-// WebAuthn / Passkeys implementation for Nixre
+// WebAuthn / Passkeys implementation for Nixre.
+//
+// The WebAuthn ceremony (navigator.credentials) runs in the browser, but the
+// vault listing - which credentials this account has registered - is stored
+// server-side via nixre-sync, so passkeys follow the account across browsers
+// and devices. Note: a passkey is bound to the hostname it was created for
+// (rp.id), so a credential registered on `localhost` cannot authenticate on
+// `127.0.0.1` - use a canonical origin.
 
-export interface StoredPasskey {
-  id: string; // Base64URL credential ID
-  name: string; // e.g., "MacBook Touch ID", "iPhone Face ID", "YubiKey 5"
-  userUid: string;
-  userEmail: string;
-  createdAt: number;
-  lastUsedAt?: number;
-  publicKey?: string;
-}
+import * as sync from './syncApi';
 
-const STORAGE_KEY = 'nixre_passkeys_vault';
+export type StoredPasskey = sync.SyncPasskey;
 
 export class WebAuthnService {
   // Check if WebAuthn is supported in current browser
@@ -25,18 +24,12 @@ export class WebAuthnService {
   }
 
   // Get list of registered passkeys
-  static getRegisteredPasskeys(userUid?: string): StoredPasskey[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEY);
-      if (!data) return [];
-      const keys: StoredPasskey[] = JSON.parse(data);
-      if (userUid) {
-        return keys.filter(k => k.userUid.toLowerCase() === userUid.toLowerCase());
-      }
-      return keys;
-    } catch {
-      return [];
+  static async getRegisteredPasskeys(userUid?: string): Promise<StoredPasskey[]> {
+    const keys = await sync.listPasskeys();
+    if (userUid) {
+      return keys.filter(k => k.userUid.toLowerCase() === userUid.toLowerCase());
     }
+    return keys;
   }
 
   // Register a new passkey
@@ -88,19 +81,13 @@ export class WebAuthnService {
     // Convert rawId to base64url
     const rawIdBase64 = this.bufferToBase64URL(credential.rawId);
 
-    const newPasskey: StoredPasskey = {
+    // Persist the credential metadata in the server-side vault.
+    return sync.createPasskey({
       id: rawIdBase64,
       name: keyName || `Passkey (${new Date().toLocaleDateString()})`,
       userUid: user.uid,
-      userEmail: user.email,
-      createdAt: Date.now(),
-    };
-
-    const existing = this.getRegisteredPasskeys();
-    existing.push(newPasskey);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
-
-    return newPasskey;
+      userEmail: user.email || '',
+    });
   }
 
   // Authenticate with a passkey
@@ -109,7 +96,7 @@ export class WebAuthnService {
       throw new Error('WebAuthn is not supported on this device.');
     }
 
-    const keys = this.getRegisteredPasskeys(userUid);
+    const keys = await this.getRegisteredPasskeys(userUid);
     if (keys.length === 0 && userUid) {
       throw new Error(`No passkeys registered for user '${userUid}'. Please add one in Settings first.`);
     }
@@ -143,21 +130,13 @@ export class WebAuthnService {
       throw new Error('No passkeys registered on this device. Please add one in Settings first.');
     }
 
-    matchedKey.lastUsedAt = Date.now();
-    const allKeys = this.getRegisteredPasskeys();
-    const idx = allKeys.findIndex(k => k.id === matchedKey.id);
-    if (idx >= 0) {
-      allKeys[idx] = matchedKey;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(allKeys));
-    }
-
-    return { passkey: matchedKey };
+    const touched = await sync.touchPasskey(matchedKey.id);
+    return { passkey: touched };
   }
 
   // Delete a passkey
-  static deletePasskey(id: string): void {
-    const keys = this.getRegisteredPasskeys().filter(k => k.id !== id);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(keys));
+  static async deletePasskey(id: string): Promise<void> {
+    await sync.deletePasskey(id);
   }
 
   private static bufferToBase64URL(buffer: ArrayBuffer): string {

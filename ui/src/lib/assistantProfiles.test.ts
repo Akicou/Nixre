@@ -9,19 +9,25 @@ import {
   clearRepoProfile,
 } from './assistantProfiles';
 import { getPlugin } from './plugins';
+import { installSyncFetchMock, syncMockReset } from '../test/syncMock';
 
-beforeEach(() => localStorage.clear());
+installSyncFetchMock();
 
-describe('assistantProfiles', () => {
+beforeEach(() => {
+  localStorage.clear();
+  syncMockReset();
+});
+
+describe('assistantProfiles (server-backed)', () => {
   it('derives the provider defaults from the registry', () => {
     const def = defaultProviderProfile();
     const providerField = getPlugin('nixre-assistant')!.providerFields![0];
     expect(def.provider).toBe(providerField.default);
   });
 
-  it('stores and reads the active provider profile', () => {
-    setActiveProviderProfile({ ...defaultProviderProfile(), provider: 'anthropic', model: 'claude-sonnet' });
-    const active = getActiveProviderProfile();
+  it('stores and reads the active provider profile', async () => {
+    await setActiveProviderProfile({ ...defaultProviderProfile(), provider: 'anthropic', model: 'claude-sonnet' });
+    const active = await getActiveProviderProfile();
     expect(active.provider).toBe('anthropic');
     expect(active.model).toBe('claude-sonnet');
   });
@@ -32,26 +38,26 @@ describe('assistantProfiles', () => {
     expect(def.interleavedReasoning).toBe(false);
   });
 
-  it('round-trips reasoning controls', () => {
-    setActiveProviderProfile({
+  it('round-trips reasoning controls', async () => {
+    await setActiveProviderProfile({
       ...defaultProviderProfile(),
       reasoningLevel: 'high',
       interleavedReasoning: true,
     });
-    const active = getActiveProviderProfile();
+    const active = await getActiveProviderProfile();
     expect(active.reasoningLevel).toBe('high');
     expect(active.interleavedReasoning).toBe(true);
   });
 
-  it('stores per-repo access profiles keyed by repo path', () => {
-    expect(getRepoProfile('acme/website')).toBeUndefined();
+  it('stores per-repo access profiles keyed by repo path', async () => {
+    expect(await getRepoProfile('acme/website')).toBeUndefined();
 
-    setRepoProfile('acme/website', { ...defaultRepoProfile(), accessLevel: 'full-agent', canMerge: true });
-    const repo = getRepoProfile('acme/website');
+    await setRepoProfile('acme/website', { ...defaultRepoProfile(), accessLevel: 'full-agent', canMerge: true });
+    const repo = await getRepoProfile('acme/website');
     expect(repo?.accessLevel).toBe('full-agent');
     expect(repo?.canMerge).toBe(true);
 
-    clearRepoProfile('acme/website');
-    expect(getRepoProfile('acme/website')).toBeUndefined();
+    await clearRepoProfile('acme/website');
+    expect(await getRepoProfile('acme/website')).toBeUndefined();
   });
 });

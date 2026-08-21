@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WebAuthnService } from './webauthn';
+import { installSyncFetchMock, syncMockReset } from '../test/syncMock';
+
+installSyncFetchMock();
 
 describe('WebAuthnService.authenticatePasskey', () => {
   beforeEach(() => {
     localStorage.clear();
+    syncMockReset();
     vi.stubGlobal('navigator', {
       credentials: {
         create: vi.fn(),

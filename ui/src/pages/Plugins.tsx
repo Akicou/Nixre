@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Settings2, Shield, Check, Info } from 'lucide-react';
 import { PLUGINS, getPlugin, isAssistantPlugin } from '../lib/plugins';
 import {
@@ -14,22 +14,58 @@ import { PluginConfigForm } from '../components/PluginConfigForm';
 import { AssistantProfileForm } from '../components/assistant/AssistantProfileForm';
 
 export const Plugins: React.FC = () => {
-  // Mirror the localStorage layers in state so toggles update the UI immediately.
-  const [available, setAvailable] = useState<string[]>(() => getServerAvailableIds());
-  const [enabled, setEnabled] = useState<string[]>(() => getUserEnabledIds());
+  // Server-backed activation layers, mirrored in state so toggles update the UI immediately.
+  const [available, setAvailable] = useState<string[]>([]);
+  const [enabled, setEnabled] = useState<string[]>([]);
+  const [loadedConfig, setLoadedConfig] = useState<Record<string, string | number | boolean> | null>(null);
   const [configuringId, setConfiguringId] = useState<string | null>(null);
 
   const configuredPlugin = configuringId ? getPlugin(configuringId) : null;
 
+  // Once the user toggles anything, a late-arriving initial load must not
+  // clobber their optimistic state.
+  const dirty = useRef(false);
+
+  useEffect(() => {
+    // Load both activation layers from the sync backend on mount.
+    getServerAvailableIds()
+      .then(ids => {
+        if (!dirty.current) setAvailable(ids);
+      })
+      .catch(() => {});
+    getUserEnabledIds()
+      .then(ids => {
+        if (!dirty.current) setEnabled(ids);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!configuredPlugin || isAssistantPlugin(configuredPlugin)) return;
+    let cancelled = false;
+    getPluginConfig(configuredPlugin.id)
+      .then(config => {
+        if (!cancelled) setLoadedConfig(config);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadedConfig({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [configuredPlugin?.id]);
+
   const handleServerToggle = (id: string, on: boolean) => {
-    setServerAvailablePlugin(id, on);
+    dirty.current = true;
     setAvailable(prev => (on ? [...prev, id] : prev.filter(x => x !== id)));
+    setServerAvailablePlugin(id, on).catch(() => {});
   };
 
   const handleUserToggle = (id: string, on: boolean) => {
-    setUserEnabledPlugin(id, on);
+    dirty.current = true;
     setEnabled(prev => (on ? [...prev, id] : prev.filter(x => x !== id)));
-  };
+    setUserEnabledPlugin(id, on).catch(() => {});
+  };;
 
   const isAvailable = (id: string) => available.includes(id);
   const isEnabled = (id: string) => enabled.includes(id);
@@ -106,16 +142,18 @@ export const Plugins: React.FC = () => {
           {isAssistantPlugin(configuredPlugin) ? (
             <AssistantProfileForm mode="provider" onClose={() => setConfiguringId(null)} />
           ) : (
-            <PluginConfigForm
-              title={`${configuredPlugin.name} settings`}
-              fields={configuredPlugin.profileFields ?? []}
-              initial={getPluginConfig(configuredPlugin.id)}
-              onSubmit={values => {
-                setPluginConfig(configuredPlugin.id, values);
-                setConfiguringId(null);
-              }}
-              onSubmitLabel="Save settings"
-            />
+            loadedConfig && (
+              <PluginConfigForm
+                title={`${configuredPlugin.name} settings`}
+                fields={configuredPlugin.profileFields ?? []}
+                initial={loadedConfig}
+                onSubmit={values => {
+                  setPluginConfig(configuredPlugin.id, values).catch(() => {});
+                  setConfiguringId(null);
+                }}
+                onSubmitLabel="Save settings"
+              />
+            )
           )}
         </div>
       )}
@@ -136,7 +174,7 @@ export const Plugins: React.FC = () => {
 
       {/* Footer note */}
       <p className="text-[11px] text-txt-tertiary text-center">
-        {PLUGINS.length} plugins bundled. Changes are stored locally in this browser; real enforcement happens on the server.
+        {PLUGINS.length} plugins bundled. Activation state is saved to your account (sync backend); real enforcement happens on the server.
       </p>
     </div>
   );

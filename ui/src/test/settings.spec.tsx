@@ -16,7 +16,7 @@ const { api } = vi.hoisted(() => ({
 }));
 vi.mock('../lib/api', () => ({ api }));
 vi.mock('../lib/webauthn', () => ({
-  WebAuthnService: { getRegisteredPasskeys: vi.fn().mockReturnValue([]) },
+  WebAuthnService: { getRegisteredPasskeys: vi.fn().mockResolvedValue([]) },
 }));
 
 function mount(initialPath = '/settings') {

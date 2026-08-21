@@ -11,6 +11,37 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     command: ["server", "--enable-ci"]
 
+  nixre-db:
+    image: postgres:16-alpine
+    container_name: nixre-db
+    restart: always
+    environment:
+      POSTGRES_USER: nixre
+      POSTGRES_PASSWORD: nixre
+      POSTGRES_DB: nixre
+    volumes:
+      - ./data/pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nixre"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nixre-sync:
+    build: ./backend
+    container_name: nixre-sync
+    restart: always
+    environment:
+      DATABASE_URL: postgres://nixre:nixre@nixre-db:5432/nixre
+      GITNESS_URL: http://nixre-backend:3000
+    ports:
+      - "127.0.0.1:3002:3002"
+    depends_on:
+      nixre-db:
+        condition: service_healthy
+      nixre-backend:
+        condition: service_started
+
   nixre-web:
     image: caddy:2-alpine
     container_name: nixre-web
@@ -22,3 +53,4 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile
     depends_on:
       - nixre-backend
+      - nixre-sync

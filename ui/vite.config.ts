@@ -18,12 +18,18 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // Account-scoped UI state -> nixre-sync service (Vite matches the
+      // more specific /api/sync prefix before the generic /api route).
+      '/api/sync': {
+        target: 'http://127.0.0.1:3002',
+        changeOrigin: true,
+      },
       '/api': {
-        target: 'http://127.0.0.1:3000',
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true,
       },
       '/git': {
-        target: 'http://127.0.0.1:3000',
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true,
       },
     },

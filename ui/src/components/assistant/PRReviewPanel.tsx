@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { PanelRightClose, Bot } from 'lucide-react';
+import { PanelRightClose, Bot, Loader2 } from 'lucide-react';
 import type { PullRequest } from '../../lib/api';
-import { getActiveProviderProfile } from '../../lib/assistantProfiles';
+import { getActiveProviderProfile, type AssistantProviderProfile } from '../../lib/assistantProfiles';
 import { ChatSurface } from './ChatSurface';
 
 interface PRReviewPanelProps {
@@ -11,7 +11,19 @@ interface PRReviewPanelProps {
 }
 
 export const PRReviewPanel: React.FC<PRReviewPanelProps> = ({ repoPath, pr, onClose }) => {
-  const [profile] = useState(() => getActiveProviderProfile());
+  const [profile, setProfile] = useState<AssistantProviderProfile | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getActiveProviderProfile()
+      .then(p => {
+        if (!cancelled) setProfile(p);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -40,13 +52,20 @@ export const PRReviewPanel: React.FC<PRReviewPanelProps> = ({ repoPath, pr, onCl
           </button>
         </div>
         <div className="flex-1 min-h-0">
-          <ChatSurface
-            repoPath={repoPath}
-            profile={profile}
-            title={`PR #${pr.number} · ${pr.title}`}
-            onClose={onClose}
-            suggestions={['Review this PR for regressions', 'Run the tests and lint', 'Scan for vulnerabilities', 'Summarize the changes']}
-          />
+          {profile ? (
+            <ChatSurface
+              repoPath={repoPath}
+              profile={profile}
+              title={`PR #${pr.number} · ${pr.title}`}
+              onClose={onClose}
+              suggestions={['Review this PR for regressions', 'Run the tests and lint', 'Scan for vulnerabilities', 'Summarize the changes']}
+            />
+          ) : (
+            <div className="h-full flex items-center justify-center gap-2 text-xs text-txt-tertiary">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Loading profile…
+            </div>
+          )}
         </div>
       </aside>
     </>

@@ -99,7 +99,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   const modelsByProvider = modelField?.modelsByProvider ?? {};
   const reasoningOptions = reasoningField?.options ?? ['none', 'low', 'medium', 'high'];
 
-  const [conversations, setConversations] = useState<Conversation[]>(() => listConversations(repoPath));
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -116,6 +116,18 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   const reasoningRef = useRef<HTMLDivElement>(null);
 
   const current = conversations.find(c => c.id === currentId);
+
+  const refreshConversations = () => {
+    listConversations(repoPath).then(setConversations).catch(() => {});
+  };
+
+  // Conversations load from the sync backend on mount / repo change.
+  useEffect(() => {
+    setConversations([]);
+    setCurrentId(null);
+    setMessages([]);
+    listConversations(repoPath).then(setConversations).catch(() => setConversations([]));
+  }, [repoPath]);
 
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
@@ -149,38 +161,46 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
-    let conv = currentId ? getConversation(currentId) : undefined;
-    if (!conv) {
-      conv = createConversation(repoPath, prompt.slice(0, 48));
-      setConversations(listConversations(repoPath));
-    }
-    const userMessage: ChatMessage = {
-      id: `u_${Date.now()}`,
-      role: 'user',
-      content: prompt,
-      createdAt: Date.now(),
-    };
-    setMessages(prev => [...prev, userMessage]);
-    updateConversation({ ...conv, messages: [...conv.messages, userMessage] });
-
     setStreaming(true);
-    const workingProfile: AssistantProviderProfile = {
-      ...profile,
-      model: workingModel,
-      reasoningLevel: workingReasoning,
-    };
+    let convId = currentId;
+    let title = current?.title ?? prompt.slice(0, 48);
     try {
-      for await (const ev of runTurn(prompt, workingProfile, 35)) {
-        setMessages(prev => applyEvent(prev, ev));
+      if (!convId) {
+        const conv = await createConversation(repoPath, prompt.slice(0, 48));
+        convId = conv.id;
+        title = conv.title;
+        setCurrentId(conv.id);
+        refreshConversations();
       }
+
+      const userMessage: ChatMessage = {
+        id: uid('u'),
+        role: 'user',
+        content: prompt,
+        createdAt: Date.now(),
+      };
+      // Accumulate locally: `messages` from the closure would go stale across
+      // awaits inside the streaming loop below.
+      let local: ChatMessage[] = [...messages, userMessage];
+      setMessages(local);
+      await updateConversation({ id: convId, repoPath, title, messages: local, updatedAt: Date.now() });
+
+      const workingProfile: AssistantProviderProfile = {
+        ...profile,
+        model: workingModel,
+        reasoningLevel: workingReasoning,
+      };
+      for await (const ev of runTurn(prompt, workingProfile, 35)) {
+        local = applyEvent(local, ev);
+        setMessages(local);
+      }
+      await updateConversation({ id: convId, repoPath, title, messages: local, updatedAt: Date.now() });
+    } catch {
+      // Backend unreachable — the turn still rendered locally; surface nothing
+      // extra here, the sidebar refresh below will reflect the true state.
     } finally {
       setStreaming(false);
-    }
-
-    const fresh = getConversation(conv.id);
-    if (fresh) {
-      updateConversation(fresh);
-      setConversations(listConversations(repoPath));
+      refreshConversations();
     }
   };
 
@@ -196,9 +216,9 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     : profile.model;
 
   return (
-    <div className="flex h-full bg-surface-base">
+    <div className="flex h-full min-h-0 bg-surface-base">
       {/* History sidebar */}
-      <aside className="hidden sm:flex flex-col w-60 shrink-0 border-r border-border-subtle bg-surface-canvas">
+      <aside className="hidden sm:flex flex-col w-60 shrink-0 min-h-0 border-r border-border-subtle bg-surface-canvas">
         <div className="flex items-center justify-between p-3 border-b border-border-subtle">
           <span className="text-xs font-semibold text-txt-primary uppercase tracking-wider flex items-center gap-1.5">
             <Bot className="w-4 h-4 text-brand" />
@@ -228,9 +248,12 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
                 <button
                   onClick={e => {
                     e.stopPropagation();
-                    deleteConversation(c.id);
-                    if (currentId === c.id) startNewChat();
-                    setConversations(listConversations(repoPath));
+                    deleteConversation(c.id)
+                      .then(() => {
+                        if (currentId === c.id) startNewChat();
+                      })
+                      .catch(() => {})
+                      .finally(refreshConversations);
                   }}
                   className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-feedback-error-bg text-txt-tertiary hover:text-feedback-error-text transition shrink-0"
                   title="Delete"
@@ -244,7 +267,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
       </aside>
 
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle bg-surface-canvas">
           <div className="min-w-0">

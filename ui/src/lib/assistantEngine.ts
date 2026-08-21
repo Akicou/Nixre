@@ -1,20 +1,15 @@
-// Nixre Assistant engine - client-side, backend-free.
+// Nixre Assistant engine.
 //
-// Nixre ships with no assistant backend (Gitness exposes none), so this module
-// is a self-contained mock agent that drives the copilot UX: it "thinks", calls
-// tools, and reports results entirely in the browser. Conversations persist in
-// localStorage, matching the rest of the plugin system.
-//
-// The engine is split into two parts:
-//   * planTurn()  - a pure, deterministic function that returns the full event
-//                   sequence for a prompt. Fast and easy to assert on in tests.
-//   * runTurn()   - streams planTurn()'s events with small delays so the UI can
-//                   show live "thinking" / tool progress.
+// Two parts:
+//   * Conversation persistence - server-backed via nixre-sync (Postgres), so
+//     chat sessions follow the account across browsers and devices.
+//   * planTurn()/runTurn() - a deterministic, fully client-side mock agent
+//     that drives the copilot UX: it "thinks", calls tools, and reports
+//     results. Nixre ships no inference backend, so this runs in the browser.
 
 import { getPlugin } from './plugins';
 import type { AssistantProviderProfile } from './assistantProfiles';
-
-const CONVERSATIONS_KEY = 'nixre_assistant_conversations';
+import * as sync from './syncApi';
 
 export type ToolStatus = 'running' | 'success' | 'error';
 
@@ -59,59 +54,43 @@ export const uid = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // ---------------------------------------------------------------------------
-// Persistence
+// Persistence (server-backed via nixre-sync)
 // ---------------------------------------------------------------------------
 
-function loadAll(): Conversation[] {
-  try {
-    const raw = localStorage.getItem(CONVERSATIONS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveAll(conversations: Conversation[]): void {
-  localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(conversations));
-}
-
-export function listConversations(repoPath: string): Conversation[] {
-  return loadAll()
-    .filter(c => c.repoPath === repoPath)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-export function getConversation(id: string): Conversation | undefined {
-  return loadAll().find(c => c.id === id);
-}
-
-export function createConversation(repoPath: string, title: string): Conversation {
-  const conversation: Conversation = {
-    id: uid('conv'),
-    repoPath,
-    title,
-    messages: [],
-    updatedAt: Date.now(),
+function coerceConversation(c: sync.SyncConversation): Conversation {
+  return {
+    id: c.id,
+    repoPath: c.repoPath,
+    title: c.title,
+    messages: Array.isArray(c.messages) ? (c.messages as ChatMessage[]) : [],
+    updatedAt: c.updatedAt,
   };
-  const all = loadAll();
-  all.unshift(conversation);
-  saveAll(all);
-  return conversation;
 }
 
-export function updateConversation(conversation: Conversation): void {
-  const all = loadAll();
-  const index = all.findIndex(c => c.id === conversation.id);
-  conversation.updatedAt = Date.now();
-  if (index === -1) all.unshift(conversation);
-  else all[index] = conversation;
-  saveAll(all);
+export async function listConversations(repoPath?: string): Promise<Conversation[]> {
+  const rows = await sync.listConversations(repoPath);
+  return rows.map(coerceConversation).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-export function deleteConversation(id: string): void {
-  saveAll(loadAll().filter(c => c.id !== id));
+export async function getConversation(id: string): Promise<Conversation | undefined> {
+  const row = await sync.getConversation(id);
+  return row ? coerceConversation(row) : undefined;
+}
+
+export async function createConversation(repoPath: string, title: string): Promise<Conversation> {
+  const row = await sync.createConversation(repoPath, title.slice(0, 128));
+  return coerceConversation(row);
+}
+
+export async function updateConversation(conversation: Conversation): Promise<void> {
+  await sync.updateConversation(conversation.id, {
+    title: conversation.title,
+    messages: conversation.messages,
+  });
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  await sync.deleteConversation(id);
 }
 
 // ---------------------------------------------------------------------------

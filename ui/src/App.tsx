@@ -13,6 +13,7 @@ import { AssistantPage } from './pages/AssistantPage';
 import { Login } from './pages/Login';
 import { Register } from './pages/Register';
 import { api, User } from './lib/api';
+import { migrateLegacyLocalStorage } from './lib/syncApi';
 
 export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -23,6 +24,8 @@ export const App: React.FC = () => {
       .then(user => {
         setCurrentUser(user);
         setLoading(false);
+        // One-time upload of localStorage-era data to the sync backend.
+        migrateLegacyLocalStorage().catch(() => {});
       })
       .catch(() => {
         setCurrentUser(null);

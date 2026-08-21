@@ -26,8 +26,22 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
   const [deleting, setDeleting] = useState(false);
 
   const assistant = getPlugin('nixre-assistant');
-  const assistantLive = Boolean(assistant && isPluginLive(assistant.id));
+  const [assistantLive, setAssistantLive] = useState(false);
   const [showAssistantConfig, setShowAssistantConfig] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (assistant) {
+      isPluginLive(assistant.id)
+        .then(live => {
+          if (!cancelled) setAssistantLive(live);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [assistant?.id]);
 
   useEffect(() => {
     setDescription(repo.description || '');

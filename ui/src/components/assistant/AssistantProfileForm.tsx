@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Check, Bot } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Check, Bot, Loader2 } from 'lucide-react';
 import { getPlugin } from '../../lib/plugins';
 import {
   defaultProviderProfile,
@@ -29,24 +29,49 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
   const provider = getPlugin('nixre-assistant');
   const [saved, setSaved] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const [providerProfile, setProviderProfile] = useState<AssistantProviderProfile>(() => getActiveProviderProfile());
-  const [repoProfile, setRepoProfileState] = useState<AssistantRepoProfile>(() => {
-    if (repoPath) return getRepoProfile(repoPath) ?? defaultRepoProfile();
-    return defaultRepoProfile();
-  });
+  // Profiles load from the sync backend; defaults render until they arrive.
+  const [providerProfile, setProviderProfile] = useState<AssistantProviderProfile>(() => defaultProviderProfile());
+  const [repoProfile, setRepoProfileState] = useState<AssistantRepoProfile>(() => defaultRepoProfile());
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([getActiveProviderProfile(), repoPath ? getRepoProfile(repoPath) : undefined])
+      .then(([provider, repo]) => {
+        if (cancelled) return;
+        setProviderProfile(provider);
+        if (repo) setRepoProfileState(repo);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath]);
 
   const handleSave = async () => {
     setSubmitting(true);
     try {
-      setActiveProviderProfile(providerProfile);
-      if (repoPath) setRepoProfile(repoPath, repoProfile);
+      await setActiveProviderProfile(providerProfile);
+      if (repoPath) await setRepoProfile(repoPath, repoProfile);
       setSaved(true);
       setTimeout(() => setSaved(false), 4000);
     } finally {
       setSubmitting(false);
     }
   };
+
+  if (loading) {
+    return (
+      <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 flex items-center justify-center gap-2 text-xs text-txt-tertiary">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        Loading assistant profile…
+      </div>
+    );
+  }
 
   return (
     <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-6">

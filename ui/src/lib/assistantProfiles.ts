@@ -1,17 +1,20 @@
-// Nixre Assistant profile storage.
+// Nixre Assistant profile storage - server-backed via nixre-sync.
 //
 // Two things live here:
 //   * The active *provider* profile - which AI provider / model / credentials
-//     drive the assistant ("the active profile is for the AI provider").
+//     drive the assistant ("the active AI-provider profile").
 //   * Per-repository *access* profiles - what the assistant may do in each repo
 //     (access level, tool toggles, merge gate, auto-fix, path allow/block lists).
 //
 // Defaults are derived from the plugin registry so there is one source of truth.
-// State stays in localStorage (Gitness exposes no such API).
+// Persisted in the nixre-sync backend (Postgres) under the `assistant_profiles`
+// pref key - the server is the single source of truth, so profiles follow the
+// account across browsers and devices.
 
 import { getPlugin } from './plugins';
+import * as sync from './syncApi';
 
-const KEY = 'nixre_assistant_profiles';
+const PREF_KEY = 'assistant_profiles';
 
 const assistant = getPlugin('nixre-assistant');
 
@@ -60,48 +63,48 @@ export function defaultRepoProfile(): AssistantRepoProfile {
   return defaultsFromFields(assistant?.accessFields ?? []) as unknown as AssistantRepoProfile;
 }
 
-function load(): StoredProfiles {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) {
-      return { provider: defaultProviderProfile(), repoProfiles: {} };
-    }
-    const parsed = JSON.parse(raw);
-    return {
-      provider: { ...defaultProviderProfile(), ...(parsed.provider ?? {}) },
-      repoProfiles: parsed.repoProfiles && typeof parsed.repoProfiles === 'object' ? parsed.repoProfiles : {},
-    };
-  } catch {
+async function load(): Promise<StoredProfiles> {
+  const prefs = await sync.getAllPrefs();
+  const parsed = prefs[PREF_KEY];
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { provider: defaultProviderProfile(), repoProfiles: {} };
   }
+  const p = parsed as Partial<StoredProfiles>;
+  return {
+    provider: { ...defaultProviderProfile(), ...(p.provider ?? {}) },
+    repoProfiles:
+      p.repoProfiles && typeof p.repoProfiles === 'object' && !Array.isArray(p.repoProfiles)
+        ? p.repoProfiles
+        : {},
+  };
 }
 
-function save(data: StoredProfiles): void {
-  localStorage.setItem(KEY, JSON.stringify(data));
+async function save(data: StoredProfiles): Promise<void> {
+  await sync.putPref(PREF_KEY, data);
 }
 
-export function getActiveProviderProfile(): AssistantProviderProfile {
-  return load().provider;
+export async function getActiveProviderProfile(): Promise<AssistantProviderProfile> {
+  return (await load()).provider;
 }
 
-export function setActiveProviderProfile(profile: AssistantProviderProfile): void {
-  const data = load();
+export async function setActiveProviderProfile(profile: AssistantProviderProfile): Promise<void> {
+  const data = await load();
   data.provider = profile;
-  save(data);
+  await save(data);
 }
 
-export function getRepoProfile(repoPath: string): AssistantRepoProfile | undefined {
-  return load().repoProfiles[repoPath];
+export async function getRepoProfile(repoPath: string): Promise<AssistantRepoProfile | undefined> {
+  return (await load()).repoProfiles[repoPath];
 }
 
-export function setRepoProfile(repoPath: string, profile: AssistantRepoProfile): void {
-  const data = load();
+export async function setRepoProfile(repoPath: string, profile: AssistantRepoProfile): Promise<void> {
+  const data = await load();
   data.repoProfiles[repoPath] = profile;
-  save(data);
+  await save(data);
 }
 
-export function clearRepoProfile(repoPath: string): void {
-  const data = load();
+export async function clearRepoProfile(repoPath: string): Promise<void> {
+  const data = await load();
   delete data.repoProfiles[repoPath];
-  save(data);
+  await save(data);
 }

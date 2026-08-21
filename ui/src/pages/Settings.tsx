@@ -45,9 +45,14 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
     }
   }, [location.hash]);
 
+  const refreshPasskeys = () => {
+    if (!user) return;
+    WebAuthnService.getRegisteredPasskeys(user.uid).then(setPasskeys).catch(() => setPasskeys([]));
+  };
+
   const loadAll = () => {
     if (!user) return;
-    setPasskeys(WebAuthnService.getRegisteredPasskeys(user.uid));
+    refreshPasskeys();
     api.listPublicKeys().then(setPublicKeys).catch(() => {});
     api.listTokens().then(setTokens).catch(() => {});
   };
@@ -66,7 +71,7 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
 
     try {
       const created = await WebAuthnService.registerPasskey(user, passkeyName || undefined);
-      setPasskeys(WebAuthnService.getRegisteredPasskeys(user.uid));
+      refreshPasskeys();
       setPasskeySuccess(`Passkey "${created.name}" registered successfully!`);
       setPasskeyName('');
     } catch (err: any) {
@@ -77,8 +82,9 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
   };
 
   const handleDeletePasskey = (id: string) => {
-    WebAuthnService.deletePasskey(id);
-    if (user) setPasskeys(WebAuthnService.getRegisteredPasskeys(user.uid));
+    WebAuthnService.deletePasskey(id)
+      .then(refreshPasskeys)
+      .catch(() => setPasskeyError('Could not delete the passkey (sync backend unreachable).'));
   };
 
   // Handle SSH Key

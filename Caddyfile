@@ -1,4 +1,9 @@
 :3000 {
+    # Account-scoped UI state (plugin prefs, chats, passkey vault)
+    handle /api/sync/* {
+        reverse_proxy nixre-sync:3002
+    }
+
     # Proxy API and Git Smart HTTP traffic to backend
     handle /api/* {
         reverse_proxy nixre-backend:3000

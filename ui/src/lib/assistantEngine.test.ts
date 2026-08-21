@@ -9,8 +9,14 @@ import {
   runTurn,
 } from './assistantEngine';
 import { defaultProviderProfile } from './assistantProfiles';
+import { installSyncFetchMock, syncMockReset } from '../test/syncMock';
 
-beforeEach(() => localStorage.clear());
+installSyncFetchMock();
+
+beforeEach(() => {
+  localStorage.clear();
+  syncMockReset();
+});
 
 const profile = () => defaultProviderProfile();
 
@@ -47,23 +53,24 @@ describe('assistantEngine.planTurn', () => {
 });
 
 describe('assistantEngine persistence', () => {
-  it('lists conversations per repo and clears them', () => {
-    const a = createConversation('acme/website', 'First');
-    const b = createConversation('acme/website', 'Second');
-    createConversation('acme/api', 'Other repo');
+  it('lists conversations per repo and clears them', async () => {
+    const a = await createConversation('acme/website', 'First');
+    const b = await createConversation('acme/website', 'Second');
+    await createConversation('acme/api', 'Other repo');
 
-    const forRepo = listConversations('acme/website');
+    const forRepo = await listConversations('acme/website');
     expect(forRepo.length).toBe(2);
     expect(forRepo.map(c => c.title).sort()).toEqual(['First', 'Second']);
+    expect(b.title).toBe('Second');
 
-    expect(getConversation(a.id)?.title).toBe('First');
-    deleteConversation(a.id);
-    expect(getConversation(a.id)).toBeUndefined();
-    expect(listConversations('acme/website').length).toBe(1);
+    expect((await getConversation(a.id))?.title).toBe('First');
+    await deleteConversation(a.id);
+    expect(await getConversation(a.id)).toBeUndefined();
+    expect((await listConversations('acme/website')).length).toBe(1);
   });
 
   it('runTurn streams events and updateConversation persists the turn', async () => {
-    const conv = createConversation('acme/website', 'Turn');
+    const conv = await createConversation('acme/website', 'Turn');
     const events = [];
     for await (const event of runTurn('run the tests', profile(), 0)) {
       events.push(event);
@@ -71,7 +78,7 @@ describe('assistantEngine persistence', () => {
     expect(events.length).toBeGreaterThan(0);
     expect(events[events.length - 1].type).toBe('done');
 
-    updateConversation(conv);
-    expect(getConversation(conv.id)).toBeDefined();
+    await updateConversation({ ...conv, messages: [] });
+    expect(await getConversation(conv.id)).toBeDefined();
   });
 });

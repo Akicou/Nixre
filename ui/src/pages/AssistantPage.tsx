@@ -3,25 +3,37 @@ import { useParams, Link } from 'react-router-dom';
 import { Bot, Plug } from 'lucide-react';
 import { api, Repository } from '../lib/api';
 import { isPluginLive } from '../lib/pluginPreferences';
-import { getActiveProviderProfile } from '../lib/assistantProfiles';
+import { getActiveProviderProfile, type AssistantProviderProfile } from '../lib/assistantProfiles';
 import { ChatSurface } from '../components/assistant/ChatSurface';
 
 export const AssistantPage: React.FC = () => {
   const { space, repo } = useParams<{ space: string; repo: string }>();
   const repoPath = `${space}/${repo}`;
   const [repoInfo, setRepoInfo] = useState<Repository | null>(null);
+  const [profile, setProfile] = useState<AssistantProviderProfile | null>(null);
+  const [live, setLive] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!repoPath) return;
-    api
-      .getRepo(repoPath)
-      .then(setRepoInfo)
-      .catch(() => setRepoInfo(null))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    Promise.all([api.getRepo(repoPath).catch(() => null), isPluginLive('nixre-assistant'), getActiveProviderProfile()])
+      .then(([info, isLive, activeProfile]) => {
+        if (cancelled) return;
+        setRepoInfo(info);
+        setLive(isLive);
+        setProfile(activeProfile);
+      })
+      .catch(() => {
+        if (!cancelled) setLive(false);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [repoPath]);
-
-  const live = isPluginLive('nixre-assistant');
 
   if (loading) {
     return <div className="py-16 text-center text-sm text-txt-tertiary">Loading assistant…</div>;
@@ -49,12 +61,18 @@ export const AssistantPage: React.FC = () => {
     );
   }
 
+  // The app shell adds a 57px sticky navbar (h-14 + border) and ~48px footer;
+  // the chat needs a bounded height so its internal flex/scroll layout works.
   return (
-    <ChatSurface
-      repoPath={repoPath}
-      profile={getActiveProviderProfile()}
-      title={repoInfo?.description || repoPath}
-      suggestions={['Review this change for regressions', 'Run the tests and lint', 'Scan for exposed secrets', 'Explain what this repo does']}
-    />
+    <div className="h-[calc(100dvh-105px)] min-h-[420px] overflow-hidden">
+      {profile && (
+        <ChatSurface
+          repoPath={repoPath}
+          profile={profile}
+          title={repoInfo?.description || repoPath}
+          suggestions={['Review this change for regressions', 'Run the tests and lint', 'Scan for exposed secrets', 'Explain what this repo does']}
+        />
+      )}
+    </div>
   );
 };

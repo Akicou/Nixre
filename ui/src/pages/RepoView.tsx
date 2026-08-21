@@ -278,7 +278,7 @@ export const RepoView: React.FC = () => {
         </button>
 
         <Link
-          to={`/${space}/${repo}/assistant`}
+          to={`/${space}/${repoUid}/assistant`}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px ${
             activeTab === 'assistant' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
           }`}

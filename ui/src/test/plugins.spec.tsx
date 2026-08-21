@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Plugins } from '../pages/Plugins';
 import { isPluginLive, isPluginAvailable } from '../lib/pluginPreferences';
+import { installSyncFetchMock, syncMockReset } from './syncMock';
+
+installSyncFetchMock();
 
 function mount() {
   return render(<Plugins />);
@@ -23,7 +26,10 @@ function pluginSwitch(description: string): HTMLButtonElement {
 }
 
 describe('Plugins page', () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    syncMockReset();
+  });
 
   it('renders the plugins header and how-it-works copy', () => {
     mount();
@@ -31,9 +37,10 @@ describe('Plugins page', () => {
     expect(screen.getByText(/Two-layer activation/)).toBeInTheDocument();
   });
 
-  it('ships every plugin disabled (DISABLED) before the operator enables anything', () => {
+  it('ships every plugin disabled (DISABLED) before the operator enables anything', async () => {
     mount();
-    expect(screen.getAllByText(/DISABLED/).length).toBe(7);
+    // Wait for activation layers to load from the (mock) backend.
+    await waitFor(() => expect(screen.getAllByText(/DISABLED/).length).toBe(7));
   });
 
   it('lets the operator enable a plugin at the instance level', async () => {
@@ -41,7 +48,10 @@ describe('Plugins page', () => {
     fireEvent.click(
       screen.getByRole('switch', { name: /Server availability: CI\/CD Pipelines/ }),
     );
-    expect(isPluginAvailable('ci-cd-pipelines')).toBe(true);
+    // The PUT is fire-and-forget in the UI, so poll until it lands.
+    await waitFor(async () => {
+      expect(await isPluginAvailable('ci-cd-pipelines')).toBe(true);
+    });
     // The plugin card flips from DISABLED to OFF (available, not yet enabled).
     expect(await screen.findByText('OFF')).toBeInTheDocument();
   });
@@ -53,15 +63,18 @@ describe('Plugins page', () => {
     );
     fireEvent.click(pluginSwitch('Create, list, assign, label and close issues'));
     expect(await screen.findByText('ACTIVE')).toBeInTheDocument();
-    expect(isPluginLive('issues-tracker')).toBe(true);
+    await waitFor(async () => {
+      expect(await isPluginLive('issues-tracker')).toBe(true);
+    });
   });
 
-  it('opens the configure drawer for a form plugin', () => {
+  it('opens the configure drawer for a form plugin', async () => {
     mount();
     fireEvent.click(
       screen.getByRole('switch', { name: /Server availability: CI\/CD Pipelines/ }),
     );
     fireEvent.click(screen.getByText('Configure'));
-    expect(screen.getByText('CI/CD Pipelines settings')).toBeInTheDocument();
+    // The drawer waits for the config to load from the backend.
+    expect(await screen.findByText('CI/CD Pipelines settings')).toBeInTheDocument();
   });
 });

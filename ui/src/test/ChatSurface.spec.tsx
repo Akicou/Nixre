@@ -3,33 +3,40 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom';
 import { ChatSurface } from '../components/assistant/ChatSurface';
 import { getActiveProviderProfile } from '../lib/assistantProfiles';
+import { installSyncFetchMock, syncMockReset } from './syncMock';
 
-function mount() {
+installSyncFetchMock();
+
+async function mount() {
+  const profile = await getActiveProviderProfile();
   return render(
     <MemoryRouter>
-      <ChatSurface repoPath="acme/website" profile={getActiveProviderProfile()} title="acme/website" />
+      <ChatSurface repoPath="acme/website" profile={profile} title="acme/website" />
     </MemoryRouter>,
   );
 }
 
 describe('ChatSurface', () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    syncMockReset();
+  });
 
-  it('shows an empty state with suggestion chips', () => {
-    mount();
+  it('shows an empty state with suggestion chips', async () => {
+    await mount();
     expect(screen.getByText(/How can I help in acme\/website/i)).toBeInTheDocument();
     expect(screen.getByText(/Run the tests and lint/i)).toBeInTheDocument();
   });
 
-  it('renders the model and reasoning pickers', () => {
-    mount();
+  it('renders the model and reasoning pickers', async () => {
+    await mount();
     // active model label defaults to the provider's default model.
-    expect(screen.getByText(getActiveProviderProfile().model)).toBeInTheDocument();
+    expect(screen.getByText((await getActiveProviderProfile()).model)).toBeInTheDocument();
     expect(screen.getByText(/Reasoning:/i)).toBeInTheDocument();
   });
 
   it('streams a user turn and shows the assistant summary', async () => {
-    mount();
+    await mount();
     fireEvent.click(screen.getByText(/Run the tests and lint/i));
 
     // The tool block for run_tests appears, then the green summary.
@@ -38,7 +45,7 @@ describe('ChatSurface', () => {
   });
 
   it('persists conversations and lists them on reload', async () => {
-    mount();
+    await mount();
     const textarea = screen.getByPlaceholderText(/Ask the assistant anything/i);
     fireEvent.change(textarea, { target: { value: 'verify persistence convo' } });
     fireEvent.click(screen.getByTitle('Send'));
@@ -48,12 +55,8 @@ describe('ChatSurface', () => {
     // render() does not auto-cleanup, so unmount before re-rendering.
     cleanup();
 
-    // A new mount should read the persisted conversation (by title) from localStorage.
-    render(
-      <MemoryRouter>
-        <ChatSurface repoPath="acme/website" profile={getActiveProviderProfile()} title="acme/website" />
-      </MemoryRouter>,
-    );
+    // A new mount should read the persisted conversation (by title) from the backend.
+    await mount();
     expect(await screen.findByText(/verify persistence convo/i)).toBeInTheDocument();
   });
 });
