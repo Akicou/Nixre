@@ -147,10 +147,12 @@ class ApiClient {
     return headers;
   }
 
-  // Core-owned routes (auth + sync) must carry the core session even when a
-  // legacy Gitness token is also present.
+  // Core-owned routes must carry the core session even when a legacy Gitness
+  // token is also present. As phases progress this list grows until it is
+  // simply "everything" (phase 4 removes the legacy token).
   private isCoreOwned(path: string): boolean {
     return (
+      // phase 1: auth + sync
       path === '/login' ||
       path === '/register' ||
       path === '/logout' ||
@@ -159,7 +161,13 @@ class ApiClient {
       path.startsWith('/admin/users') ||
       path.startsWith('/prefs') ||
       path.startsWith('/conversations') ||
-      path.startsWith('/passkeys')
+      path.startsWith('/passkeys') ||
+      // phase 2: spaces + repos + git data
+      path === '/user/memberships' ||
+      path === '/spaces' ||
+      path.startsWith('/spaces/') ||
+      path === '/repos' ||
+      path.startsWith('/repos/')
     );
   }
 
@@ -385,8 +393,10 @@ class ApiClient {
 
   async getRawBlob(repoRef: string, gitRef = 'main', path = ''): Promise<{ content: string; name: string; size: number }> {
     const pathSegment = path ? `/${path.split('/').map(encodeURIComponent).join('/')}` : '';
+    // /repos/* is core-owned (phase 2) — use the core session token.
+    const token = localStorage.getItem('nixre_token');
     const res = await fetch(`/api/v1/repos/${repoRef}/+/raw${pathSegment}?git_ref=${encodeURIComponent(gitRef)}`, {
-      headers: this.getHeaders(),
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     const text = await res.text();
     if (!res.ok) {

@@ -18,6 +18,8 @@ import { migrate } from './db/migrate.js';
 import { resolveBearer } from './lib/auth.js';
 import { authRoutes, adminRoutes } from './routes/auth.js';
 import { syncRoutes } from './routes/sync.js';
+import { forgeRoutes } from './routes/forge.js';
+import { smartHttp } from './git/smartHttp.js';
 
 const PORT = Number(process.env.PORT || 3002);
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://nixre:nixre@localhost:5432/nixre';
@@ -121,6 +123,16 @@ app.use('/api/v1', adminApi);
 // Compat alias so existing clients (/api/sync/v1) keep working during the
 // transition.
 app.use('/api/sync/v1', syncApi);
+
+// Phase 2: spaces, repos and git data are core-owned now. Pull requests and
+// account endpoints still fall through to the Gitness proxy (phase 3).
+const forgeApi = forgeRoutes(pool, authenticate);
+app.use('/api/v1', forgeApi);
+
+// Git Smart HTTP transport (/git/{space}/{repo}.git). No body parser — the
+// request stream is piped straight into git http-backend (CGI); express.json
+// above ignores git's content types.
+app.use('/git', smartHttp(pool, authenticate));
 
 // Everything else under /api/v1 goes to Gitness until phases 2-3 own it.
 app.use('/api/v1', express.raw({ type: '*/*' }), async (req, _res, next) => {

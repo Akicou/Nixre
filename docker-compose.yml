@@ -35,6 +35,9 @@ services:
       DATABASE_URL: postgres://nixre:nixre@nixre-db:5432/nixre
       GITNESS_URL: http://nixre-backend:3000
       PROXY_GITNESS: "true"
+      REPOS_ROOT: /data/repos
+    volumes:
+      - ./data/repos:/data/repos
     ports:
       - "127.0.0.1:3002:3002"
     depends_on:

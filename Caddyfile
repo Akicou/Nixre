@@ -5,9 +5,9 @@
         reverse_proxy nixre-core:3002
     }
 
-    # Git Smart HTTP traffic to Gitness (moves to core in phase 2)
+    # Git Smart HTTP transport served by nixre-core (bare repos + http-backend)
     handle /git/* {
-        reverse_proxy nixre-backend:3000
+        reverse_proxy nixre-core:3002
     }
 
     # Serve Nixre SPA Web UI
