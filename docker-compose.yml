@@ -1,16 +1,4 @@
 services:
-  nixre-backend:
-    image: harness/gitness:latest
-    container_name: nixre-backend
-    restart: always
-    ports:
-      - "127.0.0.1:3001:3000"
-      - "3022:3022"
-    volumes:
-      - ./data:/data
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: ["server", "--enable-ci"]
-
   nixre-db:
     image: postgres:16-alpine
     container_name: nixre-db
@@ -33,8 +21,6 @@ services:
     restart: always
     environment:
       DATABASE_URL: postgres://nixre:nixre@nixre-db:5432/nixre
-      GITNESS_URL: http://nixre-backend:3000
-      PROXY_GITNESS: "true"
       REPOS_ROOT: /data/repos
     volumes:
       - ./data/repos:/data/repos
@@ -43,8 +29,6 @@ services:
     depends_on:
       nixre-db:
         condition: service_healthy
-      nixre-backend:
-        condition: service_started
 
   nixre-web:
     image: caddy:2-alpine
@@ -56,5 +40,4 @@ services:
       - ./ui/dist:/usr/share/caddy
       - ./Caddyfile:/etc/caddy/Caddyfile
     depends_on:
-      - nixre-backend
       - nixre-core

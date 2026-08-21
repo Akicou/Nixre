@@ -1,4 +1,4 @@
-// Gitness REST API Client
+// Nixre Core REST API Client — 100% sovereign (nixre-core backend).
 
 export interface User {
   id: number;
@@ -128,62 +128,25 @@ export interface Token {
 }
 
 class ApiClient {
-  // Transition note (sovereignty plan phase 1): nixre-core owns auth + sync;
-  // spaces/repos/git/PR endpoints still live on Gitness. Both systems share
-  // the same credentials, and login stores both tokens:
-  //   nixre_token         - nixre-core session (auth, sync, future routes)
-  //   nixre_gitness_token - legacy forge token (proxied by core, phase 2-3)
-  // The legacy token disappears when phase 4 removes Gitness.
+  // nixre-core owns every route (sovereignty complete, phase 4). The session
+  // token is a core session (`nxs_...`) or a personal access token
+  // (`nxp_...`); both resolve through the same backend middleware.
   private getHeaders(): HeadersInit {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
-    const coreToken = localStorage.getItem('nixre_token');
-    const gitnessToken = localStorage.getItem('nixre_gitness_token');
-    const token = gitnessToken ?? coreToken;
+    const token = localStorage.getItem('nixre_token');
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
     return headers;
   }
 
-  // Core-owned routes must carry the core session even when a legacy Gitness
-  // token is also present. As phases progress this list grows until it is
-  // simply "everything" (phase 4 removes the legacy token).
-  private isCoreOwned(path: string): boolean {
-    return (
-      // phase 1: auth + sync
-      path === '/login' ||
-      path === '/register' ||
-      path === '/logout' ||
-      path === '/user' ||
-      path === '/webauthn/login' ||
-      path.startsWith('/admin/users') ||
-      path.startsWith('/prefs') ||
-      path.startsWith('/conversations') ||
-      path.startsWith('/passkeys') ||
-      // phase 2: spaces + repos + git data
-      path === '/user/memberships' ||
-      path === '/spaces' ||
-      path.startsWith('/spaces/') ||
-      path === '/repos' ||
-      path.startsWith('/repos/')
-    );
-  }
-
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    const token = this.isCoreOwned(path)
-      ? localStorage.getItem('nixre_token')
-      : localStorage.getItem('nixre_gitness_token') ?? localStorage.getItem('nixre_token');
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-
     const res = await fetch(`/api/v1${path}`, {
       ...options,
       headers: {
-        ...headers,
+        ...this.getHeaders(),
         ...(options.headers as Record<string, string> | undefined),
       },
       credentials: 'include',
@@ -217,33 +180,22 @@ class ApiClient {
 
   // Auth endpoints
   async login(login_identifier: string, password: string):Promise<{ access_token: string; user: User }> {
-    // nixre-core owns authentication. During the Gitness transition it also
-    // opens a legacy forge session server-side and returns it as
-    // legacy_token for the still-proxied endpoints (phase 2-3 removes it).
-    const data = await this.request<{ access_token: string; legacy_token?: string }>('/login', {
+    const data = await this.request<{ access_token: string }>('/login', {
       method: 'POST',
       body: JSON.stringify({ login_identifier, password }),
     });
     localStorage.setItem('nixre_token', data.access_token);
-    if (data.legacy_token) {
-      localStorage.setItem('nixre_gitness_token', data.legacy_token);
-    } else {
-      localStorage.removeItem('nixre_gitness_token');
-    }
     const user = await this.currentUser();
     localStorage.setItem('nixre_user', JSON.stringify(user));
     return { access_token: data.access_token, user };
   }
 
   async register(uid: string, email: string, display_name: string, password: string): Promise<{ access_token: string; user: User }> {
-    const data = await this.request<{ access_token: string; legacy_token?: string }>('/register', {
+    const data = await this.request<{ access_token: string }>('/register', {
       method: 'POST',
       body: JSON.stringify({ uid, email, display_name, password }),
     });
     localStorage.setItem('nixre_token', data.access_token);
-    if (data.legacy_token) {
-      localStorage.setItem('nixre_gitness_token', data.legacy_token);
-    }
     const user = await this.currentUser();
     localStorage.setItem('nixre_user', JSON.stringify(user));
     return { access_token: data.access_token, user };
@@ -258,7 +210,6 @@ class ApiClient {
       await this.request('/logout', { method: 'POST' });
     } catch {}
     localStorage.removeItem('nixre_token');
-    localStorage.removeItem('nixre_gitness_token');
     localStorage.removeItem('nixre_user');
   }
 
@@ -393,10 +344,8 @@ class ApiClient {
 
   async getRawBlob(repoRef: string, gitRef = 'main', path = ''): Promise<{ content: string; name: string; size: number }> {
     const pathSegment = path ? `/${path.split('/').map(encodeURIComponent).join('/')}` : '';
-    // /repos/* is core-owned (phase 2) — use the core session token.
-    const token = localStorage.getItem('nixre_token');
     const res = await fetch(`/api/v1/repos/${repoRef}/+/raw${pathSegment}?git_ref=${encodeURIComponent(gitRef)}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: this.getHeaders(),
     });
     const text = await res.text();
     if (!res.ok) {

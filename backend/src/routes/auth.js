@@ -6,41 +6,6 @@ import { rowToUser, hashPassword, verifyPassword, newSessionToken } from '../lib
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-// Transition bridge (sovereignty plan phases 2-3): the legacy Gitness forge
-// still serves spaces/repos/PRs. On successful core auth we mirror the
-// credentials to Gitness and return its session token as legacy_token so the
-// UI can call the proxied endpoints. Failures are silent: core auth is
-// authoritative; forge pages just lose data until the mirror account exists.
-async function gitnessMirrorLogin(body) {
-  const url = `${process.env.GITNESS_URL || 'http://nixre-backend:3000'}/api/v1/login`;
-  try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) return undefined;
-    const data = await r.json();
-    return data?.access_token;
-  } catch {
-    return undefined;
-  }
-}
-
-async function gitnessMirrorRegister(body) {
-  const url = `${process.env.GITNESS_URL || 'http://nixre-backend:3000'}/api/v1/register`;
-  try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return r.ok;
-  } catch {
-    return false;
-  }
-}
-
 function publicUser(user) {
   // Exactly the fields the UI reads from GET /user (Gitness-compatible).
   return {
@@ -86,8 +51,7 @@ export function authRoutes(pool, authenticate) {
       return;
     }
     const token = await createSession(pool, user.uid);
-    const legacyToken = await gitnessMirrorLogin({ login_identifier: identifier, password });
-    res.json({ access_token: token, ...(legacyToken ? { legacy_token: legacyToken } : {}) });
+    res.json({ access_token: token });
   });
 
   // POST /register {uid, email, display_name, password} -> {access_token}
@@ -131,15 +95,8 @@ export function authRoutes(pool, authenticate) {
       [uid, email, displayName, passwordHash, admin, now],
     );
     const token = await createSession(pool, uid);
-    // Mirror the account to the legacy forge (register, or login if it
-    // already exists) so proxied forge endpoints accept the user.
-    const registered = await gitnessMirrorRegister({ uid, email, display_name: displayName, password });
-    const legacyToken = registered
-      ? await gitnessMirrorLogin({ login_identifier: uid, password })
-      : undefined;
     res.status(201).json({
       access_token: token,
-      ...(legacyToken ? { legacy_token: legacyToken } : {}),
       user: publicUser(rowToUser(rows[0])),
     });
   });

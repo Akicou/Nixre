@@ -3,28 +3,26 @@
 > **Sovereign, minimalist, and ultra-fast code collaboration forge.**  
 > Official site: **[nixre.dev](https://nixre.dev)** • Live Instance: **[git.nayhein.com](https://git.nayhein.com)**
 
-Nixre is a modern open-source Git forge UI that combines the **clean, typography-driven aesthetic of Radicle and Linear** with a **[Gitness](https://github.com/harness/harness) backend** (Spaces, Repositories, Pull Requests).
+Nixre is a modern open-source Git forge that is **100% sovereign end to end**: its own backend (**nixre-core**, Node + PostgreSQL), its own git storage (bare repositories on disk with Smart HTTP transport), its own auth (argon2 + sessions + passkeys + PATs). No Gitness, no external forge dependency, no vendor locks — one codebase, one database, one git engine, all owned by Nixre.
 
 ---
 
 ## ✨ Features
 
 - **🎨 Minimalist Radicle-Inspired UI**: Booton typography, JetBrains Mono code rendering, flat layout (`decard`), dark/light theme.
-- **🔑 Passkeys (device convenience, not a login backend)**: registered passkeys can re-confirm an *already active* session (e.g. before a sensitive settings change). Gitness has no WebAuthn API, so a passkey alone cannot start a brand-new session — sign in with a password (or token) first.
-- **🛡️ 100% Sovereign & Unbranded**: Zero commercial upsell remarks, enterprise tracking, or proprietary vendor locks.
-- **🔒 Registration Page Toggle (client-side only)**: the Admin Console can hide the sign-up page in a given browser. This is a UI convenience, not access control — the `/api/v1/register` endpoint is unaffected. To actually close an instance to new signups, set `GITNESS_USER_SIGNUP_ENABLED=false` on the backend and restart it.
-- **⚡ Git Smart HTTP & SSH**: Clone/push over HTTPS (`/git/<space>/<repo>.git`) or SSH (port `3022`).
-- **🔄 Pull Requests**: create PRs between branches, view a unified diff per changed file, and merge with one click.
-- **📁 Spaces & Organizations**: Multi-tenant workspace organization for projects and teams.
-- **🧩 Plugin System**: Bundled plugins that stay inert until enabled. Ships with an AI engineering copilot (Nixre Assistant) plus CI/CD, security scanning, issues, code review, members, and webhooks plugins — each with configuration forms and per-repo profiles.
+- **🛡️ 100% Sovereign**: nixre-core owns auth, spaces, repos, git transport, pull requests, and account data. Zero external forge APIs.
+- **🔑 Passkeys**: WebAuthn device credentials stored server-side in your account; a passkey can open a brand-new session.
+- **⚡ Git Smart HTTP**: Clone/push over HTTPS (`/git/<space>/<repo>.git`) with session or PAT basic-auth. Real git, real history.
+- **🔄 Pull Requests**: create PRs between branches, view unified diffs per changed file, merge (`--no-ff`) or squash with one click.
+- **📁 Spaces & Organizations**: multi-tenant workspaces with membership-based access control.
+- **🔐 Personal Access Tokens & SSH Keys**: mint PATs (returned once, stored hashed) and manage SSH public keys with fingerprints.
+- **🧩 Plugin System**: bundled plugins that stay inert until enabled — AI engineering copilot (Nixre Assistant), security scanning, issues, code review, and more. All plugin state is account-scoped and server-persisted.
 
-Plugins are **baked into the repo** but only activated behind a two-layer gate: (1) the operator enables a plugin for the instance, and (2) each user toggles it on from **Plugins** (`/plugins`). Every plugin is disabled by default. Manage them at `/plugins`; the Nixre Assistant's per-repository profile (provider, tools, merge gate) is configured inside a repository's **Settings**.
+Plugins are activated behind a two-layer gate: (1) the operator enables a plugin for the instance, and (2) each user toggles it on from **Plugins** (`/plugins`). Every plugin is disabled by default.
 
 ---
 
 ## 🛠️ Quick Start
-
-### Running with Docker Compose
 
 ```bash
 git clone https://github.com/Akicou/Nixre.git
@@ -32,7 +30,32 @@ cd Nixre
 docker compose up -d
 ```
 
-Open `http://localhost:3000` in your browser.
+Open `http://localhost:3000` and register — **the first account becomes the instance admin**.
+
+### The stack
+
+| Service | What it is |
+| --- | --- |
+| `nixre-web` | Caddy: TLS entrypoint, reverse-proxies `/api/*` and `/git/*` to core, serves the static SPA |
+| `nixre-core` | The entire backend: REST API, auth, git Smart HTTP (via `git http-backend`), PR merges |
+| `nixre-db` | PostgreSQL: users, sessions, tokens, spaces, repos, pull requests, plugin prefs, chats, passkeys |
+
+Git objects live as bare repositories on the `./data/repos` volume; Postgres holds metadata only (the same split Gitea/GitLab use).
+
+### Cloning
+
+```bash
+git clone http://<host>/git/<space>/<repo>.git
+# username: your uid   password: a session token or PAT (Settings → Tokens)
+```
+
+### Migrating from a legacy Gitness instance
+
+```bash
+node scripts/migrate-from-gitness.js http://old-gitness:3000 <admin-token>
+```
+
+Spaces and repositories (full git history via `clone --mirror`) migrate; users re-register with the same uid to re-own content. PR history and CI pipelines do not migrate.
 
 ---
 
@@ -54,40 +77,30 @@ At your domain registrar (Namecheap, Cloudflare, GoDaddy, Porkbun):
 
 1. Open your browser and navigate to `http://192.168.1.1` (the Sunrise Connect Box 3 admin portal).
 2. Log in using the settings password on the sticker under your modem.
-3. In the left sidebar, navigate to **`Advanced settings`** $\rightarrow$ **`Security`** $\rightarrow$ **`Port forwarding`**.
+3. In the left sidebar, navigate to **`Advanced settings`** → **`Security`** → **`Port forwarding`**.
 4. Click **`Add rule`** and configure two forwarding rules for your server's local IP (e.g. `192.168.1.114`):
 
 #### Rule 1: HTTP / ACME SSL Validation
-* **Local IP:** `192.168.1.114`
-* **Local Start/End Port:** `80` - `80`
-* **External Start/End Port:** `80` - `80`
-* **Protocol:** `TCP` (or `Both`)
-* **Enabled:** `On`
+* **Local IP:** `192.168.1.114` • **Ports:** `80` → `80` • **Protocol:** TCP • **Enabled:** On
 
 #### Rule 2: HTTPS / Secure Web & Git Traffic
-* **Local IP:** `192.168.1.114`
-* **Local Start/End Port:** `443` - `443`
-* **External Start/End Port:** `443` - `443`
-* **Protocol:** `TCP` (or `Both`)
-* **Enabled:** `On`
+* **Local IP:** `192.168.1.114` • **Ports:** `443` → `443` • **Protocol:** TCP • **Enabled:** On
 
 5. Click **Apply changes**.
 
-> **Note on Sunrise DS-Lite:** If the "Port forwarding" option is missing from your Connect Box 3 dashboard, your connection is in IPv6 DS-Lite mode. Call Sunrise Support (0800 707 707) and request to *"switch my Connect Box 3 to a public IPv4 Dual-Stack profile"*. It is free and takes ~10 minutes.
+> **Note on Sunrise DS-Lite:** If the "Port forwarding" option is missing, your connection is in IPv6 DS-Lite mode. Call Sunrise Support and request a public IPv4 Dual-Stack profile — free, ~10 minutes.
 
 ---
 
 ### 3. Caddy Reverse Proxy Configuration
 
-In your `Caddyfile`:
-
 ```caddyfile
 git.yourdomain.com {
     handle /api/* {
-        reverse_proxy 127.0.0.1:3001
+        reverse_proxy 127.0.0.1:3002
     }
     handle /git/* {
-        reverse_proxy 127.0.0.1:3001
+        reverse_proxy 127.0.0.1:3002
     }
     handle {
         root * /opt/nixre/ui/dist
@@ -97,7 +110,7 @@ git.yourdomain.com {
 }
 ```
 
-Restart Caddy (`sudo systemctl restart caddy`). Caddy will automatically complete the ACME HTTP-01 challenge through the Sunrise box and serve your trusted HTTPS certificate.
+Restart Caddy (`sudo systemctl restart caddy`). It completes the ACME HTTP-01 challenge through the Sunrise box and serves a trusted certificate automatically.
 
 ---
 
@@ -111,13 +124,13 @@ Plugins ship inside the repo but stay dormant until the two-layer gate opens.
 | **Server gate** | operator | which bundled plugins the instance serves |
 | **User toggle** | any logged-in user | `/plugins` (off by default) |
 
-A plugin is only *live* when **both** allow it. Activation state is stored **server-side**: Gitness exposes no user-preferences API, so Nixre ships **nixre-sync** — a small companion service (Express + Postgres) that validates the caller's Gitness Bearer token against `/api/v1/user` and stores account-scoped state in Postgres. That covers plugin toggles/configs, assistant profiles, chat sessions, and the passkey vault — so all of it follows the account across browsers and devices. See `backend/` and `ui/src/lib/syncApi.ts`. A one-time migration uploads any `localStorage`-era data on first login. Real plugin enforcement still happens on the server.
+A plugin is only *live* when **both** allow it. All activation state, plugin configs, assistant profiles, chat sessions, and the passkey vault are stored **server-side in Postgres** via nixre-core's account API — everything follows the account across browsers and devices. A one-time migration uploaded any `localStorage`-era data on first login after the switch.
 
 ### Bundled plugins
 | Plugin | What it does | Configuration |
 | --- | --- | --- |
 | **Nixre Assistant** | AI copilot for agentic engineering work. Runs in an isolated Docker environment with the tools `file_read` (reads images too), `file_write`, `bash`, `run_tests`, `web_search`, and `git`. Per-repo profiles choose the AI provider and what it may do (edit, run bash/tests, push, merge, auto-merge-on-green, auto-fix bugs, path allow/block lists). | per-repo profile (`/plugins` + repo **Settings**) |
-| **CI/CD Pipelines** | Trigger/re-run Gitness pipelines, watch status, read logs without leaving Nixre. | settings form |
+| **CI/CD Pipelines** | Pipeline status surface (webhook-based; no bundled CI runner). | settings form |
 | **Security Scanner** | Scan repos/PRs for secrets, dependency CVEs, and static-analysis issues. | settings form |
 | **Issues Tracker** | Create, list, assign, label and close issues. | settings form |
 | **Code Review** | Inline, line-level review threads with auto-assignment and required reviewers. | settings form |
@@ -134,18 +147,23 @@ A plugin is only *live* when **both** allow it. Activation state is stored **ser
 ## 🏗️ Project Architecture
 
 ```
-Nixre Architecture
- ├── ui/                          # React + TypeScript + Tailwind
- │    ├── src/lib/api.ts          # REST API client (talks to Gitness)
-  │    ├── src/lib/plugins.ts      # Plugin registry (bundled plugin definitions)
-  │    ├── src/lib/pluginPreferences.ts  # Two-layer plugin activation (server-backed)
-  │    ├── src/lib/assistantProfiles.ts  # Nixre Assistant provider + per-repo profiles
- │    ├── src/lib/webauthn.ts     # Local passkey vault (session re-confirmation only)
- │    ├── src/components/         # PullRequestForm, PullRequestDetail (diff + merge), PluginToggle, PluginConfigForm
- │    ├── src/pages/               # Views (RepoView, Settings, Admin, Plugins, ...)
- │    └── dist/                   # Production build output (committed; no build step in the container)
- ├── docker-compose.yml   # Gitness backend + Caddy-served static UI
- └── Caddyfile            # Reverse proxy & static SPA handler
+Nixre Architecture (sovereign — no external forge)
+ ├── ui/                            # React + TypeScript + Tailwind SPA
+ │    ├── src/lib/api.ts            # REST client → nixre-core only
+ │    ├── src/lib/syncApi.ts        # Account-state client (prefs, chats, passkeys)
+ │    ├── src/lib/plugins.ts        # Plugin registry
+ │    ├── src/lib/assistant*        # Assistant engine + profiles (server-backed)
+ │    ├── src/components/           # PullRequestForm/Detail, ChatSurface, PluginToggle, ...
+ │    ├── src/pages/                # Views (RepoView, Settings, Admin, Plugins, ...)
+ │    └── dist/                     # Production build output (committed)
+ ├── backend/                       # nixre-core — the entire backend
+ │    ├── src/routes/               # auth, sync, forge (spaces/repos/git), pullreq, account
+ │    ├── src/git/                  # git CLI wrappers + Smart HTTP transport
+ │    ├── src/lib/auth.js           # argon2, sessions, PATs
+ │    └── src/db/migrations/        # SQL migrations (applied on boot)
+ ├── scripts/migrate-from-gitness.js  # one-time legacy migration
+ ├── docker-compose.yml             # core + postgres + caddy
+ └── Caddyfile                      # reverse proxy & static SPA handler
 ```
 
 ### Running tests
@@ -155,6 +173,10 @@ cd ui
 npm install
 npm test
 ```
+
+### API surface (all first-party)
+
+`/api/v1`: `login` `register` `logout` `user` `webauthn/login` `admin/users` `user/publickeys` `user/tokens` `user/memberships` `spaces` `repos` (+ `content` `raw` `commits` `branches` `pullreq` sub-resources) `prefs` `conversations` `passkeys` — plus `/git/{space}/{repo}.git` Smart HTTP.
 
 ---
 

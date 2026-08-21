@@ -1,16 +1,14 @@
-// nixre-core — the sovereign Nixre backend.
+// nixre-core — the sovereign Nixre backend. 100% Nixre: no forge dependency.
 //
-// Phase 1 scope: first-party auth (users/sessions in Postgres, argon2) plus
-// the absorbed sync API (prefs / conversations / passkeys). Spaces, repos,
-// git data and pull requests still come from Gitness until later phases;
-// those routes are proxied transparently so the UI needs no branching.
-//
-// Route map:
-//   /api/v1/login | /register | /logout | /user | /webauthn/login   (auth)
-//   /api/v1/admin/users                                              (admin)
-//   /api/v1/prefs | /conversations | /passkeys                       (sync)
-//   /api/v1/* (everything else)                                      -> Gitness proxy
-//   /api/sync/v1/*                                                   (compat alias)
+// Route map (all first-party, Postgres-backed):
+//   /api/v1/login | /register | /logout | /user | /webauthn/login    (auth)
+//   /api/v1/admin/users                                               (admin)
+//   /api/v1/user/publickeys | /user/tokens                            (account)
+//   /api/v1/user/memberships | /spaces... | /repos...                 (forge)
+//   /api/v1/repos/.../+/pullreq...                                    (pull reqs)
+//   /api/v1/prefs | /conversations | /passkeys                        (sync)
+//   /api/sync/v1/*                                                    (compat alias)
+//   /git/{space}/{repo}.git                                           (Smart HTTP)
 
 import express from 'express';
 import pg from 'pg';
@@ -20,12 +18,11 @@ import { authRoutes, adminRoutes } from './routes/auth.js';
 import { syncRoutes } from './routes/sync.js';
 import { forgeRoutes } from './routes/forge.js';
 import { pullRequestRoutes } from './routes/pullreq.js';
+import { accountRoutes } from './routes/account.js';
 import { smartHttp } from './git/smartHttp.js';
 
 const PORT = Number(process.env.PORT || 3002);
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://nixre:nixre@localhost:5432/nixre';
-const GITNESS_URL = process.env.GITNESS_URL || 'http://nixre-backend:3000';
-const PROXY_GITNESS = (process.env.PROXY_GITNESS ?? 'true') !== 'false';
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
@@ -58,50 +55,6 @@ function authenticate(required = true) {
   };
 }
 
-function requireAdmin(req, res, next) {
-  if (!req.auth?.user?.admin) {
-    res.status(403).json({ message: 'Admin access required' });
-    return;
-  }
-  next();
-}
-
-// ---------------------------------------------------------------------------
-// Gitness passthrough for not-yet-migrated endpoints (phases 2-3).
-// The UI keeps calling /api/v1/...; core owns some paths and forwards the rest.
-// Gitness tokens are forwarded as-is; when the UI migrates fully to core
-// sessions this proxy disappears (phase 4).
-// ---------------------------------------------------------------------------
-
-function gitnessProxy() {
-  return async (req, res) => {
-    if (!PROXY_GITNESS) {
-      res.status(404).json({ message: 'Not implemented in nixre-core yet' });
-      return;
-    }
-    try {
-      const url = new URL(req.originalUrl, GITNESS_URL);
-      const headers = { ...req.headers };
-      delete headers.host;
-      delete headers.connection;
-      delete headers['content-length'];
-      const r = await fetch(url, {
-        method: req.method,
-        headers,
-        body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body ?? {}),
-        redirect: 'manual',
-      });
-      res.status(r.status);
-      const contentType = r.headers.get('content-type');
-      if (contentType) res.set('content-type', contentType);
-      const buf = Buffer.from(await r.arrayBuffer());
-      res.send(buf);
-    } catch {
-      res.status(502).json({ message: 'Gitness unreachable' });
-    }
-  };
-}
-
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -111,44 +64,26 @@ app.use(express.json({ limit: '4mb' }));
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-// First-party auth endpoints (must be registered before the proxy).
 app.use('/api/v1', authRoutes(pool, authenticate));
 
-// Sync + admin routes: per-route authentication (defined inside the routers)
-// so requests core does NOT own fall through to the Gitness proxy untouched.
+// Per-route authentication inside each router.
 const syncApi = syncRoutes(pool, authenticate);
-const adminApi = adminRoutes(pool, authenticate);
 app.use('/api/v1', syncApi);
-app.use('/api/v1', adminApi);
+app.use('/api/sync/v1', syncApi); // compat alias
 
-// Compat alias so existing clients (/api/sync/v1) keep working during the
-// transition.
-app.use('/api/sync/v1', syncApi);
-
-// Phase 2: spaces, repos and git data are core-owned now.
-// Phase 3: pull requests too — the last Gitness API dependency is gone;
-// only account keys/tokens still fall through to the proxy.
-const forgeApi = forgeRoutes(pool, authenticate);
-app.use('/api/v1', forgeApi);
+app.use('/api/v1', adminRoutes(pool, authenticate));
+app.use('/api/v1', accountRoutes(pool, authenticate));
+app.use('/api/v1', forgeRoutes(pool, authenticate));
 app.use('/api/v1', pullRequestRoutes(pool, authenticate));
 
-// Git Smart HTTP transport (/git/{space}/{repo}.git). No body parser — the
-// request stream is piped straight into git http-backend (CGI); express.json
-// above ignores git's content types.
+// Git Smart HTTP transport. No body parser — the request stream is piped
+// straight into git http-backend (CGI).
 app.use('/git', smartHttp(pool, authenticate));
 
-// Everything else under /api/v1 goes to Gitness until phases 2-3 own it.
-app.use('/api/v1', express.raw({ type: '*/*' }), async (req, _res, next) => {
-  // Re-parse JSON bodies for the proxy (express.raw consumed the stream).
-  if (Buffer.isBuffer(req.body) && (req.headers['content-type'] || '').includes('application/json')) {
-    try {
-      req.body = JSON.parse(req.body.toString('utf8'));
-    } catch {
-      req.body = undefined;
-    }
-  }
-  next();
-}, gitnessProxy());
+// Anything else under /api is simply unknown now — there is no proxy.
+app.use('/api', (_req, res) => {
+  res.status(404).json({ message: 'No such API route' });
+});
 
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -174,9 +109,7 @@ async function boot() {
     }
   }
   app.listen(PORT, () => {
-    console.log(
-      `nixre-core listening on :${PORT} (db ready, gitness proxy ${PROXY_GITNESS ? 'on' : 'off'})`,
-    );
+    console.log(`nixre-core listening on :${PORT} — sovereign, no forge dependency`);
   });
 }
 
