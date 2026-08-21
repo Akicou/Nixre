@@ -133,7 +133,20 @@ export function pullRequestRoutes(pool, authenticate) {
       [repo.id, number, title, description, sourceBranch, targetBranch, req.auth.user.uid, ts],
     );
     await pool.query('UPDATE repos SET updated = $2 WHERE id = $1', [repo.id, ts]);
-    res.status(201).json(await rowToPr(pool, rows[0]));
+    const pr = await rowToPr(pool, rows[0]);
+    // pull_request webhook event
+    import('../lib/webhooks.js').then(({ fireWebhooks }) =>
+      fireWebhooks(pool, repo.space_uid, repo.uid, {
+        type: 'pull_request',
+        action: 'opened',
+        number: pr.number,
+        title: pr.title,
+        source_branch: sourceBranch,
+        target_branch: targetBranch,
+        author: req.auth.user.uid,
+      }),
+    ).catch(() => {});
+    res.status(201).json(pr);
   });
 
   // GET /repos/{space}/{repo}/+/pullreq/{n}
@@ -222,7 +235,21 @@ export function pullRequestRoutes(pool, authenticate) {
       [pr.id, ts, req.auth.user.uid],
     );
     await pool.query('UPDATE repos SET updated = $2 WHERE id = $1', [repo.id, ts]);
-    res.json(await rowToPr(pool, updated[0]));
+    const merged = await rowToPr(pool, updated[0]);
+    // pull_request webhook event
+    import('../lib/webhooks.js').then(({ fireWebhooks }) =>
+      fireWebhooks(pool, repo.space_uid, repo.uid, {
+        type: 'pull_request',
+        action: 'merged',
+        number: merged.number,
+        title: merged.title,
+        source_branch: pr.source_branch,
+        target_branch: pr.target_branch,
+        author: pr.author_uid,
+        merged_by: req.auth.user.uid,
+      }),
+    ).catch(() => {});
+    res.json(merged);
   });
 
   // POST /repos/{space}/{repo}/+/pullreq/{n}/state {state: closed|open}

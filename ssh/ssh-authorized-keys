@@ -1,0 +1,24 @@
+#!/bin/sh
+# AuthorizedKeysCommand shim: returns every user's public key wrapped with a
+# per-key ForcedCommand (owner uid pinned as the argument). Cached 30s.
+# Config comes from /srv/nixre-env.sh — sshd scrubs env vars for this hook.
+
+. /srv/nixre-env.sh
+
+CORE="${CORE_URL:-http://nixre-core:3002}"
+TOKEN="${INTERNAL_TOKEN:-}"
+CACHE=/tmp/nixre_keys_cache
+
+if [ -f "$CACHE" ] && [ $(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) )) -lt 30 ]; then
+  cat "$CACHE"
+  exit 0
+fi
+
+if curl -sf -H "Authorization: Bearer $TOKEN" "$CORE/api/v1/internal/keys/all" > "$CACHE.tmp"; then
+  mv "$CACHE.tmp" "$CACHE"
+  cat "$CACHE"
+else
+  rm -f "$CACHE.tmp"
+  [ -f "$CACHE" ] && cat "$CACHE"
+  exit 0
+fi

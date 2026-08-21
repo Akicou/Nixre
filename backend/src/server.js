@@ -19,6 +19,8 @@ import { syncRoutes } from './routes/sync.js';
 import { forgeRoutes } from './routes/forge.js';
 import { pullRequestRoutes } from './routes/pullreq.js';
 import { accountRoutes } from './routes/account.js';
+import { internalRoutes } from './routes/internal.js';
+import { webhookRoutes } from './routes/webhooks.js';
 import { smartHttp } from './git/smartHttp.js';
 
 const PORT = Number(process.env.PORT || 3002);
@@ -75,6 +77,8 @@ app.use('/api/v1', adminRoutes(pool, authenticate));
 app.use('/api/v1', accountRoutes(pool, authenticate));
 app.use('/api/v1', forgeRoutes(pool, authenticate));
 app.use('/api/v1', pullRequestRoutes(pool, authenticate));
+app.use('/api/v1', internalRoutes(pool, authenticate));
+app.use('/api/v1', webhookRoutes(pool, authenticate));
 
 // Git Smart HTTP transport. No body parser — the request stream is piped
 // straight into git http-backend (CGI).

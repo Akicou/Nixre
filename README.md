@@ -12,8 +12,9 @@ Nixre is a modern open-source Git forge that is **100% sovereign end to end**: i
 - **🎨 Minimalist Radicle-Inspired UI**: Booton typography, JetBrains Mono code rendering, flat layout (`decard`), dark/light theme.
 - **🛡️ 100% Sovereign**: nixre-core owns auth, spaces, repos, git transport, pull requests, and account data. Zero external forge APIs.
 - **🔑 Passkeys**: WebAuthn device credentials stored server-side in your account; a passkey can open a brand-new session.
-- **⚡ Git Smart HTTP**: Clone/push over HTTPS (`/git/<space>/<repo>.git`) with session or PAT basic-auth. Real git, real history.
+- **⚡ Git Smart HTTP + SSH**: Clone/push over HTTPS (`/git/<space>/<repo>.git`) with session/PAT basic-auth, or SSH (`ssh://git@host:3022/<space>/<repo>.git`) with your account's registered keys. Real git, real history.
 - **🔄 Pull Requests**: create PRs between branches, view unified diffs per changed file, merge (`--no-ff`) or squash with one click.
+- **📡 Signed Webhooks**: subscribe `push` and `pull_request` events to external URLs; deliveries are HMAC-SHA256 signed (`X-Nixre-Signature`) with automatic retries and a delivery log.
 - **📁 Spaces & Organizations**: multi-tenant workspaces with membership-based access control.
 - **🔐 Personal Access Tokens & SSH Keys**: mint PATs (returned once, stored hashed) and manage SSH public keys with fingerprints.
 - **🧩 Plugin System**: bundled plugins that stay inert until enabled — AI engineering copilot (Nixre Assistant), security scanning, issues, code review, and more. All plugin state is account-scoped and server-persisted.
@@ -37,17 +38,25 @@ Open `http://localhost:3000` and register — **the first account becomes the in
 | Service | What it is |
 | --- | --- |
 | `nixre-web` | Caddy: TLS entrypoint, reverse-proxies `/api/*` and `/git/*` to core, serves the static SPA |
-| `nixre-core` | The entire backend: REST API, auth, git Smart HTTP (via `git http-backend`), PR merges |
-| `nixre-db` | PostgreSQL: users, sessions, tokens, spaces, repos, pull requests, plugin prefs, chats, passkeys |
+| `nixre-core` | The entire backend: REST API, auth, git Smart HTTP (via `git http-backend`), PR merges, webhook delivery |
+| `nixre-ssh` | SSH git transport: sshd with core-resolved keys (AuthorizedKeysCommand), every session locked to a per-key git-shell wrapper |
+| `nixre-db` | PostgreSQL: users, sessions, tokens, spaces, repos, pull requests, webhooks, plugin prefs, chats, passkeys |
 
 Git objects live as bare repositories on the `./data/repos` volume; Postgres holds metadata only (the same split Gitea/GitLab use).
 
 ### Cloning
 
 ```bash
+# HTTPS — username is your uid, password a session token or PAT (Settings → Tokens)
 git clone http://<host>/git/<space>/<repo>.git
-# username: your uid   password: a session token or PAT (Settings → Tokens)
+
+# SSH — register a public key in Settings → Passkeys/SSH, then:
+git clone ssh://git@<host>:3022/<space>/<repo>.git
 ```
+
+### Webhooks
+
+Create one via the API (`POST /api/v1/repos/<space>/<repo>/+/webhooks` with `{url, events}`); the response contains the signing secret (shown once). Deliveries post JSON with `X-Nixre-Event` and `X-Nixre-Signature: sha256=…` (HMAC-SHA256 of the raw body, keyed by the secret) and retry with backoff up to 5 attempts; inspect history at `GET …/webhooks/<id>/deliveries`.
 
 ### Migrating from a legacy Gitness instance
 
@@ -130,7 +139,7 @@ A plugin is only *live* when **both** allow it. All activation state, plugin con
 | Plugin | What it does | Configuration |
 | --- | --- | --- |
 | **Nixre Assistant** | AI copilot for agentic engineering work. Runs in an isolated Docker environment with the tools `file_read` (reads images too), `file_write`, `bash`, `run_tests`, `web_search`, and `git`. Per-repo profiles choose the AI provider and what it may do (edit, run bash/tests, push, merge, auto-merge-on-green, auto-fix bugs, path allow/block lists). | per-repo profile (`/plugins` + repo **Settings**) |
-| **CI/CD Pipelines** | Pipeline status surface (webhook-based; no bundled CI runner). | settings form |
+| **CI/CD Pipelines** | Webhook-based pipeline status surface — point your CI at a Nixre webhook and surface runs in the UI. | settings form |
 | **Security Scanner** | Scan repos/PRs for secrets, dependency CVEs, and static-analysis issues. | settings form |
 | **Issues Tracker** | Create, list, assign, label and close issues. | settings form |
 | **Code Review** | Inline, line-level review threads with auto-assignment and required reviewers. | settings form |
@@ -161,6 +170,9 @@ Nixre Architecture (sovereign — no external forge)
  │    ├── src/git/                  # git CLI wrappers + Smart HTTP transport
  │    ├── src/lib/auth.js           # argon2, sessions, PATs
  │    └── src/db/migrations/        # SQL migrations (applied on boot)
+ ├── ssh/                            # nixre-ssh — SSH git transport
+ │    ├── nixre-git-shell            # per-key ForcedCommand wrapper (ACL-checked)
+ │    └── ssh-authorized-keys        # AuthorizedKeysCommand shim (core-resolved keys)
  ├── scripts/migrate-from-gitness.js  # one-time legacy migration
  ├── docker-compose.yml             # core + postgres + caddy
  └── Caddyfile                      # reverse proxy & static SPA handler

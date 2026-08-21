@@ -22,6 +22,7 @@ services:
     environment:
       DATABASE_URL: postgres://nixre:nixre@nixre-db:5432/nixre
       REPOS_ROOT: /data/repos
+      INTERNAL_TOKEN: ${NIXRE_INTERNAL_TOKEN:-dev-internal-token-change-me}
     volumes:
       - ./data/repos:/data/repos
     ports:
@@ -29,6 +30,22 @@ services:
     depends_on:
       nixre-db:
         condition: service_healthy
+
+  nixre-ssh:
+    build: ./ssh
+    container_name: nixre-ssh
+    restart: always
+    environment:
+      CORE_URL: http://nixre-core:3002
+      INTERNAL_TOKEN: ${NIXRE_INTERNAL_TOKEN:-dev-internal-token-change-me}
+      REPOS_ROOT: /data/repos
+    volumes:
+      - ./data/repos:/data/repos
+      - ./data/ssh-keys:/etc/ssh/keys
+    ports:
+      - "3022:3022"
+    depends_on:
+      - nixre-core
 
   nixre-web:
     image: caddy:2-alpine

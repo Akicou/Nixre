@@ -1,0 +1,19 @@
+# nixre-ssh sshd config — git transport only, no shells.
+Port 3022
+HostKey /etc/ssh/keys/ssh_host_ed25519_key
+HostKey /etc/ssh/keys/ssh_host_rsa_key
+
+# Every connection arrives as the shared "git" user; identity comes from the
+# public key, which core resolves via AuthorizedKeysCommand (each returned
+# line carries a per-key ForceCommand pinned to the owner's uid).
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile none
+AuthorizedKeysCommand /srv/ssh-authorized-keys
+AuthorizedKeysCommandUser git
+
+AllowTcpForwarding no
+X11Forwarding no
+PermitTTY no
+LogLevel INFO

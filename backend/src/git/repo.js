@@ -38,13 +38,60 @@ async function git(repoPath, args, opts = {}) {
 
 // --- repository lifecycle ------------------------------------------------------
 
-export async function initBareRepo(space, repo, { defaultBranch = 'main', readme = false } = {}) {
+const POST_RECEIVE_HOOK = [
+  '#!/bin/sh',
+  '[ -f /srv/nixre-env.sh ] && . /srv/nixre-env.sh',
+  'CORE="${CORE_URL:-http://nixre-core:3002}"',
+  'TOKEN="${INTERNAL_TOKEN:-}"',
+  'SPACE=""; REPO=""',
+  'case "$PWD" in */repos/*/*.git) SPACE=$(basename $(dirname "$PWD")); REPO=$(basename "$PWD" .git);; esac',
+  'while read old new ref; do',
+  '  case "$ref" in refs/heads/*) BRANCH="${ref#refs/heads/}";',
+  '    curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\',
+  '      -d "{\\"space\\":\\"$SPACE\\",\\"repo\\":\\"$REPO\\",\\"branch\\":\\"$BRANCH\\",\\"before\\":\\"$old\\",\\"after\\":\\"$new\\",\\"pusher\\":\\"webhook\\"}" \\',
+  '      "$CORE/api/v1/internal/push-event" >/dev/null 2>&1 || true;;',
+  '  esac',
+  'done',
+  'exit 0',
+].join('\n');
+
+// Write the webhook post-receive hook into a bare repo. Idempotent.
+export async function installPostReceiveHook(dir) {
+  const { writeFile, mkdir, chmod } = await import('node:fs/promises');
+  await mkdir(`${dir}/hooks`, { recursive: true });
+  await writeFile(`${dir}/hooks/post-receive`, POST_RECEIVE_HOOK, 'utf8');
+  await chmod(`${dir}/hooks/post-receive`, 0o775);
+}
+
+export async function initBareRepo(space, repo, { defaultBranch = 'main' } = {}) {
   const dir = repoDir(space, repo);
   await exec('git', ['init', '--bare', '--initial-branch', defaultBranch, dir]);
   // Allow default-branch push to an empty repo over HTTP.
   await git(dir, ['symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`]);
   await git(dir, ['config', 'http.receivepack', 'true']);
+  // post-receive hook: notify core so repo webhooks fire. Works in both the
+  // core container (env vars) and the ssh container (/srv/nixre-env.sh).
+  await installPostReceiveHook(dir);
+  // Group/other read so the nixre-ssh container's git user can serve it.
+  await exec('chmod', ['-R', 'a+rX', dir]).catch(() => {});
   return dir;
+}
+
+// Repair pass for repos created before the hook existed: (re)install the
+// post-receive hook on every bare repo under REPOS_ROOT.
+export async function repairAllHooks() {
+  const { readdir } = await import('node:fs/promises');
+  const { existsSync } = await import('node:fs');
+  let fixed = 0;
+  for (const space of await readdir(REPOS_ROOT).catch(() => [])) {
+    for (const entry of await readdir(`${REPOS_ROOT}/${space}`).catch(() => [])) {
+      const dir = `${REPOS_ROOT}/${space}/${entry}`;
+      if (!entry.endsWith('.git') || !existsSync(`${dir}/HEAD`)) continue;
+      await installPostReceiveHook(dir);
+      fixed++;
+    }
+  }
+  return fixed;
 }
 
 export async function removeBareRepo(space, repo) {

@@ -138,6 +138,8 @@ export function smartHttp(pool, authenticate) {
         res.status(500).end('git http-backend failed');
       } else {
         res.end();
+        // Push webhook fanout is handled by the bare repo's post-receive
+        // hook (fires for both HTTP and SSH pushes).
       }
     });
     req.on('error', () => cgi.kill());

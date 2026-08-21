@@ -1,0 +1,70 @@
+#!/bin/sh
+# nixre-git-shell — the only thing an SSH session can run.
+#
+# Invoked by sshd as: /srv/nixre-git-shell <owner-uid>
+# SSH_ORIGINAL_COMMAND holds what the client asked for, always one of:
+#   git-upload-pack 'space/repo.git'      (fetch/clone)
+#   git-upload-archive 'space/repo.git'
+#   git-receive-pack 'space/repo.git'     (push)
+# Access is checked against core, then git-shell executes on the bare repo.
+
+set -eu
+
+# Config comes from /srv/nixre-env.sh (ForceCommand also gets scrubbed env).
+. /srv/nixre-env.sh
+
+OWNER="${1:-}"
+CORE="${CORE_URL:-http://nixre-core:3002}"
+TOKEN="${INTERNAL_TOKEN:-}"
+REPOS="${REPOS_ROOT:-/data/repos}"
+CMD="${SSH_ORIGINAL_COMMAND:-}"
+
+if [ -z "$OWNER" ] || [ -z "$CMD" ]; then
+  echo "nixre: git operations only" >&2
+  exit 1
+fi
+
+# Parse "<verb> '<path>'" — the path may carry a leading slash (ssh:// URLs).
+VERB="${CMD%% *}"
+ARG="${CMD#* }"
+ARG="${ARG%\'}"; ARG="${ARG#\'}"
+ARG="${ARG#/}"
+ARG="${ARG%%.git}"
+
+case "$VERB" in
+  git-upload-pack|git-upload-archive) ACTION=read ;;
+  git-receive-pack) ACTION=write ;;
+  *)
+    echo "nixre: unsupported command: $VERB" >&2
+    exit 1
+    ;;
+esac
+
+SPACE="${ARG%%/*}"
+REPO="${ARG#*/}"
+if [ -z "$SPACE" ] || [ -z "$REPO" ] || [ "$SPACE" = "$REPO" ]; then
+  echo "nixre: expected space/repo" >&2
+  exit 1
+fi
+
+ACCESS=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  "$CORE/api/v1/internal/access/$OWNER/$SPACE/$REPO" || echo '{"exists":false,"read":false,"write":false}')
+
+EXISTS=$(echo "$ACCESS" | sed -n 's/.*"exists":\(true\|false\).*/\1/p')
+READ=$(echo "$ACCESS" | sed -n 's/.*"read":\(true\|false\).*/\1/p')
+WRITE=$(echo "$ACCESS" | sed -n 's/.*"write":\(true\|false\).*/\1/p')
+
+if [ "$EXISTS" != "true" ]; then
+  echo "nixre: repository not found" >&2
+  exit 1
+fi
+if [ "$ACTION" = "read" ] && [ "$READ" != "true" ]; then
+  echo "nixre: no read access to $SPACE/$REPO" >&2
+  exit 1
+fi
+if [ "$ACTION" = "write" ] && [ "$WRITE" != "true" ]; then
+  echo "nixre: no write access to $SPACE/$REPO" >&2
+  exit 1
+fi
+
+exec git shell -c "$VERB '$REPOS/$SPACE/$REPO.git'"

@@ -11,6 +11,12 @@ RUN npm install --omit=dev
 
 COPY src ./src
 
+# Run as uid/gid 1000 to match the `git` user in the nixre-ssh container so
+# both can access the shared /data/repos volume.
+RUN chown -R 1000:1000 /app \
+    && mkdir -p /data/repos && chown -R 1000:1000 /data
+USER 1000:1000
+
 ENV NODE_ENV=production
 EXPOSE 3002
 
