@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Bot,
   Brain,
   Check,
   ChevronDown,
@@ -8,7 +7,6 @@ import {
   Copy,
   Loader2,
   Pencil,
-  User,
   XCircle,
 } from 'lucide-react';
 import type { ChatMessage, ToolCall } from '../../lib/assistantEngine';
@@ -43,21 +41,11 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
   const [draft, setDraft] = useState(message.content);
 
   return (
-    <div className={`group flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
-      <div
-        className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center mt-0.5 ${
-          isUser
-            ? 'bg-brand text-white'
-            : 'bg-surface-subtle border border-border-subtle text-brand'
-        }`}
-      >
-        {isUser ? <User className="w-3.5 h-3.5" /> : <Bot className="w-4 h-4" />}
-      </div>
-
-      <div className={`min-w-0 flex-1 ${isUser ? 'flex flex-col items-end' : ''}`}>
+    <div className={`group ${isUser ? 'flex flex-col items-end' : ''}`}>
+      <div className={`min-w-0 w-full ${isUser ? 'flex flex-col items-end max-w-[85%] ml-auto' : ''}`}>
         {isUser ? (
           editing ? (
-            <div className="w-full max-w-[85%] flex flex-col gap-1.5">
+            <div className="w-full flex flex-col gap-1.5">
               <textarea
                 autoFocus
                 value={draft}
@@ -90,12 +78,12 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
             </div>
           ) : (
             <>
-              <div className="inline-flex flex-col items-end gap-2 max-w-[85%]">
+              <div className="inline-flex flex-col items-end gap-2">
                 {message.images && message.images.length > 0 && (
                   <ImageStrip images={message.images} />
                 )}
                 {message.content && (
-                  <div className="rounded-lg rounded-tr-sm px-3 py-2 bg-brand text-white text-xs leading-relaxed">
+                  <div className="rounded-lg rounded-tr-sm px-3 py-2 bg-brand text-white text-xs leading-relaxed chat-part-in">
                     <span className="whitespace-pre-line break-words">{message.content}</span>
                   </div>
                 )}
@@ -117,25 +105,30 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
               const isLast = i === parts.length - 1;
               if (part.type === 'reasoning') {
                 return (
-                  <ReasoningPanel
-                    key={part.id}
-                    text={part.text}
-                    thinking={streaming && isLast && part.type === 'reasoning' && !hasText}
-                  />
+                  <div key={part.id} className="chat-part-in">
+                    <ReasoningPanel
+                      text={part.text}
+                      thinking={streaming && isLast && part.type === 'reasoning' && !hasText}
+                    />
+                  </div>
                 );
               }
               if (part.type === 'tool') {
-                return <ToolBlock key={part.tool.id} tool={part.tool} />;
+                return (
+                  <div key={part.tool.id} className="chat-part-in">
+                    <ToolBlock tool={part.tool} />
+                  </div>
+                );
               }
               return (
-                <div key={`text-${i}`} className="text-xs leading-relaxed text-txt-primary markdown-body max-w-none">
+                <div key={`text-${i}`} className="chat-part-in text-xs leading-relaxed text-txt-primary markdown-body max-w-none">
                   <Markdown content={part.text} />
                   {streaming && isLast && <StreamingCaret />}
                 </div>
               );
             })}
             {waiting && (
-              <div className="flex items-center gap-2 text-xs text-txt-tertiary">
+              <div className="flex items-center gap-2 text-xs text-txt-tertiary chat-part-in">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span>Thinking…</span>
               </div>
@@ -144,7 +137,11 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
         )}
       </div>
 
-      {!isUser && !streaming && message.content && <CopyButton text={message.content} />}
+      {!isUser && !streaming && message.content && (
+        <div className="mt-1">
+          <CopyButton text={message.content} />
+        </div>
+      )}
     </div>
   );
 };
@@ -203,7 +200,7 @@ const CopyButton: React.FC<{ text: string }> = ({ text }) => {
         );
       }}
       title="Copy reply"
-      className="self-start mt-1 p-1 rounded text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle transition"
+      className="p-1 rounded text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle transition"
     >
       {copied ? <Check className="w-3.5 h-3.5 text-txt-open" /> : <Copy className="w-3.5 h-3.5" />}
     </button>

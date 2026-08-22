@@ -230,11 +230,16 @@ export type EngineEvent =
   | { type: 'message_text'; text: string }
   /** Drop preamble text streamed before the model commits to tool_calls. */
   | { type: 'step_clear_preamble' }
+  /** Clear partial assistant output before retrying a failed post-tool stream. */
+  | { type: 'stream_retry' }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; conversationId?: string; messageId?: string };
 
 /** Safety bound on agent loop iterations per turn. */
 export const MAX_AGENT_STEPS = 8;
+
+/** Retries for the provider stream immediately after tool results were sent. */
+export const MAX_POST_TOOL_RETRIES = 3;
 
 let seq = 0;
 export const uid = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(seq++).toString(36)}`;
@@ -275,6 +280,21 @@ export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessag
     const message = { ...ms[idx] };
     const parts = [...(message.parts ?? [])];
     while (parts.length > 0 && parts[parts.length - 1].type === 'text') {
+      parts.pop();
+    }
+    message.parts = parts;
+    const next = ms.slice();
+    next[idx] = syncLegacyFields(message);
+    return next;
+  }
+
+  if (ev.type === 'stream_retry') {
+    const { messages: ms, idx } = ensureActiveAssistant(messages);
+    const message = { ...ms[idx] };
+    const parts = [...(message.parts ?? [])];
+    while (parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last.type === 'tool') break;
       parts.pop();
     }
     message.parts = parts;
@@ -459,6 +479,7 @@ export async function* runRealTurn(
 
   let errored: string | null = null;
   let aborted = false;
+  let afterTools = false;
 
   yield* (async function* () {
     // Bridge callback-based streams into the generator. `streamStep`
@@ -578,10 +599,25 @@ export async function* runRealTurn(
     };
 
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {
-      const { calls, text } = await streamStep();
-      yield* drain();
-      if (aborted) return;
-      if (errored) return;
+      let calls: { id: string; name: string; args: string }[] = [];
+      let text = '';
+      let attempt = 0;
+
+      while (true) {
+        errored = null;
+        ({ calls, text } = await streamStep());
+        yield* drain();
+        if (aborted) return;
+        if (!errored) break;
+        if (afterTools && attempt < MAX_POST_TOOL_RETRIES) {
+          attempt++;
+          push({ type: 'stream_retry' });
+          yield* drain();
+          continue;
+        }
+        return;
+      }
+
       if (!useTools || calls.length === 0) return;
 
       // Record the assistant's tool request so the next round has context.
@@ -617,12 +653,17 @@ export async function* runRealTurn(
         }
       }
       yield* drain();
+      afterTools = true;
       // Loop: the model now sees the tool results and continues.
     }
   })();
 
   if (errored) {
-    throw new Error(errored);
+    throw new Error(
+      afterTools
+        ? `${errored} (failed after ${MAX_POST_TOOL_RETRIES + 1} attempts)`
+        : errored,
+    );
   }
   if (aborted) {
     const err = new Error('Turn stopped');

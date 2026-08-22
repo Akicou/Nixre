@@ -12,6 +12,7 @@ import {
   deleteConversation,
   runRealTurn,
   withCompaction,
+  MAX_POST_TOOL_RETRIES,
   type ChatMessage,
 } from './assistantEngine';
 import { streamAiChat, executeAssistantTool } from './aiApi';
@@ -213,6 +214,100 @@ describe('assistantEngine agent loop', () => {
     }
     expect(messageParts(messages[1]).map(p => p.type)).toEqual(['tool', 'text']);
     expect(messages[1].content).toBe('Done.');
+  });
+
+  it('stream_retry clears partial assistant output after the last tool', () => {
+    let messages: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'go', createdAt: 1 }];
+    messages = applyEvent(messages, {
+      type: 'tool_start',
+      tool: { id: 't1', name: 'run_command', status: 'running', argsText: '{}' },
+    });
+    messages = applyEvent(messages, { type: 'tool_output', toolId: 't1', output: 'ok' });
+    messages = applyEvent(messages, { type: 'message_text', text: 'partial answer' });
+    messages = applyEvent(messages, { type: 'stream_retry' });
+    expect(messageParts(messages[1]).map(p => p.type)).toEqual(['tool']);
+  });
+
+  it('retries the provider stream after tool results before giving up', async () => {
+    mockedStream.mockImplementationOnce((_messages, _opts, onEvent) => {
+      onEvent({ type: 'tool_delta', index: 0, id: 't1', name: 'read_file' });
+      onEvent({ type: 'tool_delta', index: 0, argsDelta: '{"path":"a.ts"}' });
+      onEvent({ type: 'finish', reason: 'tool_calls' });
+      onEvent({ type: 'done' });
+      return Promise.resolve();
+    });
+    mockedStream
+      .mockImplementationOnce((_messages, _opts, onEvent) => {
+        onEvent({ type: 'error', message: 'upstream reset' });
+        onEvent({ type: 'done' });
+        return Promise.resolve();
+      })
+      .mockImplementationOnce((_messages, _opts, onEvent) => {
+        onEvent({ type: 'text', text: 'Recovered.' });
+        onEvent({ type: 'done' });
+        return Promise.resolve();
+      });
+    mockedExec.mockResolvedValue('contents');
+
+    const profile = {
+      provider: 'deepseek',
+      baseUrl: '',
+      model: 'm',
+      reasoningLevel: 'none',
+      interleavedReasoning: false,
+      keyConfigured: true,
+      keyMask: null,
+      validatedAt: 1,
+      models: [],
+    };
+    const events = [];
+    for await (const ev of runRealTurn('read a.ts', profile as any, [], {
+      mode: 'agent', repoPath: 'acme/website', agent: true,
+    })) {
+      events.push(ev);
+    }
+
+    expect(mockedStream).toHaveBeenCalledTimes(3);
+    expect(events.some(e => e.type === 'stream_retry')).toBe(true);
+    expect(events.some(e => e.type === 'message_text' && e.text === 'Recovered.')).toBe(true);
+  });
+
+  it('throws after exhausting post-tool retries', async () => {
+    mockedStream.mockImplementationOnce((_messages, _opts, onEvent) => {
+      onEvent({ type: 'tool_delta', index: 0, id: 't1', name: 'read_file' });
+      onEvent({ type: 'tool_delta', index: 0, argsDelta: '{"path":"a.ts"}' });
+      onEvent({ type: 'finish', reason: 'tool_calls' });
+      onEvent({ type: 'done' });
+      return Promise.resolve();
+    });
+    for (let i = 0; i <= MAX_POST_TOOL_RETRIES; i++) {
+      mockedStream.mockImplementationOnce((_messages, _opts, onEvent) => {
+        onEvent({ type: 'error', message: 'provider down' });
+        onEvent({ type: 'done' });
+        return Promise.resolve();
+      });
+    }
+    mockedExec.mockResolvedValue('contents');
+
+    const profile = {
+      provider: 'deepseek',
+      baseUrl: '',
+      model: 'm',
+      reasoningLevel: 'none',
+      interleavedReasoning: false,
+      keyConfigured: true,
+      keyMask: null,
+      validatedAt: 1,
+      models: [],
+    };
+    await expect(async () => {
+      for await (const _ev of runRealTurn('read a.ts', profile as any, [], {
+        mode: 'agent', repoPath: 'acme/website', agent: true,
+      })) {
+        /* drain */
+      }
+    }).rejects.toThrow(/failed after 4 attempts/);
+    expect(mockedStream).toHaveBeenCalledTimes(1 + MAX_POST_TOOL_RETRIES + 1);
   });
 
   it('does not enable tools outside agent mode', async () => {
