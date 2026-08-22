@@ -10,6 +10,7 @@ import {
   verifyAssertion,
   originFromRequest,
 } from '../lib/webauthn.js';
+import { isRegistrationClosed, setRegistrationClosed } from '../lib/instanceSettings.js';
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -188,11 +189,10 @@ export function authRoutes(pool, authenticate) {
 
   // POST /register {uid, email, display_name, password} -> {access_token}
   api.post('/register', async (req, res) => {
-    // Server-side signup kill switch: NIXRE_REGISTRATION_CLOSED=true in the
-    // environment returns 403 before any validation or DB work. Toggled by
-    // the deployment (see /opt/nixre/{no-more-register,allow-registering}.sh);
-    // read per request so a container restart is the only rollout needed.
-    if (String(process.env.NIXRE_REGISTRATION_CLOSED || '').toLowerCase() === 'true') {
+    // Server-side signup kill switch — toggled from the admin console (DB
+    // backed, live without a restart) or defaulted from
+    // NIXRE_REGISTRATION_CLOSED before an admin ever touches it.
+    if (isRegistrationClosed()) {
       res.status(403).json({ message: 'Registration is currently closed on this instance.' });
       return;
     }
@@ -301,6 +301,31 @@ export function adminRoutes(pool, authenticate) {
   }, async (_req, res) => {
     const { rows } = await pool.query('SELECT * FROM users ORDER BY created');
     res.json(rows.map(r => publicUser(rowToUser(r))));
+  });
+
+  // GET /admin/registration -> {closed} — real server-side signup state.
+  api.get('/admin/registration', authenticate(true), (req, res) => {
+    if (!req.auth?.user?.admin) {
+      res.status(403).json({ message: 'Admin access required' });
+      return;
+    }
+    res.json({ closed: isRegistrationClosed() });
+  });
+
+  // PUT /admin/registration {closed: boolean} — flips the kill switch live;
+  // persists in instance_settings so restarts keep it.
+  api.put('/admin/registration', authenticate(true), async (req, res) => {
+    if (!req.auth?.user?.admin) {
+      res.status(403).json({ message: 'Admin access required' });
+      return;
+    }
+    const closed = req.body?.closed;
+    if (typeof closed !== 'boolean') {
+      res.status(400).json({ message: 'closed (boolean) is required' });
+      return;
+    }
+    await setRegistrationClosed(closed);
+    res.json({ closed: isRegistrationClosed() });
   });
 
   return api;

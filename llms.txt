@@ -154,8 +154,9 @@ Instruct the user to open `http://192.168.1.1` in their browser and add:
 - Passwords remain a fully supported fallback.
 
 ### Closing Registrations
-- An admin can hide the registration page per browser (**Admin Console → Registration Page**). This is client-side only.
-- Server-side kill switch: set `NIXRE_REGISTRATION_CLOSED=true` in `/opt/nixre/.env` and run `docker compose up -d nixre-core` — `POST /api/v1/register` then returns 403 before any validation. Set it to `false` (or remove it) and recreate core to reopen. Existing sessions, logins, git, and the assistant are unaffected; only new signups are blocked.
+- **Admin Console (/admin) → "Account Registration (server-side)"** is the primary switch: it reads and flips the live kill switch (`GET/PUT /api/v1/admin/registration`, admin sessions only). When closed, `POST /api/v1/register` returns 403 for everyone; existing sessions, logins, git, and the assistant are unaffected. The state persists across restarts (instance_settings table).
+- `NIXRE_REGISTRATION_CLOSED=true` in the environment (e.g. `/opt/nixre/.env` + `docker compose up -d nixre-core`, or the `no-more-register.sh` / `allow-registering.sh` scripts) acts as the **initial default** — it applies until an admin toggles the switch in the console; after that the console state is the source of truth.
+- The admin console also has a per-browser "hide registration page" toggle — cosmetic only, it does not affect the API.
 
 ---
 

@@ -5,7 +5,11 @@ import { AdminView } from '../pages/AdminView';
 import { user, adminUser } from './fixtures';
 
 const { api } = vi.hoisted(() => ({
-  api: { listUsers: vi.fn() },
+  api: {
+    listUsers: vi.fn(),
+    getRegistrationStatus: vi.fn(),
+    setRegistrationClosed: vi.fn(),
+  },
 }));
 vi.mock('../lib/api', () => ({ api }));
 
@@ -22,6 +26,7 @@ describe('AdminView', () => {
     localStorage.clear();
     vi.clearAllMocks();
     api.listUsers.mockResolvedValue([user, adminUser]);
+    api.getRegistrationStatus.mockResolvedValue({ closed: false });
   });
 
   it('lists registered accounts', async () => {
@@ -39,5 +44,19 @@ describe('AdminView', () => {
       expect(localStorage.getItem('nixre_registration_hidden')).toBe('true');
     });
     expect(await screen.findByRole('button', { name: /Show Registration Page/ })).toBeInTheDocument();
+  });
+
+  it('shows the real server-side registration state and closes it via the API', async () => {
+    mount();
+    expect(await screen.findByText(/OPEN/)).toBeInTheDocument();
+
+    api.setRegistrationClosed.mockResolvedValue({ closed: true });
+    fireEvent.click(await screen.findByRole('button', { name: /Close Registration/ }));
+
+    await waitFor(() => {
+      expect(api.setRegistrationClosed).toHaveBeenCalledWith(true);
+    });
+    expect(await screen.findByText(/CLOSED/)).toBeInTheDocument();
+    expect(await screen.findByText(/Registration is now closed server-side/)).toBeInTheDocument();
   });
 });

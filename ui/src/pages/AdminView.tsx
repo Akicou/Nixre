@@ -6,11 +6,13 @@ import { isRegistrationHidden, setRegistrationHidden } from '../lib/authLock';
 export const AdminView: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
-  const [authBlocked, setAuthBlocked] = useState(false);
+  const [serverClosed, setServerClosed] = useState<boolean | null>(null);
+  const [toggling, setToggling] = useState(false);
+  const [browserHidden, setBrowserHidden] = useState(false);
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
-    setAuthBlocked(isRegistrationHidden());
+    setBrowserHidden(isRegistrationHidden());
 
     api.listUsers()
       .then(res => {
@@ -18,16 +20,33 @@ export const AdminView: React.FC = () => {
         setLoading(false);
       })
       .catch(() => setLoading(false));
+    api.getRegistrationStatus()
+      .then(res => setServerClosed(res.closed))
+      .catch(() => setServerClosed(null));
   }, []);
 
+  const toggleServerRegistration = async () => {
+    if (serverClosed === null || toggling) return;
+    setToggling(true);
+    try {
+      const res = await api.setRegistrationClosed(!serverClosed);
+      setServerClosed(res.closed);
+      setMsg(res.closed
+        ? 'Registration is now closed server-side — POST /api/v1/register returns 403. Takes effect immediately.'
+        : 'Registration is open — new accounts can be created again.');
+      setTimeout(() => setMsg(''), 6000);
+    } catch (err: any) {
+      setMsg(err.message || 'Could not change the registration setting.');
+      setTimeout(() => setMsg(''), 6000);
+    } finally {
+      setToggling(false);
+    }
+  };
+
   const toggleAuthBlocking = () => {
-    const nextState = !authBlocked;
-    setAuthBlocked(nextState);
+    const nextState = !browserHidden;
+    setBrowserHidden(nextState);
     setRegistrationHidden(nextState);
-    setMsg(nextState
-      ? 'Registration page is now hidden in this browser. This does NOT stop the API — block POST /api/v1/register at your reverse proxy for real enforcement.'
-      : 'Registration page is visible again in this browser.');
-    setTimeout(() => setMsg(''), 6000);
   };
 
   return (
@@ -58,30 +77,64 @@ export const AdminView: React.FC = () => {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded bg-surface-base border border-border-subtle gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-txt-primary">Registration Page (this browser only)</span>
+              <span className="text-sm font-semibold text-txt-primary">Account Registration (server-side)</span>
               <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold ${
-                authBlocked ? 'bg-surface-closed text-txt-closed' : 'bg-surface-open text-txt-open'
+                serverClosed === null
+                  ? 'bg-surface-subtle text-txt-tertiary'
+                  : serverClosed
+                    ? 'bg-surface-closed text-txt-closed'
+                    : 'bg-surface-open text-txt-open'
               }`}>
-                {authBlocked ? 'HIDDEN' : 'VISIBLE'}
+                {serverClosed === null ? 'UNKNOWN' : serverClosed ? 'CLOSED' : 'OPEN'}
               </span>
             </div>
             <p className="text-xs text-txt-secondary">
-              This only hides the sign-up page in browsers where it's toggled &mdash; it does not stop
-              account creation via the API. To actually close the instance, set{' '}
-              <code className="font-mono text-txt-primary">GITNESS_USER_SIGNUP_ENABLED=false</code> on the server and restart.
+              The real kill switch: when closed, <code className="font-mono text-txt-primary">POST /api/v1/register</code> returns
+              403 for everyone. Applies immediately and survives restarts. Existing sessions, logins, git and the
+              assistant are unaffected.
+            </p>
+          </div>
+
+          <button
+            onClick={toggleServerRegistration}
+            disabled={serverClosed === null || toggling}
+            className={`px-4 py-2 rounded text-xs font-semibold transition flex items-center gap-2 shrink-0 disabled:opacity-50 ${
+              serverClosed
+                ? 'bg-surface-open text-txt-open hover:bg-surface-subtle border border-border-subtle'
+                : 'bg-feedback-error-bg text-feedback-error-text hover:bg-feedback-error-bg-selected border border-feedback-error-border'
+            }`}
+          >
+            {serverClosed ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+            <span>{toggling ? 'Applying…' : serverClosed ? 'Open Registration' : 'Close Registration'}</span>
+          </button>
+        </div>
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded bg-surface-base border border-border-subtle gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-txt-primary">Registration Page (this browser only)</span>
+              <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold ${
+                browserHidden ? 'bg-surface-closed text-txt-closed' : 'bg-surface-open text-txt-open'
+              }`}>
+                {browserHidden ? 'HIDDEN' : 'VISIBLE'}
+              </span>
+            </div>
+            <p className="text-xs text-txt-secondary">
+              Cosmetic: hides the sign-up form in this browser only. It does not affect the API — use the
+              server-side switch above to actually block account creation.
             </p>
           </div>
 
           <button
             onClick={toggleAuthBlocking}
             className={`px-4 py-2 rounded text-xs font-semibold transition flex items-center gap-2 shrink-0 ${
-              authBlocked
+              browserHidden
                 ? 'bg-surface-open text-txt-open hover:bg-surface-subtle border border-border-subtle'
-                : 'bg-feedback-error-bg text-feedback-error-text hover:bg-feedback-error-bg-selected border border-feedback-error-border'
+                : 'bg-surface-subtle text-txt-secondary hover:bg-surface-mid border border-border-subtle'
             }`}
           >
-            {authBlocked ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-            <span>{authBlocked ? 'Show Registration Page' : 'Hide Registration Page'}</span>
+            {browserHidden ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+            <span>{browserHidden ? 'Show Registration Page' : 'Hide Registration Page'}</span>
           </button>
         </div>
       </div>

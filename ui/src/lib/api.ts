@@ -463,6 +463,17 @@ class ApiClient {
     const res = await this.request<any>('/users');
     return res.users || res || [];
   }
+
+  async getRegistrationStatus(): Promise<{ closed: boolean }> {
+    return this.request<{ closed: boolean }>('/admin/registration');
+  }
+
+  async setRegistrationClosed(closed: boolean): Promise<{ closed: boolean }> {
+    return this.request<{ closed: boolean }>('/admin/registration', {
+      method: 'PUT',
+      body: JSON.stringify({ closed }),
+    });
+  }
 }
 
 export const api = new ApiClient();
