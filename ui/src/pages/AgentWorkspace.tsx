@@ -9,6 +9,7 @@ import {
   ArrowUp,
   Bot,
   ChevronDown,
+  Download,
   FolderGit2,
   Loader2,
   Plus,
@@ -43,6 +44,15 @@ import {
 import { ChatMessageView } from '../components/assistant/ChatMessageView';
 import { ComposerAttach } from '../components/assistant/ComposerAttach';
 import { appendPastedImages, imageFilesFromClipboard, type ChatImage } from '../lib/chatImages';
+import {
+  downloadJsonl,
+  estimateTokens,
+  lastTurnMetrics,
+  stamp,
+  tokensPerSecond,
+  type SessionTraceEntry,
+  type TokenUsage,
+} from '../lib/sessionTrace';
 
 interface WorkspaceRepo {
   path: string;
@@ -91,6 +101,7 @@ export const AgentWorkspace: React.FC = () => {
   const [modelOpen, setModelOpen] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
+  const [trace, setTrace] = useState<SessionTraceEntry[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -98,6 +109,9 @@ export const AgentWorkspace: React.FC = () => {
   const repoMenuRef = useRef<HTMLDivElement>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const traceRef = useRef<SessionTraceEntry[]>([]);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const currentIdRef = useRef<string | null>(null);
 
   // --- boot ----------------------------------------------------------------
   useEffect(() => {
@@ -135,7 +149,10 @@ export const AgentWorkspace: React.FC = () => {
     (path: string) => {
       setSearchParams(path ? { repo: path } : {});
       setCurrentId(null);
+      currentIdRef.current = null;
       setMessages([]);
+      setTrace([]);
+      traceRef.current = [];
       setInput('');
     },
     [setSearchParams],
@@ -156,6 +173,93 @@ export const AgentWorkspace: React.FC = () => {
       /* ignore */
     }
     setModeOpen(false);
+    if (id !== mode && currentIdRef.current) {
+      logTrace({
+        type: 'system_prompt_change',
+        mode: id,
+        systemPrompt: getMode(id).systemPrompt,
+      });
+    }
+  };
+
+  useEffect(() => {
+    traceRef.current = trace;
+  }, [trace]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  useEffect(() => {
+    currentIdRef.current = currentId;
+  }, [currentId]);
+
+  const persistTrace = (
+    next: SessionTraceEntry[],
+    msgs = messagesRef.current,
+    title?: string,
+  ) => {
+    traceRef.current = next;
+    setTrace(next);
+    const id = currentIdRef.current;
+    if (!id || !activeRepo) return;
+    const resolvedTitle =
+      title ?? allConversations.find(c => c.id === id)?.title ?? 'Agent';
+    void updateConversation({
+      id,
+      repoPath: activeRepo,
+      title: resolvedTitle,
+      messages: msgs,
+      updatedAt: Date.now(),
+      trace: next,
+    }).catch(() => {});
+  };
+
+  const logTrace = (entry: Omit<SessionTraceEntry, 'id' | 'timestamp'>) => {
+    persistTrace([...traceRef.current, stamp(entry)]);
+  };
+
+  const seedSessionTrace = (
+    convId: string,
+    repoPath: string,
+    msgs: ChatMessage[],
+    title: string,
+  ) => {
+    if (traceRef.current.some(e => e.type === 'session')) return;
+    const header = stamp({
+      type: 'session',
+      repoPath,
+      provider: profile?.provider || 'unknown',
+      modelId: workingModel || profile?.model || '',
+      thinkingLevel: workingReasoning,
+      mode,
+      systemPrompt: getMode(mode).systemPrompt,
+    });
+    const next = [header, ...traceRef.current];
+    currentIdRef.current = convId;
+    persistTrace(next, msgs, title);
+  };
+
+  const changeModel = (modelId: string) => {
+    if (modelId === workingModel) {
+      setModelOpen(false);
+      return;
+    }
+    setWorkingModel(modelId);
+    setModelOpen(false);
+    if (currentIdRef.current) {
+      logTrace({
+        type: 'model_change',
+        provider: profile?.provider || 'unknown',
+        modelId,
+      });
+    }
+  };
+
+  const changeReasoning = (level: string) => {
+    if (level === workingReasoning) return;
+    setWorkingReasoning(level);
+    if (currentIdRef.current) {
+      logTrace({ type: 'thinking_level_change', thinkingLevel: level });
+    }
   };
 
   const refreshSessions = useCallback(() => {
@@ -226,6 +330,7 @@ export const AgentWorkspace: React.FC = () => {
         const conv = await createConversation(activeRepo, prompt.slice(0, 48));
         convId = conv.id;
         turnTitle = conv.title;
+        currentIdRef.current = conv.id;
         setCurrentId(conv.id);
         refreshSessions();
       }
@@ -245,7 +350,9 @@ export const AgentWorkspace: React.FC = () => {
         title: turnTitle,
         messages: local,
         updatedAt: Date.now(),
+        trace: traceRef.current,
       });
+      seedSessionTrace(convId, activeRepo, local, turnTitle);
 
       const workingProfile: AssistantProviderProfile = {
         ...profile,
@@ -270,6 +377,10 @@ export const AgentWorkspace: React.FC = () => {
       }
 
       const { summary, history } = buildModelContext(base);
+      const startedAt = performance.now();
+      let outputChars = 0;
+      let reasoningChars = 0;
+      let usage: TokenUsage | undefined;
       try {
         for await (const ev of runRealTurn(modelPrompt, workingProfile, history, {
           model: workingModel || profile.model,
@@ -281,6 +392,9 @@ export const AgentWorkspace: React.FC = () => {
           signal: controller.signal,
           images: images.length ? images : undefined,
         })) {
+          if (ev.type === 'message_text') outputChars += ev.text.length;
+          if (ev.type === 'reasoning') reasoningChars += ev.text.length;
+          if (ev.type === 'usage') usage = ev.usage;
           local = applyEvent(local, ev);
           setMessages(local);
         }
@@ -293,12 +407,45 @@ export const AgentWorkspace: React.FC = () => {
           setMessages(local);
         }
       }
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      const estimatedTokens = usage?.output ?? estimateTokens(outputChars + reasoningChars);
+      const extras: SessionTraceEntry[] = [];
+      if (reasoningChars > 0) {
+        extras.push(
+          stamp({
+            type: 'reasoning_used',
+            thinkingLevel: workingReasoning,
+            chars: reasoningChars,
+            estimatedTokens: estimateTokens(reasoningChars),
+          }),
+        );
+      }
+      extras.push(
+        stamp({
+          type: 'turn_metrics',
+          modelId: workingModel || profile.model,
+          provider: profile.provider,
+          thinkingLevel: workingReasoning,
+          mode,
+          elapsedMs,
+          outputChars,
+          reasoningChars,
+          estimatedTokens,
+          tokensPerSecond: tokensPerSecond(estimatedTokens, elapsedMs),
+          ...(usage ? { usage } : {}),
+        }),
+      );
+      const nextTrace = [...traceRef.current, ...extras];
+      traceRef.current = nextTrace;
+      setTrace(nextTrace);
+
       await updateConversation({
         id: convId,
         repoPath: activeRepo,
         title: turnTitle,
         messages: local,
         updatedAt: Date.now(),
+        trace: nextTrace,
       });
 
       if (shouldAutoCompact(local)) {
@@ -314,6 +461,7 @@ export const AgentWorkspace: React.FC = () => {
             title: turnTitle,
             messages: local,
             updatedAt: Date.now(),
+            trace: nextTrace,
           });
         } catch {
           /* best-effort */
@@ -343,6 +491,9 @@ export const AgentWorkspace: React.FC = () => {
     setMessages([]);
     setInput('');
     setPendingImages([]);
+    setTrace([]);
+    traceRef.current = [];
+    currentIdRef.current = null;
     setTimeout(() => textareaRef.current?.focus(), 50);
   };
 
@@ -351,7 +502,10 @@ export const AgentWorkspace: React.FC = () => {
       setSearchParams(c.repoPath ? { repo: c.repoPath } : {});
     }
     setCurrentId(c.id);
+    currentIdRef.current = c.id;
     setMessages(c.messages ?? []);
+    setTrace(c.trace ?? []);
+    traceRef.current = c.trace ?? [];
     setInput('');
   };
 
@@ -429,10 +583,7 @@ export const AgentWorkspace: React.FC = () => {
               <button
                 key={m}
                 type="button"
-                onClick={() => {
-                  setWorkingModel(m);
-                  setModelOpen(false);
-                }}
+                onClick={() => changeModel(m)}
                 className={`w-full flex items-center justify-between gap-3 px-3 py-2 text-left text-[12px] transition ${
                   m === workingModel ? 'bg-surface-subtle' : 'hover:bg-surface-subtle'
                 }`}
@@ -465,7 +616,7 @@ export const AgentWorkspace: React.FC = () => {
                 <button
                   key={r}
                   type="button"
-                  onClick={() => setWorkingReasoning(r)}
+                  onClick={() => changeReasoning(r)}
                   className={`text-[11px] capitalize py-1.5 rounded-md border transition ${
                     r === workingReasoning
                       ? 'border-border-mid bg-surface-subtle text-txt-primary'
@@ -637,6 +788,29 @@ export const AgentWorkspace: React.FC = () => {
               </p>
             </div>
             <div className="flex items-center gap-2">
+              {lastTurnMetrics(trace) && (
+                <span
+                  className="hidden sm:inline font-mono text-[10px] text-txt-tertiary"
+                  title="Last turn — logged for distillation"
+                >
+                  {lastTurnMetrics(trace)!.tokensPerSecond} tok/s · {lastTurnMetrics(trace)!.modelId}
+                </span>
+              )}
+              {trace.length > 0 && (
+                <button
+                  type="button"
+                  title="Download session JSONL for distillation"
+                  onClick={() =>
+                    downloadJsonl(
+                      `${(allConversations.find(c => c.id === currentId)?.title || 'agent-session').slice(0, 48)}.jsonl`,
+                      trace,
+                    )
+                  }
+                  className="p-1.5 rounded-md text-txt-tertiary hover:text-txt-secondary hover:bg-surface-subtle transition"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                </button>
+              )}
               {activeRepo.includes('/') && (
                 <Link
                   to={`/${activeRepo}/assistant`}
@@ -777,8 +951,8 @@ export const AgentWorkspace: React.FC = () => {
           <>
             <div ref={scrollRef} className="flex-1 overflow-y-auto">
               <div className="max-w-3xl mx-auto px-5 py-8 space-y-7">
-                {messages.map((msg, i) =>
-                  (msg as any).kind === 'compaction' ? (
+                {messages.filter(msg => (msg as { kind?: string }).kind !== 'session_trace').map((msg, i) =>
+                  (msg as { kind?: string }).kind === 'compaction' ? (
                     <p
                       key={msg.id}
                       className="text-center text-[10px] uppercase tracking-wider text-txt-tertiary py-2"

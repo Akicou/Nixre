@@ -11,6 +11,7 @@ import type { AssistantProviderProfile } from './assistantProfiles';
 import type { ChatTurn } from './aiApi';
 import * as sync from './syncApi';
 import { toMultimodalParts, type ChatImage } from './chatImages';
+import { peelTrace, withTrace, type SessionTraceEntry, type TokenUsage } from './sessionTrace';
 
 export type ToolStatus = 'running' | 'success' | 'error';
 
@@ -43,6 +44,8 @@ export interface Conversation {
   title: string;
   messages: ChatMessage[];
   updatedAt: number;
+  /** Append-only distillation log (hidden from the chat transcript). */
+  trace?: SessionTraceEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +184,7 @@ export type EngineEvent =
   | { type: 'tool_output'; toolId: string; output: string }
   | { type: 'tool_error'; toolId: string; output: string }
   | { type: 'message_text'; text: string }
+  | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; conversationId?: string; messageId?: string };
 
 /** Safety bound on agent loop iterations per turn. */
@@ -257,12 +261,15 @@ export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessag
 // ---------------------------------------------------------------------------
 
 function coerceConversation(c: sync.SyncConversation): Conversation {
+  const raw = Array.isArray(c.messages) ? (c.messages as ChatMessage[]) : [];
+  const { messages, trace } = peelTrace(raw);
   return {
     id: c.id,
     repoPath: c.repoPath,
     title: c.title,
-    messages: Array.isArray(c.messages) ? (c.messages as ChatMessage[]) : [],
+    messages,
     updatedAt: c.updatedAt,
+    trace,
   };
 }
 
@@ -284,7 +291,7 @@ export async function createConversation(repoPath: string, title: string): Promi
 export async function updateConversation(conversation: Conversation): Promise<void> {
   await sync.updateConversation(conversation.id, {
     title: conversation.title,
-    messages: conversation.messages,
+    messages: withTrace(conversation.messages, conversation.trace ?? []),
   });
 }
 
@@ -420,6 +427,8 @@ export async function* runRealTurn(
                 if (evt.name) cur.name = evt.name;
                 if (evt.argsDelta) cur.args += evt.argsDelta;
                 pending.set(evt.index, cur);
+              } else if (evt.type === 'usage') {
+                push({ type: 'usage', usage: evt.usage });
               } else if (evt.type === 'finish') {
                 // 'tool_calls' vs 'stop' — the accumulated calls tell us
                 // which; nothing to do here.

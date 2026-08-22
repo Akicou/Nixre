@@ -195,4 +195,25 @@ describe('assistantEngine persistence', () => {
     const fresh = await getConversation(conv.id);
     expect(fresh?.messages).toHaveLength(1);
   });
+
+  it('stores the session trace off the chat transcript', async () => {
+    const conv = await createConversation('acme/website', 'Trace');
+    await updateConversation({
+      ...conv,
+      messages: [{ id: 'm1', role: 'user', content: 'hi', createdAt: 1 }],
+      trace: [
+        {
+          type: 'model_change',
+          id: 'tr_1',
+          timestamp: '2026-08-22T18:00:00.000Z',
+          provider: 'deepseek',
+          modelId: 'deepseek-chat',
+        },
+      ],
+    });
+    const fresh = await getConversation(conv.id);
+    expect(fresh?.messages).toEqual([{ id: 'm1', role: 'user', content: 'hi', createdAt: 1 }]);
+    expect(fresh?.trace).toHaveLength(1);
+    expect(fresh?.trace?.[0]).toMatchObject({ type: 'model_change', modelId: 'deepseek-chat' });
+  });
 });

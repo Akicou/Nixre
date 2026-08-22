@@ -13,8 +13,7 @@ import {
   Plus,
   ArrowLeft,
   FileCode,
-  Settings,
-  Sparkles
+  Settings
 } from 'lucide-react';
 import { api, Repository, TreeEntry, Commit, Branch, PullRequest } from '../lib/api';
 import { resolveNodeType } from '../lib/repoPath';
@@ -276,16 +275,6 @@ export const RepoView: React.FC = () => {
           <Settings className="w-4 h-4" />
           <span>Settings</span>
         </button>
-
-        <Link
-          to={`/${space}/${repoUid}/assistant`}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px ${
-            activeTab === 'assistant' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
-          }`}
-        >
-          <Sparkles className="w-4 h-4 text-brand" />
-          <span>Assistant</span>
-        </Link>
       </div>
 
       {/* TAB CONTENT: CODE */}

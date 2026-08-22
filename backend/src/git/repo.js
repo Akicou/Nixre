@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
 
 const exec = promisify(execFile);
 
@@ -65,7 +66,13 @@ export async function installPostReceiveHook(dir) {
 
 export async function initBareRepo(space, repo, { defaultBranch = 'main' } = {}) {
   const dir = repoDir(space, repo);
-  await exec('git', ['init', '--bare', '--initial-branch', defaultBranch, dir]);
+  await mkdir(path.dirname(dir), { recursive: true });
+  // Re-creating a repo (UI retry after a 502, leftover disk from a failed
+  // insert) must not throw — git init on an existing dir is fine, but a
+  // non-git leftover or a missing parent used to 502 the HTTP request.
+  if (!(await repoExists(space, repo))) {
+    await exec('git', ['init', '--bare', '--initial-branch', defaultBranch, dir]);
+  }
   // Allow default-branch push to an empty repo over HTTP.
   await git(dir, ['symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`]);
   await git(dir, ['config', 'http.receivepack', 'true']);
@@ -102,6 +109,16 @@ export async function removeBareRepo(space, repo) {
 export async function repoExists(space, repo) {
   try {
     await git(repoDir(space, repo), ['rev-parse', '--is-bare-repository']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True when the bare repo has at least one commit (HEAD resolves). */
+export async function hasHead(space, repo) {
+  try {
+    await git(repoDir(space, repo), ['rev-parse', '--verify', '--quiet', 'HEAD']);
     return true;
   } catch {
     return false;

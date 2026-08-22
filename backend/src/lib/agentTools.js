@@ -170,7 +170,12 @@ function pathAllowed(p, rules) {
 
 export async function listFiles(space, repo, args, permissions = {}) {
   assertRepo(space, repo);
-  const out = await git(repoDir(space, repo), ['ls-tree', '-r', '--name-only', 'HEAD']);
+  let out;
+  try {
+    out = await git(repoDir(space, repo), ['ls-tree', '-r', '--name-only', 'HEAD']);
+  } catch (err) {
+    return { output: `0 files\n(empty or missing repository: ${err.message || 'no HEAD'})` };
+  }
   const rules = pathRules(permissions);
   const files = out.split('\n').filter(Boolean).filter(p => pathAllowed(p, rules));
   const head = files.slice(0, MAX_LIST);
@@ -240,9 +245,19 @@ export async function runCommand(space, repo, args) {
   if (!command || command.length > 2000) throw new Error('Invalid command');
   if (BLOCKED.test(command)) throw new Error('Command blocked by safety policy');
 
-  const workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
+  // Clone into a path that does not exist yet. `git clone <src> <existing-dir>`
+  // fails on some git builds with "destination path already exists" even when
+  // mkdtemp left an empty folder — that is the sandbox the agent then cannot find.
+  const workdir = path.join(parent, 'repo');
   try {
-    await exec('git', ['clone', '--depth', '1', '--quiet', repoDir(space, repo), workdir], { timeout: 60_000 });
+    const src = repoDir(space, repo);
+    try {
+      await exec('git', ['clone', '--depth', '1', '--quiet', src, workdir], { timeout: 60_000 });
+    } catch {
+      // Empty bare repos have no HEAD; shallow clone fails. Full clone still works.
+      await exec('git', ['clone', '--quiet', src, workdir], { timeout: 60_000 });
+    }
     const output = await new Promise((resolve, reject) => {
       const child = spawn('sh', ['-c', command], { cwd: workdir, env: { ...process.env, CI: '1' } });
       let out = '';
@@ -271,7 +286,7 @@ export async function runCommand(space, repo, args) {
     });
     return output;
   } finally {
-    await fs.rm(workdir, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(parent, { recursive: true, force: true }).catch(() => {});
   }
 }
 

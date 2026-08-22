@@ -172,6 +172,10 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
     messages,
     stream: true,
   };
+  // OpenAI-style usage on the last SSE chunk. Local servers often reject the field.
+  if (provider !== 'ollama') {
+    body.stream_options = { include_usage: true };
+  }
   if (Array.isArray(tools) && tools.length > 0) {
     body.tools = toolSchemasOpenAI(tools);
     body.tool_choice = 'auto';
@@ -231,6 +235,14 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
     const finish = evt.choices?.[0]?.finish_reason;
     if (finish) {
       await send({ type: 'finish', reason: finish === 'tool_calls' ? 'tool_calls' : 'stop' });
+    }
+    if (evt.usage) {
+      const input = Number(evt.usage.prompt_tokens ?? evt.usage.input_tokens ?? 0);
+      const output = Number(evt.usage.completion_tokens ?? evt.usage.output_tokens ?? 0);
+      await send({
+        type: 'usage',
+        usage: { input, output, total: Number(evt.usage.total_tokens ?? input + output) },
+      });
     }
     if (!delta) return;
     // Reasoning arrives under different keys across OpenAI-compatible
@@ -352,6 +364,19 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, 
       }
     } else if (evt.type === 'message_delta' && evt.delta?.stop_reason) {
       await send({ type: 'finish', reason: evt.delta.stop_reason === 'tool_use' ? 'tool_calls' : 'stop' });
+      const usage = evt.usage;
+      if (usage) {
+        const input = Number(usage.input_tokens ?? 0);
+        const output = Number(usage.output_tokens ?? 0);
+        await send({ type: 'usage', usage: { input, output, total: input + output } });
+      }
+    } else if (evt.type === 'message_start' && evt.message?.usage) {
+      const usage = evt.message.usage;
+      const input = Number(usage.input_tokens ?? 0);
+      const output = Number(usage.output_tokens ?? 0);
+      if (input || output) {
+        await send({ type: 'usage', usage: { input, output, total: input + output } });
+      }
     }
   });
 }

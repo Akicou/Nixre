@@ -71,6 +71,7 @@ export type ChatStreamEvent =
   | { type: 'reasoning'; text: string }
   | { type: 'text'; text: string }
   | { type: 'tool_delta'; index: number; id?: string; name?: string; argsDelta?: string }
+  | { type: 'usage'; usage: { input: number; output: number; total?: number } }
   | { type: 'finish'; reason: string }
   | { type: 'error'; message: string }
   | { type: 'done' };

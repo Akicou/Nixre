@@ -5,6 +5,7 @@
 import express from 'express';
 import {
   initBareRepo,
+  hasHead,
   removeBareRepo,
   listTree,
   readBlob,
@@ -182,33 +183,51 @@ export function forgeRoutes(pool, authenticate) {
       res.status(403).json({ message: 'No write access to this space' });
       return;
     }
-    const exists = await pool.query(
-      'SELECT id FROM repos WHERE space_uid = $1 AND uid = $2',
+    const existing = await pool.query(
+      'SELECT * FROM repos WHERE space_uid = $1 AND uid = $2',
       [spaceUid, uid],
     );
-    if (exists.rows.length > 0) {
-      res.status(409).json({ message: 'Repo already exists' });
+    let repo = existing.rows[0] ?? null;
+    let created = false;
+    if (!repo) {
+      const ts = now();
+      try {
+        const { rows } = await pool.query(
+          `INSERT INTO repos (space_uid, uid, description, is_public, default_branch, created_by, created, updated)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $7) RETURNING *`,
+          [spaceUid, uid, description, isPublic, defaultBranch, req.auth.user.uid, ts],
+        );
+        repo = rows[0];
+        created = true;
+      } catch (err) {
+        // Concurrent create: unique (space_uid, uid). Treat as already there.
+        if (err.code !== '23505') throw err;
+        const again = await pool.query(
+          'SELECT * FROM repos WHERE space_uid = $1 AND uid = $2',
+          [spaceUid, uid],
+        );
+        repo = again.rows[0];
+      }
+    }
+
+    try {
+      await initBareRepo(spaceUid, uid, { defaultBranch });
+      // Seed when this is a new row or a retry left an empty bare repo
+      // (the usual 502 → "already exists" path). Skip if HEAD already exists.
+      if (readme && (created || !(await hasHead(spaceUid, uid)))) {
+        const { seedReadme } = await import('../git/repo.js');
+        await seedReadme(spaceUid, uid, {
+          authorName: req.auth.user.display_name || req.auth.user.uid,
+          authorEmail: req.auth.user.email,
+          description,
+        }).catch(err => console.error('seedReadme failed:', err.message));
+      }
+    } catch (err) {
+      console.error('initBareRepo failed:', err.message);
+      res.status(502).json({ message: err.message || 'Failed to initialize git repository' });
       return;
     }
-
-    const ts = now();
-    const { rows } = await pool.query(
-      `INSERT INTO repos (space_uid, uid, description, is_public, default_branch, created_by, created, updated)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7) RETURNING *`,
-      [spaceUid, uid, description, isPublic, defaultBranch, req.auth.user.uid, ts],
-    );
-    const repo = rows[0];
-
-    await initBareRepo(spaceUid, uid, { defaultBranch });
-    if (readme) {
-      const { seedReadme } = await import('../git/repo.js');
-      await seedReadme(spaceUid, uid, {
-        authorName: req.auth.user.display_name || req.auth.user.uid,
-        authorEmail: req.auth.user.email,
-        description,
-      }).catch(err => console.error('seedReadme failed:', err.message));
-    }
-    res.status(201).json(rowToRepo(repo));
+    res.status(created ? 201 : 200).json(rowToRepo(repo));
   });
 
   // /repos/{space}/{repo}/+ — the UI's canonical repo resource path.

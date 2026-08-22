@@ -300,17 +300,31 @@ class ApiClient {
   }
 
   async createRepo(parent_ref: string, uid: string, description: string, is_public = true, readme = true, default_branch = 'main'): Promise<Repository> {
-    return this.request<Repository>('/repos', {
-      method: 'POST',
-      body: JSON.stringify({
-        parent_ref,
-        uid,
-        description,
-        is_public,
-        readme,
-        default_branch,
-      }),
-    });
+    try {
+      return await this.request<Repository>('/repos', {
+        method: 'POST',
+        body: JSON.stringify({
+          parent_ref,
+          uid,
+          description,
+          is_public,
+          readme,
+          default_branch,
+        }),
+      });
+    } catch (err) {
+      // A timed-out first create still writes the row. Retry then looks like
+      // "already exists" (or a 502). Open the existing repo instead of failing.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/already exists|502/i.test(msg)) {
+        try {
+          return await this.getRepo(`${parent_ref}/${uid}`);
+        } catch {
+          /* fall through */
+        }
+      }
+      throw err;
+    }
   }
 
   async updateRepo(repoRef: string, update: { description?: string; is_public?: boolean }): Promise<Repository> {

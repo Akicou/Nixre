@@ -39,14 +39,14 @@ describe('NewRepo', () => {
   });
 
   it('shows an error when creation fails', async () => {
-    api.createRepo.mockRejectedValue(new Error('repo exists'));
+    api.createRepo.mockRejectedValue(new Error('disk full'));
     mount();
 
     await screen.findByText('acme');
     fireEvent.change(screen.getByPlaceholderText('e.g. awesome-app'), { target: { value: 'website' } });
     fireEvent.click(screen.getByRole('button', { name: /Create Repository/i }));
 
-    expect(await screen.findByText(/repo exists/)).toBeInTheDocument();
+    expect(await screen.findByText(/disk full/)).toBeInTheDocument();
   });
 });
 
