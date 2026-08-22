@@ -63,9 +63,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
         {/* Brand & Space Switcher */}
         <div className="flex items-center gap-6">
           <Link to="/" className="flex items-center gap-2 font-semibold tracking-tight text-txt-primary hover:opacity-90">
-            <div className="w-7 h-7 rounded bg-brand flex items-center justify-center text-white font-mono text-sm font-bold shadow-sm">
-              NX
-            </div>
+            <img src="/nixre-mark.png" alt="" className="w-7 h-7 object-contain" />
             <span className="text-base font-semibold tracking-wide">Nixre</span>
             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-subtle text-txt-tertiary border border-border-subtle hidden sm:inline">
               nixre.dev
