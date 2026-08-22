@@ -79,8 +79,8 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
       </button>
 
       <div className="border border-border-subtle rounded-lg bg-surface-canvas p-5 space-y-3">
-        <div className="flex items-start justify-between gap-4">
-          <div>
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+          <div className="min-w-0">
             <h3 className="text-base font-semibold text-txt-primary">
               {pr.title} <span className="text-txt-tertiary font-mono font-normal">#{pr.number}</span>
             </h3>
@@ -88,19 +88,21 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
               {pr.source_branch} → {pr.target_branch} &bull; by {pr.author?.display_name || pr.author?.uid}
             </p>
           </div>
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
           <button
             onClick={() => setCopilotOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm shrink-0"
+            className="flex items-center gap-1.5 px-2.5 py-2.5 rounded-md text-xs font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm min-h-11"
             title="Review with Nixre Assistant"
           >
             <Sparkles className="w-3.5 h-3.5" />
             Assistant
           </button>
-          <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold shrink-0 ${
+          <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold ${
             pr.state === 'open' ? 'bg-surface-open text-txt-open' : pr.state === 'merged' ? 'bg-surface-merged text-txt-merged' : 'bg-surface-closed text-txt-closed'
           }`}>
             {pr.state}
           </span>
+          </div>
         </div>
 
         {pr.description && <p className="text-sm text-txt-secondary whitespace-pre-line">{pr.description}</p>}

@@ -220,10 +220,10 @@ export const RepoView: React.FC = () => {
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-border-subtle">
+      <div className="flex items-center gap-1 border-b border-border-subtle overflow-x-auto flex-nowrap scrollbar-thin">
         <button
           onClick={() => { setSearchParams({ tab: 'code', branch: currentBranch, type: 'tree' }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px ${
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
             activeTab === 'code' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
           }`}
         >
@@ -233,7 +233,7 @@ export const RepoView: React.FC = () => {
 
         <button
           onClick={() => { setSearchParams({ tab: 'commits', branch: currentBranch }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px ${
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
             activeTab === 'commits' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
           }`}
         >
@@ -243,7 +243,7 @@ export const RepoView: React.FC = () => {
 
         <button
           onClick={() => { setSearchParams({ tab: 'pulls' }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px ${
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
             activeTab === 'pulls' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
           }`}
         >
@@ -258,7 +258,7 @@ export const RepoView: React.FC = () => {
 
         <button
           onClick={() => { setSearchParams({ tab: 'branches' }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px ${
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
             activeTab === 'branches' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
           }`}
         >
@@ -268,7 +268,7 @@ export const RepoView: React.FC = () => {
 
         <button
           onClick={() => { setSearchParams({ tab: 'settings' }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px ${
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
             activeTab === 'settings' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
           }`}
         >

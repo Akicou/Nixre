@@ -92,7 +92,7 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
                 <button
                   onClick={() => { setDraft(message.content); setEditing(true); }}
                   title="Edit & resend"
-                  className="mt-0.5 opacity-0 group-hover:opacity-100 transition text-[10px] text-txt-tertiary hover:text-txt-primary flex items-center gap-1"
+                  className="mt-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition text-[10px] text-txt-tertiary hover:text-txt-primary flex items-center gap-1 min-h-11 px-1"
                 >
                   <Pencil className="w-3 h-3" /> edit &amp; resend
                 </button>

@@ -65,17 +65,17 @@ export const AssistantPage: React.FC = () => {
   // The app shell adds a 57px sticky navbar (h-14 + border) and ~48px footer;
   // the chat needs a bounded height so its internal flex/scroll layout works.
   return (
-    <div className="relative h-[calc(100dvh-105px)] min-h-[420px] overflow-hidden">
-      <div className="absolute top-3 right-4 z-10">
+    <div className="flex flex-col h-[calc(100dvh-7rem)] min-h-[28rem]">
+      <div className="flex flex-wrap items-center justify-end gap-2 px-3 sm:px-4 py-2 border-b border-border-subtle bg-surface-canvas shrink-0">
         <button
           onClick={() => navigate(`/agent?repo=${encodeURIComponent(repoPath)}`)}
           title="Hand this task to the agentic engineering workspace"
-          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-border-subtle bg-surface-canvas text-txt-secondary hover:text-txt-primary hover:border-brand transition"
+          className="flex items-center gap-1.5 text-xs px-3 py-2.5 rounded-md border border-border-subtle bg-surface-base text-txt-secondary hover:text-txt-primary hover:border-brand transition min-h-11"
         >
           Open in Agent Workspace
         </button>
       </div>
-      <div className="h-full">
+      <div className="relative flex-1 min-h-0">
         {profile && (
           <ChatSurface
             repoPath={repoPath}

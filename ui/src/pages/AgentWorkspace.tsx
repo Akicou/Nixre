@@ -12,6 +12,7 @@ import {
   Download,
   FolderGit2,
   Loader2,
+  PanelLeft,
   Plus,
   Sparkles,
   Square,
@@ -43,6 +44,7 @@ import {
 } from '../lib/assistantEngine';
 import { ChatMessageView } from '../components/assistant/ChatMessageView';
 import { ComposerAttach } from '../components/assistant/ComposerAttach';
+import { MobileDrawer } from '../components/MobileDrawer';
 import { appendPastedImages, imageFilesFromClipboard, type ChatImage } from '../lib/chatImages';
 import {
   downloadJsonl,
@@ -102,6 +104,7 @@ export const AgentWorkspace: React.FC = () => {
   const [modelOpen, setModelOpen] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
+  const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const [trace, setTrace] = useState<SessionTraceEntry[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -706,92 +709,212 @@ export const AgentWorkspace: React.FC = () => {
     </div>
   );
 
+  const pickSession = (c: Conversation) => {
+    setSessionDrawerOpen(false);
+    openConversation(c);
+  };
+
+  const sessionListPanel = (
+    <>
+      <div className="p-3 pb-2">
+        <button
+          type="button"
+          onClick={() => {
+            setSessionDrawerOpen(false);
+            startNew();
+          }}
+          className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium transition min-h-11 ${
+            empty
+              ? 'bg-surface-subtle text-txt-primary'
+              : 'text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary'
+          }`}
+        >
+          <Sparkles className="w-3.5 h-3.5" />
+          New Agent
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-2 pb-3 space-y-3">
+        {groupedSessions.length === 0 ? (
+          <p className="px-3 py-4 text-[11px] leading-relaxed text-txt-tertiary">
+            Past agent tasks land here, grouped by repo.
+          </p>
+        ) : (
+          groupedSessions.map(([groupPath, convs]) => (
+            <div key={groupPath}>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-txt-tertiary">
+                <FolderGit2 className="w-3 h-3 shrink-0 opacity-70" />
+                <span className="truncate">{groupPath}</span>
+              </div>
+              <div className="space-y-0.5">
+                {convs.map(c => (
+                  <div
+                    key={c.id}
+                    className={`group flex items-center gap-1 rounded-md pl-2.5 pr-1 py-2 cursor-pointer transition min-h-11 ${
+                      c.id === currentId
+                        ? 'bg-surface-subtle text-txt-primary'
+                        : 'text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary active:bg-surface-subtle'
+                    }`}
+                    onClick={() => pickSession(c)}
+                  >
+                    <span className="flex-1 min-w-0 truncate text-[12.5px] leading-snug">
+                      {c.title || 'Untitled'}
+                    </span>
+                    <span className="text-[10px] text-txt-tertiary tabular-nums shrink-0 sm:group-hover:hidden">
+                      {relativeAge(c.updatedAt)}
+                    </span>
+                    <button
+                      type="button"
+                      title="Delete"
+                      onClick={e => {
+                        e.stopPropagation();
+                        deleteConversation(c.id)
+                          .then(() => {
+                            if (currentId === c.id) startNew();
+                          })
+                          .catch(() => {})
+                          .finally(refreshSessions);
+                      }}
+                      className="flex sm:hidden sm:group-hover:flex min-h-11 min-w-11 items-center justify-center rounded text-txt-tertiary hover:text-rose-400 transition shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </>
+  );
+
+  const repoPickerDropdown = repoOpen && (
+    <div className="absolute left-0 top-[calc(100%+6px)] w-[min(16rem,calc(100vw-2rem))] max-h-64 overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop">
+      {repos.length === 0 ? (
+        <p className="px-3 py-2 text-[12px] text-txt-tertiary">No repos yet.</p>
+      ) : (
+        repos.map(r => (
+          <button
+            key={r.path}
+            type="button"
+            onClick={() => {
+              setRepoOpen(false);
+              if (r.path !== activeRepo) changeRepo(r.path);
+            }}
+            className={`w-full text-left px-3 py-2.5 text-[12px] font-mono truncate transition min-h-11 ${
+              r.path === activeRepo
+                ? 'bg-surface-subtle text-txt-primary'
+                : 'text-txt-secondary hover:bg-surface-subtle'
+            }`}
+          >
+            {r.path}
+          </button>
+        ))
+      )}
+    </div>
+  );
+
+  const modePickerDropdown = modeOpen && (
+    <div className="absolute left-0 top-[calc(100%+6px)] w-[min(18rem,calc(100vw-2rem))] rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop">
+      {ASSISTANT_MODES.map(m => (
+        <button
+          key={m.id}
+          type="button"
+          onClick={() => changeMode(m.id)}
+          className={`w-full text-left px-3 py-2.5 transition min-h-11 ${
+            m.id === mode ? 'bg-surface-subtle' : 'hover:bg-surface-subtle'
+          }`}
+        >
+          <div
+            className={`text-[12.5px] font-medium ${
+              m.id === mode ? 'text-txt-primary' : 'text-txt-secondary'
+            }`}
+          >
+            {m.label}
+          </div>
+          <div className="text-[11px] text-txt-tertiary leading-snug mt-0.5">{m.description}</div>
+        </button>
+      ))}
+    </div>
+  );
+
+  const contextPickers = (
+    <div className="flex items-center gap-1 flex-wrap justify-center text-[12px] text-txt-tertiary">
+      <div ref={repoMenuRef} className="relative">
+        <button
+          type="button"
+          onClick={() => {
+            setRepoOpen(o => !o);
+            setModelOpen(false);
+            setModeOpen(false);
+          }}
+          className="flex items-center gap-1 px-2 py-2 rounded-md hover:bg-surface-subtle hover:text-txt-secondary transition min-h-11"
+        >
+          <span className="font-mono text-txt-secondary truncate max-w-[10rem] sm:max-w-none">
+            {activeRepo || 'pick a repo'}
+          </span>
+          <ChevronDown className="w-3 h-3 shrink-0" />
+        </button>
+        {repoPickerDropdown}
+      </div>
+      <span className="opacity-30 hidden sm:inline">·</span>
+      <div ref={modeMenuRef} className="relative">
+        <button
+          type="button"
+          onClick={() => {
+            setModeOpen(o => !o);
+            setRepoOpen(false);
+            setModelOpen(false);
+          }}
+          className="flex items-center gap-1 px-2 py-2 rounded-md hover:bg-surface-subtle hover:text-txt-secondary transition min-h-11"
+        >
+          <span className="text-txt-secondary">{getMode(mode).label}</span>
+          <ChevronDown className="w-3 h-3 shrink-0" />
+        </button>
+        {modePickerDropdown}
+      </div>
+    </div>
+  );
+
   // --- layout --------------------------------------------------------------
   return (
     <div className="agent-shell flex bg-surface-base text-txt-primary">
-      {/* Left rail — quiet session list */}
-      <aside className="hidden md:flex flex-col w-[15.5rem] shrink-0 border-r border-border-subtle bg-surface-canvas">
-        <div className="p-3 pb-2">
-          <button
-            type="button"
-            onClick={startNew}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium transition ${
-              empty
-                ? 'bg-surface-subtle text-txt-primary'
-                : 'text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            New Agent
-          </button>
-        </div>
+      <MobileDrawer
+        open={sessionDrawerOpen}
+        onClose={() => setSessionDrawerOpen(false)}
+        title="Agent tasks"
+      >
+        {sessionListPanel}
+      </MobileDrawer>
 
-        <div className="flex-1 overflow-y-auto px-2 pb-3 space-y-3">
-          {groupedSessions.length === 0 ? (
-            <p className="px-3 py-4 text-[11px] leading-relaxed text-txt-tertiary">
-              Past agent tasks land here, grouped by repo.
-            </p>
-          ) : (
-            groupedSessions.map(([groupPath, convs]) => (
-              <div key={groupPath}>
-                <div className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-txt-tertiary">
-                  <FolderGit2 className="w-3 h-3 shrink-0 opacity-70" />
-                  <span className="truncate">{groupPath}</span>
-                </div>
-                <div className="space-y-0.5">
-                  {convs.map(c => (
-                    <div
-                      key={c.id}
-                      className={`group flex items-center gap-1 rounded-md pl-2.5 pr-1 py-1.5 cursor-pointer transition ${
-                        c.id === currentId
-                          ? 'bg-surface-subtle text-txt-primary'
-                          : 'text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary'
-                      }`}
-                      onClick={() => openConversation(c)}
-                    >
-                      <span className="flex-1 min-w-0 truncate text-[12.5px] leading-snug">
-                        {c.title || 'Untitled'}
-                      </span>
-                      <span className="text-[10px] text-txt-tertiary tabular-nums shrink-0 group-hover:hidden">
-                        {relativeAge(c.updatedAt)}
-                      </span>
-                      <button
-                        type="button"
-                        title="Delete"
-                        onClick={e => {
-                          e.stopPropagation();
-                          deleteConversation(c.id)
-                            .then(() => {
-                              if (currentId === c.id) startNew();
-                            })
-                            .catch(() => {})
-                            .finally(refreshSessions);
-                        }}
-                        className="hidden group-hover:flex p-1 rounded text-txt-tertiary hover:text-rose-400 transition"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+      {/* Left rail — desktop only */}
+      <aside className="hidden md:flex flex-col w-[15.5rem] shrink-0 border-r border-border-subtle bg-surface-canvas">
+        {sessionListPanel}
       </aside>
 
       {/* Main canvas */}
       <div className="flex-1 min-w-0 flex flex-col relative">
         {/* Top chrome — only when a session is open */}
         {!empty && (
-          <div className="flex items-center justify-between px-5 py-3 border-b border-border-subtle">
-            <div className="min-w-0">
-              <p className="text-[13px] font-medium text-txt-primary truncate">
-                {allConversations.find(c => c.id === currentId)?.title || 'Agent'}
-              </p>
-              <p className="text-[11px] text-txt-tertiary truncate font-mono">
-                {activeRepo} · {getMode(mode).label}
-              </p>
+          <div className="flex items-center justify-between gap-2 px-3 sm:px-5 py-3 border-b border-border-subtle">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <button
+                type="button"
+                onClick={() => setSessionDrawerOpen(true)}
+                className="md:hidden shrink-0 min-h-11 min-w-11 flex items-center justify-center rounded-md text-txt-secondary hover:bg-surface-subtle transition"
+                title="Past tasks"
+                aria-label="Open task list"
+              >
+                <PanelLeft className="w-5 h-5" />
+              </button>
+              <div className="min-w-0">
+                <p className="text-[13px] font-medium text-txt-primary truncate">
+                  {allConversations.find(c => c.id === currentId)?.title || 'Agent'}
+                </p>
+                <p className="text-[11px] text-txt-tertiary truncate font-mono">
+                  {activeRepo} · {getMode(mode).label}
+                </p>
+              </div>
             </div>
             <div className="flex items-center gap-2">
               {lastTurnMetrics(trace) && (
@@ -838,91 +961,18 @@ export const AgentWorkspace: React.FC = () => {
 
         {/* Body */}
         {empty ? (
-          <div className="flex-1 flex flex-col items-center justify-center px-6 pb-16">
-            {/* Context strip above the card — Cursor's "nahenet ∨ main ∨ Local" */}
-            <div className="flex items-center gap-1 mb-3 text-[12px] text-txt-tertiary">
-              <div ref={repoMenuRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setRepoOpen(o => !o);
-                    setModelOpen(false);
-                    setModeOpen(false);
-                  }}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-surface-subtle hover:text-txt-secondary transition"
-                >
-                  <span className="font-mono text-txt-secondary">
-                    {activeRepo || 'pick a repo'}
-                  </span>
-                  <ChevronDown className="w-3 h-3" />
-                </button>
-                {repoOpen && (
-                  <div className="absolute left-1/2 -translate-x-1/2 top-[calc(100%+6px)] w-64 max-h-64 overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop">
-                    {repos.length === 0 ? (
-                      <p className="px-3 py-2 text-[12px] text-txt-tertiary">No repos yet.</p>
-                    ) : (
-                      repos.map(r => (
-                        <button
-                          key={r.path}
-                          type="button"
-                          onClick={() => {
-                            setRepoOpen(false);
-                            if (r.path !== activeRepo) changeRepo(r.path);
-                          }}
-                          className={`w-full text-left px-3 py-1.5 text-[12px] font-mono truncate transition ${
-                            r.path === activeRepo
-                              ? 'bg-surface-subtle text-txt-primary'
-                              : 'text-txt-secondary hover:bg-surface-subtle'
-                          }`}
-                        >
-                          {r.path}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-              <span className="opacity-30">·</span>
-              <div ref={modeMenuRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setModeOpen(o => !o);
-                    setRepoOpen(false);
-                    setModelOpen(false);
-                  }}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-surface-subtle hover:text-txt-secondary transition"
-                >
-                  <span className="text-txt-secondary">{getMode(mode).label}</span>
-                  <ChevronDown className="w-3 h-3" />
-                </button>
-                {modeOpen && (
-                  <div className="absolute left-1/2 -translate-x-1/2 top-[calc(100%+6px)] w-72 rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop">
-                    {ASSISTANT_MODES.map(m => (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => changeMode(m.id)}
-                        className={`w-full text-left px-3 py-2 transition ${
-                          m.id === mode ? 'bg-surface-subtle' : 'hover:bg-surface-subtle'
-                        }`}
-                      >
-                        <div
-                          className={`text-[12.5px] font-medium ${
-                            m.id === mode ? 'text-txt-primary' : 'text-txt-secondary'
-                          }`}
-                        >
-                          {m.label}
-                        </div>
-                        <div className="text-[11px] text-txt-tertiary leading-snug mt-0.5">
-                          {m.description}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+          <div className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 pb-16 relative">
+            <button
+              type="button"
+              onClick={() => setSessionDrawerOpen(true)}
+              className="md:hidden absolute top-3 left-3 min-h-11 min-w-11 flex items-center justify-center rounded-md text-txt-secondary hover:bg-surface-subtle border border-border-subtle transition"
+              title="Past tasks"
+              aria-label="Open task list"
+            >
+              <PanelLeft className="w-5 h-5" />
+            </button>
+            {contextPickers}
+            <div className="h-2" />
 
             {composer}
 
@@ -981,32 +1031,8 @@ export const AgentWorkspace: React.FC = () => {
             </div>
 
             {/* Docked floating composer */}
-            <div className="px-5 pb-5 pt-2 flex flex-col items-center">
-              <div className="w-full max-w-3xl flex items-center justify-center gap-2 mb-2 text-[11px] text-txt-tertiary">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setRepoOpen(o => !o);
-                    setModelOpen(false);
-                    setModeOpen(false);
-                  }}
-                  className="font-mono hover:text-txt-secondary transition"
-                >
-                  {activeRepo}
-                </button>
-                <span className="opacity-30">·</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setModeOpen(o => !o);
-                    setRepoOpen(false);
-                    setModelOpen(false);
-                  }}
-                  className="hover:text-txt-secondary transition"
-                >
-                  {getMode(mode).label}
-                </button>
-              </div>
+            <div className="px-3 sm:px-5 pb-5 pt-2 flex flex-col items-center">
+              <div className="w-full max-w-3xl mb-2">{contextPickers}</div>
               {composer}
             </div>
           </>

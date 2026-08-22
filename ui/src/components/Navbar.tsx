@@ -134,18 +134,31 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
             <>
               {/* Agentic engineering workspace — only when the assistant plugin is live */}
               {assistantLive && (
-                <Link
-                  to="/agent"
-                  title="Agentic engineering workspace"
-                  className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border transition ${
-                    location.pathname === '/agent'
-                      ? 'border-brand bg-brand/10 text-brand'
-                      : 'border-border-subtle text-txt-secondary hover:text-txt-primary hover:border-border-mid'
-                  }`}
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Agent</span>
-                </Link>
+                <>
+                  <Link
+                    to="/agent"
+                    title="Agentic engineering workspace"
+                    className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border transition ${
+                      location.pathname === '/agent'
+                        ? 'border-brand bg-brand/10 text-brand'
+                        : 'border-border-subtle text-txt-secondary hover:text-txt-primary hover:border-border-mid'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Agent</span>
+                  </Link>
+                  <Link
+                    to="/agent"
+                    title="Agent workspace"
+                    className={`sm:hidden min-h-11 min-w-11 flex items-center justify-center rounded border transition ${
+                      location.pathname === '/agent'
+                        ? 'border-brand bg-brand/10 text-brand'
+                        : 'border-border-subtle text-txt-secondary hover:text-txt-primary'
+                    }`}
+                  >
+                    <Sparkles className="w-4 h-4" />
+                  </Link>
+                </>
               )}
               <Link
                 to="/new-repo"
@@ -153,6 +166,13 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>New Repository</span>
+              </Link>
+              <Link
+                to="/new-repo"
+                title="New repository"
+                className="sm:hidden min-h-11 min-w-11 flex items-center justify-center rounded bg-brand text-white hover:bg-brand-hover transition shadow-sm"
+              >
+                <Plus className="w-4 h-4" />
               </Link>
 
               {/* Theme Toggle */}
