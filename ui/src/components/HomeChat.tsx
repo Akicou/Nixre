@@ -8,7 +8,6 @@ import {
   Plus,
   Sparkles,
   Settings2,
-  User,
 } from 'lucide-react';
 import {
   getActiveProviderProfile,
@@ -22,12 +21,16 @@ import {
   runRealTurn,
   applyEvent,
   uid,
+  buildModelContext,
+  shouldAutoCompact,
+  runCompaction,
+  withCompaction,
   type ChatMessage,
   type Conversation,
 } from '../lib/assistantEngine';
 import { ASSISTANT_MODES, MODE_ACCENT_CLASSES, type ModeId } from '../lib/assistantModes';
 import { modelLabel } from '../lib/aiApi';
-import { Markdown } from './Markdown';
+import { ChatMessageView } from './assistant/ChatMessageView';
 
 // The dashboard conversation bucket — not tied to a repo. Repo-bound chats
 // live on the repo page; this one is for forge-wide questions and quick work.
@@ -133,14 +136,14 @@ export const HomeChat: React.FC = () => {
       setMessages(local);
       await updateConversation({ id, repoPath: HOME_PATH, title, messages: local, updatedAt: Date.now() });
 
-      const history = messages
-        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      const priorMessages = local.slice(0, -1); // exclude the just-added user message
+      const { summary, history } = buildModelContext(priorMessages);
 
       try {
         for await (const ev of runRealTurn(prompt, { ...profile, model: workingModel || profile.model }, history, {
           model: workingModel || undefined,
           mode,
+          compactionSummary: summary ?? undefined,
         })) {
           local = applyEvent(local, ev);
           setMessages(local);
@@ -150,6 +153,20 @@ export const HomeChat: React.FC = () => {
         setMessages(local);
       }
       await updateConversation({ id, repoPath: HOME_PATH, title, messages: local, updatedAt: Date.now() });
+
+      // Auto-compaction — same policy as the repo ChatSurface.
+      if (shouldAutoCompact(local)) {
+        try {
+          const compactSummary = await runCompaction(local, { ...profile, model: workingModel || profile.model }, {
+            model: workingModel || undefined,
+          });
+          local = withCompaction(local, compactSummary);
+          setMessages(local);
+          await updateConversation({ id, repoPath: HOME_PATH, title, messages: local, updatedAt: Date.now() });
+        } catch {
+          // best-effort
+        }
+      }
     } catch {
       // persistence failure — the turn still rendered
     } finally {
@@ -248,14 +265,14 @@ export const HomeChat: React.FC = () => {
               )
             ) : (
               <div className="space-y-4">
-                {messages.map(msg => (
-                  <HomeMessage key={msg.id} message={msg} />
-                ))}
-                {streaming && !messages.some(m => m.role === 'assistant' && m.content) && (
-                  <div className="flex items-center gap-2 text-[11px] text-txt-tertiary">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Thinking…</span>
-                  </div>
+                {messages.map((msg, i) =>
+                  (msg as any).kind === 'compaction' ? null : (
+                    <ChatMessageView
+                      key={msg.id}
+                      message={msg}
+                      streaming={streaming && i === messages.length - 1 && msg.role === 'assistant'}
+                    />
+                  ),
                 )}
               </div>
             )}
@@ -395,41 +412,3 @@ export const HomeChat: React.FC = () => {
   );
 };
 
-const HomeMessage: React.FC<{ message: ChatMessage }> = ({ message }) => {
-  const isUser = message.role === 'user';
-  return (
-    <div className={`home-msg flex gap-2.5 ${isUser ? 'flex-row-reverse' : ''}`}>
-      <div
-        className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${
-          isUser ? 'bg-brand text-white' : 'bg-surface-subtle border border-border-subtle text-brand'
-        }`}
-      >
-        {isUser ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
-      </div>
-      <div
-        className={`max-w-[85%] rounded-lg px-3 py-2 text-xs leading-relaxed ${
-          isUser
-            ? 'bg-brand text-white'
-            : 'bg-surface-base border border-border-subtle text-txt-primary markdown-body'
-        }`}
-      >
-        {isUser ? (
-          <span className="whitespace-pre-line">{message.content}</span>
-        ) : (
-          <>
-            {message.reasoning && message.reasoning.length > 0 && (
-              <div className="mb-2 border-l-2 border-brand/40 pl-2.5 py-0.5">
-                {message.reasoning.map(r => (
-                  <p key={r.id} className="text-[10px] text-txt-tertiary italic leading-relaxed">
-                    {r.text}
-                  </p>
-                ))}
-              </div>
-            )}
-            <Markdown content={message.content} />
-          </>
-        )}
-      </div>
-    </div>
-  );
-};

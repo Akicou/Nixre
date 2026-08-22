@@ -5,14 +5,11 @@ import {
   Plus,
   Trash2,
   Bot,
-  Check,
   X,
+  ChevronsUpDown,
   ChevronDown,
-  ChevronRight,
   Loader2,
   Sparkles,
-  User,
-  XCircle,
   Settings2
 } from 'lucide-react';
 import { getPlugin } from '../../lib/plugins';
@@ -21,18 +18,20 @@ import { ASSISTANT_MODES, MODE_ACCENT_CLASSES, getMode, type ModeId } from '../.
 import { modelLabel } from '../../lib/aiApi';
 import {
   listConversations,
-  getConversation,
   createConversation,
   updateConversation,
   deleteConversation,
   runRealTurn,
   applyEvent,
   uid,
+  buildModelContext,
+  shouldAutoCompact,
+  runCompaction,
+  withCompaction,
   type ChatMessage,
   type Conversation,
-  type EngineEvent,
 } from '../../lib/assistantEngine';
-import { Markdown } from '../Markdown';
+import { ChatMessageView } from './ChatMessageView';
 
 interface ChatSurfaceProps {
   repoPath: string;
@@ -76,7 +75,6 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
-  const [openTools, setOpenTools] = useState<Record<string, boolean>>({});
   const [workingModel, setWorkingModel] = useState(profile.model);
   const [workingReasoning, setWorkingReasoning] = useState(profile.reasoningLevel);
   const [mode, setMode] = useState<ModeId>('ask');
@@ -164,15 +162,17 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         reasoningLevel: workingReasoning,
       };
 
-      // Stream the actual model through nixre-core's proxy.
-      const history = messages
-        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      // Stream the actual model through nixre-core's proxy. History comes
+      // from the pre-turn transcript; auto-compaction replaces everything
+      // before the last compaction entry with its summary.
+      const priorMessages = local.slice(0, -1); // exclude the just-added user message
+      const { summary, history } = buildModelContext(priorMessages);
       try {
         for await (const ev of runRealTurn(prompt, workingProfile, history, {
           model: workingModel,
           reasoningLevel: workingReasoning,
           mode,
+          compactionSummary: summary ?? undefined,
         })) {
           local = applyEvent(local, ev);
           setMessages(local);
@@ -185,6 +185,20 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         setMessages(local);
       }
       await updateConversation({ id: convId, repoPath, title, messages: local, updatedAt: Date.now() });
+
+      // Auto-compaction: once enough turns pile up, have the model distill
+      // them into a handoff summary so later turns stay inside the context
+      // window without losing the thread.
+      if (shouldAutoCompact(local)) {
+        try {
+          const compactSummary = await runCompaction(local, workingProfile, { model: workingModel });
+          local = withCompaction(local, compactSummary);
+          setMessages(local);
+          await updateConversation({ id: convId, repoPath, title, messages: local, updatedAt: Date.now() });
+        } catch {
+          // Compaction is best-effort — never fail a turn over it.
+        }
+      }
     } catch {
       // Backend unreachable — the turn still rendered locally; surface nothing
       // extra here, the sidebar refresh below will reflect the true state.
@@ -231,7 +245,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
             conversations.map(c => (
               <div
                 key={c.id}
-                className={`group flex items-center justify-group-between rounded px-2 py-1.5 text-xs cursor-pointer transition ${
+                className={`group flex items-center justify-between rounded px-2 py-1.5 text-xs cursor-pointer transition ${
                   c.id === currentId ? 'bg-surface-subtle text-txt-primary' : 'text-txt-secondary hover:bg-surface-subtle/60'
                 }`}
                 onClick={() => loadConversation(c)}
@@ -327,15 +341,17 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
               </div>
             )
           ) : (
-            <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
-              {messages.map(msg => (
-                <Message key={msg.id} message={msg} openTools={openTools} onToggleTool={setOpenTools} />
-              ))}
-              {streaming && !messages.some(m => m.role === 'assistant' && m.content) && (
-                <div className="flex items-center gap-2 text-xs text-txt-tertiary">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Thinking…</span>
-                </div>
+            <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+              {messages.map((msg, i) =>
+                (msg as any).kind === 'compaction' ? (
+                  <CompactionDivider key={msg.id} summary={(msg as any).summary as string} />
+                ) : (
+                  <ChatMessageView
+                    key={msg.id}
+                    message={msg}
+                    streaming={streaming && i === messages.length - 1 && msg.role === 'assistant'}
+                  />
+                ),
               )}
             </div>
           )}
@@ -474,81 +490,25 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   );
 };
 
-interface MessageProps {
-  message: ChatMessage;
-  openTools: Record<string, boolean>;
-  onToggleTool: (tools: Record<string, boolean>) => void;
-}
-
-const Message: React.FC<MessageProps> = ({ message, openTools, onToggleTool }) => {
-  const isUser = message.role === 'user';
+/** Marker between compacted history and live messages — expandable to inspect the handoff summary. */
+const CompactionDivider: React.FC<{ summary: string }> = ({ summary }) => {
+  const [open, setOpen] = useState(false);
   return (
-    <div className={`flex gap-2.5 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
-      <div className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center ${
-        isUser ? 'bg-brand text-white' : 'bg-surface-subtle border border-border-subtle text-brand'
-      }`}>
-        {isUser ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
-      </div>
-      <div className={`flex-1 min-w-0 ${isUser ? 'text-right' : 'text-left'}`}>
-        <div className={`inline-block text-left max-w-full rounded-lg px-3 py-2 ${
-          isUser ? 'bg-brand text-white' : 'bg-surface-canvas border border-border-subtle'
-        }`}>
-          {message.reasoning && message.reasoning.length > 0 && (
-            <div className="space-y-1.5 my-2 border-l-2 border-brand/40 pl-3 pr-2 py-1 bg-brand/5 rounded-r">
-              {message.reasoning.map(r => (
-                <p key={r.id} className="text-[11px] text-txt-secondary italic leading-relaxed">{r.text}</p>
-              ))}
-            </div>
-          )}
-          {message.toolCalls && message.toolCalls.length > 0 && (
-            <div className="space-y-1.5 my-2">
-              {message.toolCalls.map(tool => (
-                <ToolBlock
-                  key={tool.id}
-                  tool={tool}
-                  open={openTools[tool.id] ?? false}
-                  onToggle={open => onToggleTool({ ...openTools, [tool.id]: open })}
-                />
-              ))}
-            </div>
-          )}
-          <div className={`text-xs leading-relaxed ${isUser ? 'text-white' : 'text-txt-primary markdown-body'}`}>
-            {isUser ? <span className="whitespace-pre-line">{message.content}</span> : <Markdown content={message.content} />}
-          </div>
+    <div className="flex flex-col items-center gap-1 py-1">
+      <button
+        onClick={() => setOpen(o => !o)}
+        title={open ? 'Hide compaction summary' : 'Show what the assistant remembers from earlier'}
+        className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-txt-tertiary hover:text-txt-secondary transition"
+      >
+        <ChevronsUpDown className="w-3 h-3" />
+        Context compacted — earlier messages summarized
+        {open ? <ChevronDown className="w-3 h-3" /> : <ChevronDown className="w-3 h-3 -rotate-90" />}
+      </button>
+      {open && (
+        <div className="max-w-xl border border-border-subtle bg-surface-base rounded-md px-3 py-2 text-[11px] text-txt-secondary whitespace-pre-line leading-relaxed">
+          {summary}
         </div>
-      </div>
+      )}
     </div>
   );
 };
-
-interface ToolBlockProps {
-  tool: { id: string; name: string; status: 'running' | 'success' | 'error'; output?: string };
-  open: boolean;
-  onToggle: (open: boolean) => void;
-}
-
-const ToolBlock: React.FC<ToolBlockProps> = ({ tool, open, onToggle }) => (
-  <div className="rounded-md border border-border-subtle bg-surface-base overflow-hidden">
-    <button
-      onClick={() => onToggle(!open)}
-      className="w-full flex items-center justify-between px-3 py-1.5 text-xs font-mono hover:bg-surface-subtle/40 transition"
-    >
-      <span className="flex items-center gap-2 truncate">
-        {tool.status === 'running' ? (
-          <Loader2 className="w-3.5 h-3.5 animate-spin text-brand" />
-        ) : tool.status === 'success' ? (
-          <Check className="w-3.5 h-3.5 text-txt-open" />
-        ) : (
-          <XCircle className="w-3.5 h-3.5 text-feedback-error-text" />
-        )}
-        <span className="text-txt-primary">{tool.name}</span>
-      </span>
-      {open ? <ChevronDown className="w-3.5 h-3.5 text-txt-tertiary" /> : <ChevronRight className="w-3.5 h-3.5 text-txt-tertiary" />}
-    </button>
-    {open && tool.output != null && (
-      <pre className="px-3 pb-2 text-[11px] font-mono text-txt-secondary overflow-x-auto whitespace-pre leading-relaxed">
-        {tool.output}
-      </pre>
-    )}
-  </div>
-);

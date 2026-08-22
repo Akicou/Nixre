@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   applyEvent,
+  buildModelContext,
+  COMPACT_AFTER_MESSAGES,
   createConversation,
   listConversations,
   getConversation,
+  shouldAutoCompact,
   updateConversation,
   deleteConversation,
+  withCompaction,
   type ChatMessage,
 } from './assistantEngine';
 import { installSyncFetchMock, syncMockReset } from '../test/syncMock';
@@ -35,6 +39,36 @@ describe('assistantEngine.applyEvent', () => {
     messages = applyEvent(messages, { type: 'message_text', text: 'Answer' });
     expect(messages[1].reasoning).toHaveLength(1);
     expect(messages[1].content).toBe('Answer');
+  });
+
+  it('merges reasoning deltas sharing a blockId instead of stacking fragments', () => {
+    let messages: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'hi', createdAt: 1 }];
+    messages = applyEvent(messages, { type: 'reasoning', blockId: 'r1', text: 'step one. ' });
+    messages = applyEvent(messages, { type: 'reasoning', blockId: 'r1', text: 'step two.' });
+    // New block after answer text starts a separate thinking segment.
+    messages = applyEvent(messages, { type: 'message_text', text: 'Answer' });
+    messages = applyEvent(messages, { type: 'reasoning', blockId: 'r2', text: 'more thinking' });
+    expect(messages[1].reasoning).toHaveLength(2);
+    expect(messages[1].reasoning![0]).toEqual({ id: 'r1', text: 'step one. step two.' });
+  });
+
+  it('tracks compaction coverage and builds the model context from the summary', () => {
+    let messages: ChatMessage[] = [];
+    for (let i = 0; i < COMPACT_AFTER_MESSAGES; i++) {
+      messages = applyEvent(messages, { type: 'message_text', text: `reply ${i}` });
+      messages.push({ id: `u${i}`, role: 'user', content: `q ${i}`, createdAt: i });
+    }
+    expect(shouldAutoCompact(messages)).toBe(true);
+
+    messages = withCompaction(messages, 'handoff summary');
+    expect((messages[messages.length - 1] as any).kind).toBe('compaction');
+
+    // Right after compacting there is nothing new to fold in again.
+    expect(shouldAutoCompact(messages)).toBe(false);
+
+    const ctx = buildModelContext(messages);
+    expect(ctx.summary).toBe('handoff summary');
+    expect(ctx.history).toHaveLength(0);
   });
 });
 
