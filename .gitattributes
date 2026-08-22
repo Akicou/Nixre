@@ -1,0 +1,2 @@
+# Docker entrypoints break on CRLF shebangs.
+*.sh text eol=lf

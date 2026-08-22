@@ -25,7 +25,8 @@ services:
       INTERNAL_TOKEN: ${NIXRE_INTERNAL_TOKEN:-dev-internal-token-change-me}
       AI_SECRET: ${NIXRE_AI_SECRET:-dev-ai-secret-change-me}
     volumes:
-      - ./data/repos:/data/repos
+      # :z so Fedora/SELinux allows the container to write the bind mount.
+      - ./data/repos:/data/repos:z
     ports:
       - "127.0.0.1:3002:3002"
     depends_on:
@@ -41,8 +42,8 @@ services:
       INTERNAL_TOKEN: ${NIXRE_INTERNAL_TOKEN:-dev-internal-token-change-me}
       REPOS_ROOT: /data/repos
     volumes:
-      - ./data/repos:/data/repos
-      - ./data/ssh-keys:/etc/ssh/keys
+      - ./data/repos:/data/repos:z
+      - ./data/ssh-keys:/etc/ssh/keys:z
     ports:
       - "3022:3022"
     depends_on:

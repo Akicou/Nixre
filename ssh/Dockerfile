@@ -18,7 +18,7 @@ COPY nixre-git-shell /srv/nixre-git-shell
 COPY ssh-authorized-keys /srv/ssh-authorized-keys
 COPY entrypoint.sh /srv/entrypoint.sh
 RUN chmod 755 /srv/nixre-git-shell /srv/ssh-authorized-keys /srv/entrypoint.sh \
-    && adduser -D -s /bin/sh git \
+    && adduser -D -u 1000 -s /bin/sh git \
     && passwd -u git 2>/dev/null || sed -i 's/^git:!/git:*/' /etc/shadow || true
 
 EXPOSE 3022
