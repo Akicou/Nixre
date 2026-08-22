@@ -41,6 +41,19 @@ describe('assistantEngine.applyEvent', () => {
     expect(messages[1].content).toBe('Answer');
   });
 
+  it('starts a fresh assistant message on a new turn instead of editing the previous reply', () => {
+    let messages: ChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'first question', createdAt: 1 },
+      { id: 'a1', role: 'assistant', content: 'first answer', createdAt: 2 },
+      { id: 'u2', role: 'user', content: 'second question', createdAt: 3 },
+    ];
+    messages = applyEvent(messages, { type: 'message_text', text: 'second answer' });
+    expect(messages).toHaveLength(4);
+    expect(messages[1].content).toBe('first answer'); // turn 1 untouched
+    expect(messages[3].role).toBe('assistant');
+    expect(messages[3].content).toBe('second answer');
+  });
+
   it('merges reasoning deltas sharing a blockId instead of stacking fragments', () => {
     let messages: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'hi', createdAt: 1 }];
     messages = applyEvent(messages, { type: 'reasoning', blockId: 'r1', text: 'step one. ' });

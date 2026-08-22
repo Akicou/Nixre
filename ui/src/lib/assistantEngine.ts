@@ -183,9 +183,13 @@ export const uid = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(
 // ---------------------------------------------------------------------------
 
 export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessage[] {
+  // Only continue an assistant message that follows the latest user message —
+  // otherwise turn N's events would stream into turn N-1's reply.
   let idx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') {
+    const m = messages[i];
+    if (m.role === 'user') break;
+    if (m.role === 'assistant') {
       idx = i;
       break;
     }
