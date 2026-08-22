@@ -35,6 +35,7 @@ import {
   runRealTurn,
   applyEvent,
   uid,
+  messageParts,
   buildModelContext,
   shouldAutoCompact,
   runCompaction,
@@ -106,6 +107,7 @@ export const AgentWorkspace: React.FC = () => {
   const [modeOpen, setModeOpen] = useState(false);
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const [trace, setTrace] = useState<SessionTraceEntry[]>([]);
+  const [queued, setQueued] = useState<{ prompt: string; images: ChatImage[]; userMessageId: string }[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -116,6 +118,7 @@ export const AgentWorkspace: React.FC = () => {
   const traceRef = useRef<SessionTraceEntry[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
   const currentIdRef = useRef<string | null>(null);
+  const queuedRef = useRef<{ prompt: string; images: ChatImage[]; userMessageId: string }[]>([]);
 
   // --- boot ----------------------------------------------------------------
   useEffect(() => {
@@ -195,6 +198,9 @@ export const AgentWorkspace: React.FC = () => {
   useEffect(() => {
     currentIdRef.current = currentId;
   }, [currentId]);
+  useEffect(() => {
+    queuedRef.current = queued;
+  }, [queued]);
 
   const persistTrace = (
     next: SessionTraceEntry[],
@@ -321,7 +327,12 @@ export const AgentWorkspace: React.FC = () => {
   const empty = messages.length === 0 && !currentId;
 
   // --- turn loop -----------------------------------------------------------
-  const runTurn = async (prompt: string, base: ChatMessage[], images: ChatImage[] = []) => {
+  const runTurn = async (
+    prompt: string,
+    base: ChatMessage[],
+    images: ChatImage[] = [],
+    existingUserMessageId?: string,
+  ) => {
     if (!realAi || !profile || !activeRepo) return;
     const controller = new AbortController();
     abortRef.current = controller;
@@ -339,14 +350,24 @@ export const AgentWorkspace: React.FC = () => {
         refreshSessions();
       }
 
-      const userMessage: ChatMessage = {
-        id: uid('u'),
-        role: 'user',
-        content: prompt,
-        images: images.length ? images : undefined,
-        createdAt: Date.now(),
-      };
-      let local: ChatMessage[] = [...base, userMessage];
+      // Queued messages already sit in the transcript as user turns; the
+      // turn only adds a fresh user message for live sends.
+      const userMessage: ChatMessage = existingUserMessageId
+        ? base.find(m => m.id === existingUserMessageId) ?? {
+            id: existingUserMessageId,
+            role: 'user' as const,
+            content: prompt,
+            images: images.length ? images : undefined,
+            createdAt: Date.now(),
+          }
+        : {
+            id: uid('u'),
+            role: 'user' as const,
+            content: prompt,
+            images: images.length ? images : undefined,
+            createdAt: Date.now(),
+          };
+      let local: ChatMessage[] = existingUserMessageId ? [...base] : [...base, userMessage];
       setMessages(local);
       await updateConversation({
         id: convId,
@@ -482,16 +503,42 @@ export const AgentWorkspace: React.FC = () => {
       abortRef.current = null;
       setStreaming(false);
       refreshSessions();
+      // Run the next queued message, if any. Its user message is already in
+      // the transcript; later queued messages are stripped from this turn's
+      // base so the model sees them only when their turn runs.
+      const next = queuedRef.current[0];
+      if (next) {
+        const later = new Set(queuedRef.current.slice(1).map(e => e.userMessageId));
+        const nextBase = messagesRef.current.filter(m => !later.has(m.id));
+        setQueued(q => q.slice(1));
+        void runTurn(next.prompt, nextBase, next.images, next.userMessageId);
+      }
     }
   };
 
   const send = (text?: string) => {
     const prompt = (text ?? input).trim();
-    if ((!prompt && pendingImages.length === 0) || streaming || !realAi) return;
+    if ((!prompt && pendingImages.length === 0) || !realAi) return;
     const images = pendingImages;
     setInput('');
     setPendingImages([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    if (streaming) {
+      // Busy: show the message immediately and queue it — the agent answers
+      // as soon as the running turn finishes instead of dropping it.
+      const msg: ChatMessage = {
+        id: uid('u'),
+        role: 'user',
+        content: prompt || '(image)',
+        images: images.length ? images : undefined,
+        createdAt: Date.now(),
+      };
+      const nextMessages = [...messagesRef.current, msg];
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
+      setQueued(q => [...q, { prompt: prompt || '(image)', images, userMessageId: msg.id }]);
+      return;
+    }
     void runTurn(prompt || '(image)', messages, images);
   };
 
@@ -678,7 +725,7 @@ export const AgentWorkspace: React.FC = () => {
                 ? 'Describe the bug…'
                 : 'Ask anything about this repo…'
         }
-        disabled={streaming || !activeRepo}
+        disabled={!activeRepo}
         className={`w-full resize-none bg-transparent text-txt-primary placeholder:text-txt-tertiary outline-none px-4 pt-3.5 pb-2 disabled:opacity-50 ${
           empty ? 'text-[15px] leading-relaxed min-h-[84px]' : 'text-[13px] min-h-[44px] max-h-40'
         }`}
@@ -1027,6 +1074,7 @@ export const AgentWorkspace: React.FC = () => {
                     />
                   ),
                 )}
+                {streaming && <AgentWorkingLine messages={messages} queued={queued.length} />}
               </div>
             </div>
 
@@ -1038,6 +1086,36 @@ export const AgentWorkspace: React.FC = () => {
           </>
         )}
       </div>
+    </div>
+  );
+};
+
+/** Live activity line under the transcript while a turn is running. */
+const AgentWorkingLine: React.FC<{ messages: ChatMessage[]; queued: number }> = ({
+  messages,
+  queued,
+}) => {
+  // The most recent tool still marked `running` in the active assistant turn.
+  let runningTool: string | null = null;
+  for (let i = messages.length - 1; i >= 0 && !runningTool; i--) {
+    if (messages[i].role === 'user') break;
+    for (const p of messageParts(messages[i])) {
+      if (p.type === 'tool' && p.tool.status === 'running') runningTool = p.tool.name;
+    }
+  }
+  const label = runningTool
+    ? `Running ${runningTool}…`
+    : 'Agent working…';
+  return (
+    <div className="flex items-center gap-2 text-xs text-txt-tertiary chat-part-in">
+      <Loader2 className="w-3.5 h-3.5 animate-spin text-brand" />
+      <span>{label}</span>
+      {queued > 0 && (
+        <span className="text-[10px] text-txt-tertiary/70">
+          · {queued} message{queued > 1 ? 's' : ''} queued
+        </span>
+      )}
+      <span className="text-[10px] text-txt-tertiary/70">· Esc to stop</span>
     </div>
   );
 };

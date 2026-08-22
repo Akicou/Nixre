@@ -223,6 +223,10 @@ export async function streamAiChat(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
+  // The server always terminates with a `done` (or `error`) frame. If the
+  // read loop ends without one the connection was cut mid-stream (proxy
+  // timeout, network drop) — surface it so the caller's turn can settle.
+  let sawTerminal = false;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -234,9 +238,14 @@ export async function streamAiChat(
       for (const line of frame.split('\n')) {
         if (!line.startsWith('data:')) continue;
         try {
-          onEvent(JSON.parse(line.slice(5).trim()) as ChatStreamEvent);
+          const evt = JSON.parse(line.slice(5).trim()) as ChatStreamEvent;
+          if (evt.type === 'done' || evt.type === 'error') sawTerminal = true;
+          onEvent(evt);
         } catch {}
       }
     }
+  }
+  if (!sawTerminal) {
+    onEvent({ type: 'error', message: 'The model stream ended unexpectedly (connection closed mid-response).' });
   }
 }

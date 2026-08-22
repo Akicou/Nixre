@@ -533,12 +533,8 @@ export async function* runRealTurn(
             },
             evt => {
               if (evt.type === 'reasoning') {
-                // Interleaved reasoning is a display toggle: when off, drop
-                // the thinking deltas... they still stream, we just ignore.
-                if (profile.interleavedReasoning) {
-                  currentBlockId ||= `reason_${Date.now()}_${reasonSeq++}`;
-                  push({ type: 'reasoning', blockId: currentBlockId, text: evt.text });
-                }
+                currentBlockId ||= `reason_${Date.now()}_${reasonSeq++}`;
+                push({ type: 'reasoning', blockId: currentBlockId, text: evt.text });
               } else if (evt.type === 'text') {
                 currentBlockId = null;
                 stepText += evt.text;

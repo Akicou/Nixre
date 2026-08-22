@@ -57,7 +57,7 @@ export function defaultProviderProfile(): AssistantProviderProfile {
     baseUrl: String(d.baseUrl ?? ''),
     model: String(d.model ?? ''),
     reasoningLevel: String(d.reasoningLevel ?? 'none'),
-    interleavedReasoning: Boolean(d.interleavedReasoning ?? false),
+    interleavedReasoning: Boolean(d.interleavedReasoning ?? true),
     keyConfigured: false,
     keyMask: null,
     validatedAt: null,
