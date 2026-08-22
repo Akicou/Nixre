@@ -499,7 +499,7 @@ export function aiRoutes(pool, authenticate) {
 
   // POST /ai/tools {repoPath, tool, args} — runs one assistant tool against
   // the repo on disk. Read-only tools are available to everyone; run_command
-  // is gated by the caller's per-repo access profile (sync prefs).
+  // is on by default and can be turned off in the per-repo access profile.
   api.post('/ai/tools', auth, async (req, res) => {
     const uid = req.auth.user.uid;
     const repoPath = String(req.body?.repoPath || '');

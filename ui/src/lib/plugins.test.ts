@@ -67,6 +67,8 @@ describe('plugin registry', () => {
     const assistant = getPlugin('nixre-assistant')!;
     const keys = (assistant.accessFields ?? []).map(f => f.key);
     expect(keys).toEqual(['canRunBash', 'canRunTests', 'canSearchWeb', 'allowedPaths', 'blockedPaths']);
+    expect(assistant.accessFields!.find(f => f.key === 'canRunBash')?.default).toBe(true);
+    expect(assistant.accessFields!.find(f => f.key === 'canRunTests')?.default).toBe(true);
     // No dead toggles: nothing that claims edits, pushes, merges or auto-fixes.
     for (const dead of ['accessLevel', 'canEditFiles', 'canPush', 'canMerge', 'autoMergeBranch', 'autoMergeOnGreen', 'autoFixBugs']) {
       expect(keys).not.toContain(dead);

@@ -51,6 +51,12 @@ describe('assistantProfiles (server-backed)', () => {
     expect(active.interleavedReasoning).toBe(true);
   });
 
+  it('defaults shell and test permissions on', () => {
+    const repo = defaultRepoProfile();
+    expect(repo.canRunBash).toBe(true);
+    expect(repo.canRunTests).toBe(true);
+  });
+
   it('stores per-repo access profiles keyed by repo path', async () => {
     expect(await getRepoProfile('acme/website')).toBeUndefined();
 

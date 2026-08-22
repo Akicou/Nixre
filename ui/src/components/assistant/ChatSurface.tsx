@@ -372,7 +372,18 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         if (m.reasoning?.length) {
           lines.push('<details><summary>Thought process</summary>', '', m.reasoning.map(r => r.text).join('\n'), '', '</details>', '');
         }
-        lines.push(`**Assistant:**\n\n${m.content || '_(stopped before answering)_'}`, '');
+        if (m.toolCalls?.length) {
+          for (const t of m.toolCalls) {
+            lines.push(`\`${t.name}\`${t.argsText && t.argsText !== '{}' ? ` ${t.argsText}` : ''}`);
+            if (t.output) lines.push('```', t.output, '```');
+            lines.push('');
+          }
+        }
+        if (m.content) {
+          lines.push(`**Assistant:**\n\n${m.content}`, '');
+        } else if (!m.toolCalls?.length) {
+          lines.push(`**Assistant:**\n\n_(stopped before answering)_`, '');
+        }
       }
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });

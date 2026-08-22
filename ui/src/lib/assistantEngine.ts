@@ -198,21 +198,73 @@ export const uid = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(
 // Shared by every chat surface (repo page, PR panel, dashboard).
 // ---------------------------------------------------------------------------
 
-export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessage[] {
-  // Only continue an assistant message that follows the latest user message —
-  // otherwise turn N's events would stream into turn N-1's reply.
-  let idx = -1;
+/** True when this row is a standalone tool card, not an assistant reply. */
+export function isToolRow(message: ChatMessage): boolean {
+  return (
+    message.role === 'assistant' &&
+    (message.toolCalls?.length ?? 0) > 0 &&
+    !message.content &&
+    !(message.reasoning?.length)
+  );
+}
+
+function findToolRowIndex(messages: ChatMessage[], toolId: string): number {
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === 'user') break;
-    if (m.role === 'assistant') {
-      idx = i;
-      break;
+    if (messages[i].toolCalls?.some(t => t.id === toolId)) return i;
+  }
+  return -1;
+}
+
+function patchTool(
+  messages: ChatMessage[],
+  toolId: string,
+  patch: (tool: ToolCall) => ToolCall,
+): ChatMessage[] {
+  const idx = findToolRowIndex(messages, toolId);
+  if (idx === -1) return messages;
+  const message = { ...messages[idx] };
+  message.toolCalls = (message.toolCalls ?? []).map(t => (t.id === toolId ? patch(t) : t));
+  const next = messages.slice();
+  next[idx] = message;
+  return next;
+}
+
+export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessage[] {
+  if (ev.type === 'tool_start') {
+    const existing = findToolRowIndex(messages, ev.tool.id);
+    if (existing >= 0) {
+      return patchTool(messages, ev.tool.id, t => ({
+        ...t,
+        name: ev.tool.name || t.name,
+        argsText: ev.tool.argsText ?? t.argsText,
+        status: t.status === 'success' || t.status === 'error' ? t.status : ev.tool.status,
+      }));
     }
+    // Tool cards are their own transcript rows so they land as the latest
+    // message while they run, not inside the eventual assistant reply.
+    return [
+      ...messages,
+      { id: uid('msg'), role: 'assistant', content: '', toolCalls: [ev.tool], createdAt: Date.now() },
+    ];
+  }
+  if (ev.type === 'tool_output') {
+    return patchTool(messages, ev.toolId, t => ({ ...t, status: 'success', output: ev.output }));
+  }
+  if (ev.type === 'tool_error') {
+    return patchTool(messages, ev.toolId, t => ({ ...t, status: 'error', output: ev.output }));
+  }
+
+  // Only continue an assistant message that follows the latest user message —
+  // otherwise turn N's events would stream into turn N-1's reply. A tool-only
+  // row at the tail is not that reply: start a fresh assistant after it.
+  let idx = -1;
+  const last = messages[messages.length - 1];
+  if (last && last.role === 'assistant' && (last as { kind?: string }).kind !== 'compaction' && !isToolRow(last)) {
+    idx = messages.length - 1;
   }
   if (idx === -1) {
-    // No assistant message yet for this turn — create one so the first
-    // streamed event (reasoning / tool) has a target to append to.
+    // No in-progress assistant for this turn — create one so the first
+    // streamed event (reasoning / text) has a target to append to.
     const msg: ChatMessage = { id: uid('msg'), role: 'assistant', content: '', createdAt: Date.now() };
     messages = [...messages, msg];
     idx = messages.length - 1;
@@ -223,28 +275,15 @@ export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessag
       // Deltas with the same blockId belong to one contiguous thinking block —
       // merge them instead of stacking a new fragment per token.
       const blocks = [...(message.reasoning ?? [])];
-      const last = blocks[blocks.length - 1];
-      if (last && last.id === ev.blockId) {
-        blocks[blocks.length - 1] = { ...last, text: last.text + ev.text };
+      const lastBlock = blocks[blocks.length - 1];
+      if (lastBlock && lastBlock.id === ev.blockId) {
+        blocks[blocks.length - 1] = { ...lastBlock, text: lastBlock.text + ev.text };
       } else {
         blocks.push({ id: ev.blockId, text: ev.text });
       }
       message.reasoning = blocks;
       break;
     }
-    case 'tool_start':
-      message.toolCalls = [...(message.toolCalls ?? []), ev.tool];
-      break;
-    case 'tool_output':
-      message.toolCalls = (message.toolCalls ?? []).map(t =>
-        t.id === ev.toolId ? { ...t, status: 'success' as const, output: ev.output } : t,
-      );
-      break;
-    case 'tool_error':
-      message.toolCalls = (message.toolCalls ?? []).map(t =>
-        t.id === ev.toolId ? { ...t, status: 'error' as const, output: ev.output } : t,
-      );
-      break;
     case 'message_text':
       message.content = (message.content ?? '') + ev.text;
       break;
@@ -390,6 +429,7 @@ export async function* runRealTurn(
     }> => {
       return new Promise(resolve => {
         const pending = new Map<number, { id?: string; name?: string; args: string }>();
+        const started = new Set<string>();
         let stepText = '';
         let currentBlockId: string | null = null;
 
@@ -427,6 +467,20 @@ export async function* runRealTurn(
                 if (evt.name) cur.name = evt.name;
                 if (evt.argsDelta) cur.args += evt.argsDelta;
                 pending.set(evt.index, cur);
+                // Surface the card as soon as the model names the tool so it
+                // appears as the latest message while arguments still stream.
+                if (cur.id && cur.name && !started.has(cur.id)) {
+                  started.add(cur.id);
+                  push({
+                    type: 'tool_start',
+                    tool: { id: cur.id, name: cur.name, status: 'running', argsText: cur.args },
+                  });
+                } else if (cur.id && started.has(cur.id) && evt.argsDelta) {
+                  push({
+                    type: 'tool_start',
+                    tool: { id: cur.id, name: cur.name || '', status: 'running', argsText: cur.args },
+                  });
+                }
               } else if (evt.type === 'usage') {
                 push({ type: 'usage', usage: evt.usage });
               } else if (evt.type === 'finish') {

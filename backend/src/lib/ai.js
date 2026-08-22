@@ -96,6 +96,15 @@ function apiRoot(base) {
   return /\/v\d+$/.test(base) ? base : `${base}/v1`;
 }
 
+// Ollama's OpenAI-compat API (local or a custom URL that is still Ollama)
+// streams thinking on `delta.thinking` and accepts `think`, not OpenRouter's
+// `reasoning` object. Match the built-in provider and common custom hosts.
+function isOllamaLike(provider, base) {
+  if (provider === 'ollama') return true;
+  const u = String(base || '').toLowerCase();
+  return /:11434\b/.test(u) || /\bollama\b/.test(u);
+}
+
 // --- model listing ----------------------------------------------------------------
 
 export async function listModels(provider, apiKey, baseUrl) {
@@ -167,28 +176,37 @@ function toolSchemasOpenAI(tools) {
 }
 
 async function streamOpenAICompatible({ base, apiKey, model, messages, reasoningLevel, tools, provider }, send) {
+  const ollamaLike = isOllamaLike(provider, base);
   const body = {
     model,
     messages,
     stream: true,
   };
-  // OpenAI-style usage on the last SSE chunk. Local servers often reject the field.
-  if (provider !== 'ollama') {
+  // OpenAI-style usage on the last SSE chunk. Local / Ollama servers often reject the field.
+  if (!ollamaLike) {
     body.stream_options = { include_usage: true };
   }
   if (Array.isArray(tools) && tools.length > 0) {
     body.tools = toolSchemasOpenAI(tools);
     body.tool_choice = 'auto';
   }
-  // Reasoning-effort knobs: OpenAI o-series/gpt-5 accept reasoning_effort;
-  // DeepSeek's reasoner model enables thinking by itself (no param needed).
-  // OpenRouter-style gateways expose a `reasoning` object instead — request
-  // reasoning explicitly there so thinking models actually return it.
-  const isOpenRouter = provider === 'custom' || /openrouter\.ai/.test(base);
+  // Reasoning-effort knobs differ by gateway:
+  //   OpenAI o-series/gpt-5 → reasoning_effort
+  //   Ollama / :11434       → think (boolean or low|medium|high)
+  //   OpenRouter-style      → reasoning: { effort, exclude:false }
+  // DeepSeek reasoner enables thinking by itself (no param needed).
+  // Custom + Ollama used to get the OpenRouter object and never the `think`
+  // flag, so thinking models ran but `delta.thinking` was never requested
+  // in a way the UI could show.
+  const isOpenRouter = !ollamaLike && (provider === 'custom' || /openrouter\.ai/.test(base));
   if (provider === 'openai' && /^(o\d|gpt-5)/.test(model) && reasoningLevel !== 'none') {
     body.reasoning_effort = reasoningLevel; // low | medium | high
   }
-  if (isOpenRouter && reasoningLevel !== 'none') {
+  if (ollamaLike) {
+    body.think = reasoningLevel === 'none'
+      ? false
+      : (['low', 'medium', 'high'].includes(reasoningLevel) ? reasoningLevel : true);
+  } else if (isOpenRouter && reasoningLevel !== 'none') {
     // Maps to OpenRouter's `reasoning.effort` (Anthropic/Gemini translate it
     // server-side); exclude:false keeps reasoning tokens in the response.
     body.reasoning = {
@@ -212,6 +230,7 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
     throw new Error(`Provider returned HTTP ${r.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
   }
 
+  const thinkTagState = { inside: false };
   await parseSSE(r, async (payload) => {
     if (payload === '[DONE]') return;
     let evt;
@@ -244,27 +263,72 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
         usage: { input, output, total: Number(evt.usage.total_tokens ?? input + output) },
       });
     }
-    if (!delta) return;
+    if (!delta && !evt.choices?.[0]?.message) return;
     // Reasoning arrives under different keys across OpenAI-compatible
-    // gateways: `reasoning_content` (DeepSeek), `reasoning` (OpenRouter /
-    // most gateways), or `reasoning_details` (OpenRouter structured form:
-    // [{type:'reasoning', text:'...'}] | string).
+    // gateways: `thinking` (Ollama), `reasoning_content` (DeepSeek),
+    // `reasoning` (OpenRouter / most gateways), or `reasoning_details`
+    // (OpenRouter structured form). Some local models also wrap thoughts
+    // in <think>…</think> inside `content`.
+    const src = delta || {};
+    const message = evt.choices?.[0]?.message;
     const reasoningTexts = [];
-    if (typeof delta.reasoning_content === 'string') reasoningTexts.push(delta.reasoning_content);
-    if (typeof delta.reasoning === 'string') reasoningTexts.push(delta.reasoning);
-    else if (Array.isArray(delta.reasoning_details)) {
-      for (const d of delta.reasoning_details) {
+    if (typeof src.thinking === 'string') reasoningTexts.push(src.thinking);
+    if (typeof src.reasoning_content === 'string') reasoningTexts.push(src.reasoning_content);
+    if (typeof src.reasoning === 'string') reasoningTexts.push(src.reasoning);
+    else if (Array.isArray(src.reasoning_details)) {
+      for (const d of src.reasoning_details) {
         if (typeof d === 'string') reasoningTexts.push(d);
         else if (typeof d?.text === 'string') reasoningTexts.push(d.text);
       }
     }
+    if (
+      reasoningTexts.length === 0 &&
+      message &&
+      typeof message.thinking === 'string' &&
+      message.thinking
+    ) {
+      reasoningTexts.push(message.thinking);
+    }
     for (const text of reasoningTexts) {
       if (text) await send({ type: 'reasoning', text });
     }
-    if (delta.content) {
-      await send({ type: 'text', text: delta.content });
+    if (src.content) {
+      const parts = splitThinkTags(src.content, thinkTagState);
+      for (const part of parts) {
+        if (part.text) await send({ type: part.kind, text: part.text });
+      }
     }
   });
+}
+
+// Split streamed `content` that embeds <think>…</think> (common on Ollama
+// / llama.cpp thinking models that don't use a dedicated delta field).
+// `state` is `{ inside: boolean }` so tags can span SSE chunks.
+function splitThinkTags(text, state) {
+  const out = [];
+  let rest = text;
+  while (rest) {
+    if (state.inside) {
+      const end = rest.indexOf('</think>');
+      if (end === -1) {
+        out.push({ kind: 'reasoning', text: rest });
+        return out;
+      }
+      if (end > 0) out.push({ kind: 'reasoning', text: rest.slice(0, end) });
+      state.inside = false;
+      rest = rest.slice(end + '</think>'.length);
+      continue;
+    }
+    const start = rest.indexOf('<think>');
+    if (start === -1) {
+      out.push({ kind: 'text', text: rest });
+      return out;
+    }
+    if (start > 0) out.push({ kind: 'text', text: rest.slice(0, start) });
+    state.inside = true;
+    rest = rest.slice(start + '<think>'.length);
+  }
+  return out;
 }
 
 async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, tools }, send) {

@@ -952,7 +952,9 @@ export const AgentWorkspace: React.FC = () => {
           <>
             <div ref={scrollRef} className="flex-1 overflow-y-auto">
               <div className="max-w-3xl mx-auto px-5 py-8 space-y-7">
-                {messages.filter(msg => (msg as { kind?: string }).kind !== 'session_trace').map((msg, i) =>
+                {messages
+                  .filter(msg => (msg as { kind?: string }).kind !== 'session_trace')
+                  .map((msg, i, visible) =>
                   (msg as { kind?: string }).kind === 'compaction' ? (
                     <p
                       key={msg.id}
@@ -965,7 +967,7 @@ export const AgentWorkspace: React.FC = () => {
                       key={msg.id}
                       message={msg}
                       streaming={
-                        streaming && i === messages.length - 1 && msg.role === 'assistant'
+                        streaming && i === visible.length - 1 && msg.role === 'assistant'
                       }
                     />
                   ),

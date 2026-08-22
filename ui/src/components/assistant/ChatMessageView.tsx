@@ -35,10 +35,25 @@ interface ChatMessageViewProps {
 export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, streaming = false, onEdit }) => {
   const isUser = message.role === 'user';
   const hasReasoning = !isUser && (message.reasoning?.length ?? 0) > 0;
-  const thinking =
-    streaming && !message.content && ((message.reasoning?.length ?? 0) > 0 || !hasReasoning);
+  const toolOnly =
+    !isUser &&
+    !message.content &&
+    !hasReasoning &&
+    (message.toolCalls?.length ?? 0) > 0;
+  const thinking = streaming && !message.content && hasReasoning;
+  const waiting = streaming && !message.content && !hasReasoning && !toolOnly;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
+
+  if (toolOnly) {
+    return (
+      <div className="space-y-1.5 pl-10">
+        {message.toolCalls!.map(tool => (
+          <ToolBlock key={tool.id} tool={tool} />
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div className={`group flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
@@ -114,21 +129,13 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
           )
         ) : (
           <div className="min-w-0">
-            {message.toolCalls && message.toolCalls.length > 0 && (
-              <div className="space-y-1.5 mb-2">
-                {message.toolCalls.map(tool => (
-                  <ToolBlock key={tool.id} tool={tool} />
-                ))}
-              </div>
-            )}
             {message.content ? (
               <div className="text-xs leading-relaxed text-txt-primary markdown-body max-w-none">
                 <Markdown content={message.content} />
                 {streaming && <StreamingCaret />}
               </div>
             ) : (
-              !hasReasoning &&
-              streaming && (
+              waiting && (
                 <div className="flex items-center gap-2 text-xs text-txt-tertiary">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>Thinking…</span>

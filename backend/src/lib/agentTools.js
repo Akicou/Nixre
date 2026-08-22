@@ -4,8 +4,9 @@
 // against the bare repo on disk via git plumbing and are safe to expose to
 // any authenticated user with repo access. run_command clones the repo to a
 // temp dir and execs a shell command there — gated behind the caller's
-// per-repo access profile (canRunBash / canRunTests), with hard timeouts and
-// output caps. web_search queries the web and is gated behind canSearchWeb.
+// per-repo access profile (canRunBash / canRunTests; both default on), with
+// hard timeouts and output caps. web_search queries the web and is gated
+// behind canSearchWeb.
 // allowedPaths / blockedPaths restrict which repo files the read tools may
 // touch.
 //
@@ -370,14 +371,16 @@ async function webSearchTool(args) {
 /**
  * Execute a tool for a user. `permissions` comes from the caller's repo
  * access profile: { canRunBash, canRunTests, canSearchWeb, allowedPaths,
- * blockedPaths } — absent profile means read-only tools only.
+ * blockedPaths } — missing run_command flags default on.
  */
 export async function executeTool(tool, space, repo, args, permissions = {}) {
   const fn = EXECUTORS[tool];
   if (!fn) throw new Error(`Unknown tool '${tool}'`);
   if (tool === 'run_command') {
-    const allowed = permissions.canRunBash === true || permissions.canRunTests === true;
-    if (!allowed) {
+    // Missing keys (no saved repo profile) default on — same as the UI toggles.
+    const bash = permissions.canRunBash !== false;
+    const tests = permissions.canRunTests !== false;
+    if (!bash && !tests) {
       throw new Error(
         "run_command requires the 'Run shell commands' or 'Run tests' permission for this repo (Assistant → repo settings).",
       );

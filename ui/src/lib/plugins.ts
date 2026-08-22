@@ -149,8 +149,8 @@ const providerFields: ProfileField[] = [
 ];
 
 const accessFields: ProfileField[] = [
-  { key: 'canRunBash', label: 'Run shell commands', description: 'Run shell commands in a fresh clone of the repo.', type: 'toggle', default: false },
-  { key: 'canRunTests', label: 'Run tests / build', type: 'toggle', default: false },
+  { key: 'canRunBash', label: 'Run shell commands', description: 'Run shell commands in a fresh clone of the repo.', type: 'toggle', default: true },
+  { key: 'canRunTests', label: 'Run tests / build', type: 'toggle', default: true },
   { key: 'canSearchWeb', label: 'Search the web', type: 'toggle', default: false },
   {
     key: 'allowedPaths',

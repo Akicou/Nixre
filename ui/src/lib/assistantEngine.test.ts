@@ -65,6 +65,31 @@ describe('assistantEngine.applyEvent', () => {
     expect(messages[3].content).toBe('second answer');
   });
 
+  it('places each tool call as its own latest row, then starts a new assistant reply', () => {
+    let messages: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'run tests', createdAt: 1 }];
+    messages = applyEvent(messages, { type: 'reasoning', blockId: 'r1', text: 'I should run the suite.' });
+    messages = applyEvent(messages, {
+      type: 'tool_start',
+      tool: { id: 't1', name: 'run_command', status: 'running', argsText: '{"command":"npm test"}' },
+    });
+    expect(messages).toHaveLength(3);
+    expect(messages[1].reasoning?.[0].text).toBe('I should run the suite.');
+    expect(messages[1].toolCalls).toBeUndefined();
+    expect(messages[2].toolCalls?.[0].name).toBe('run_command');
+    expect(messages[2].content).toBe('');
+
+    messages = applyEvent(messages, { type: 'tool_output', toolId: 't1', output: 'ok' });
+    expect(messages[2].toolCalls?.[0].status).toBe('success');
+    expect(messages[2].toolCalls?.[0].output).toBe('ok');
+
+    messages = applyEvent(messages, { type: 'message_text', text: 'All green.' });
+    expect(messages).toHaveLength(4);
+    expect(messages[3].role).toBe('assistant');
+    expect(messages[3].content).toBe('All green.');
+    expect(messages[3].toolCalls).toBeUndefined();
+    expect(messages[1].content).toBe('');
+  });
+
   it('merges reasoning deltas sharing a blockId instead of stacking fragments', () => {
     let messages: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'hi', createdAt: 1 }];
     messages = applyEvent(messages, { type: 'reasoning', blockId: 'r1', text: 'step one. ' });
