@@ -1,32 +1,37 @@
-// Nixre Assistant profile storage - server-backed via nixre-sync.
+// Nixre Assistant profile storage.
 //
 // Two things live here:
-//   * The active *provider* profile - which AI provider / model / credentials
-//     drive the assistant ("the active AI-provider profile").
-//   * Per-repository *access* profiles - what the assistant may do in each repo
-//     (access level, tool toggles, merge gate, auto-fix, path allow/block lists).
+//   * The active *provider* profile - which AI provider / model drives the
+//     assistant. Lives server-side in nixre-core (/ai endpoints): the API
+//     key is encrypted at rest and never sent to the browser. This module
+//     is a thin typed view over lib/aiApi.ts.
+//   * Per-repository *access* profiles - what the assistant may do in each
+//     repo. Stored with the rest of the account state (sync prefs).
 //
-// Defaults are derived from the plugin registry so there is one source of truth.
-// Persisted in the nixre-sync backend (Postgres) under the `assistant_profiles`
-// pref key - the server is the single source of truth, so profiles follow the
-// account across browsers and devices.
+// Defaults are derived from the plugin registry so there is one source of
+// truth for labels and initial values.
 
 import { getPlugin } from './plugins';
 import * as sync from './syncApi';
-
-const PREF_KEY = 'assistant_profiles';
+import { getAiProfile, saveAiProfile, listAiModels, type AiProfile } from './aiApi';
 
 const assistant = getPlugin('nixre-assistant');
 
 export interface AssistantProviderProfile {
   provider: string;
-  apiKey: string;
+  baseUrl: string;
   model: string;
   temperature: number;
   maxTokens: number;
   // Reasoning controls (see plugins.ts providerFields).
   reasoningLevel: string; // none | low | medium | high
   interleavedReasoning: boolean; // stream the model's thinking inline
+  // Server-side key state (the key itself never reaches the browser).
+  keyConfigured: boolean;
+  keyMask: string | null;
+  validatedAt: number | null;
+  // Live model list fetched from the provider (cached server-side).
+  models: string[];
 }
 
 export interface AssistantRepoProfile {
@@ -45,7 +50,6 @@ export interface AssistantRepoProfile {
 }
 
 interface StoredProfiles {
-  provider: AssistantProviderProfile;
   repoProfiles: Record<string, AssistantRepoProfile>;
 }
 
@@ -56,41 +60,100 @@ function defaultsFromFields(fields: { key: string; default: string | number | bo
 }
 
 export function defaultProviderProfile(): AssistantProviderProfile {
-  return defaultsFromFields(assistant?.providerFields ?? []) as unknown as AssistantProviderProfile;
+  const d = defaultsFromFields(assistant?.providerFields ?? []) as Record<string, unknown>;
+  return {
+    provider: String(d.provider ?? 'deepseek'),
+    baseUrl: String(d.baseUrl ?? ''),
+    model: String(d.model ?? ''),
+    temperature: Number(d.temperature ?? 0.2),
+    maxTokens: Number(d.maxTokens ?? 8192),
+    reasoningLevel: String(d.reasoningLevel ?? 'none'),
+    interleavedReasoning: Boolean(d.interleavedReasoning ?? false),
+    keyConfigured: false,
+    keyMask: null,
+    validatedAt: null,
+    models: [],
+  };
 }
 
 export function defaultRepoProfile(): AssistantRepoProfile {
   return defaultsFromFields(assistant?.accessFields ?? []) as unknown as AssistantRepoProfile;
 }
 
+// --- provider profile (server-side via /ai) ---------------------------------
+
+function fromAiProfile(p: AiProfile): AssistantProviderProfile {
+  const def = defaultProviderProfile();
+  return {
+    provider: p.provider,
+    baseUrl: p.baseUrl,
+    model: p.model || def.model,
+    temperature: def.temperature,
+    maxTokens: def.maxTokens,
+    reasoningLevel: p.reasoningLevel,
+    interleavedReasoning: p.interleavedReasoning,
+    keyConfigured: p.keyConfigured,
+    keyMask: p.keyMask,
+    validatedAt: p.validatedAt,
+    models: p.models ?? [],
+  };
+}
+
+export async function getActiveProviderProfile(): Promise<AssistantProviderProfile> {
+  try {
+    return fromAiProfile(await getAiProfile());
+  } catch {
+    return defaultProviderProfile();
+  }
+}
+
+/** True when a validated provider is configured and real chat can run. */
+export function isRealAi(profile: AssistantProviderProfile): boolean {
+  return profile.keyConfigured && profile.validatedAt != null;
+}
+
+export async function setActiveProviderProfile(
+  profile: AssistantProviderProfile,
+  apiKey?: string,
+): Promise<AssistantProviderProfile & { validated: boolean }> {
+  const saved = await saveAiProfile({
+    provider: profile.provider,
+    baseUrl: profile.baseUrl || undefined,
+    apiKey,
+    model: profile.model,
+    reasoningLevel: profile.reasoningLevel,
+    interleavedReasoning: profile.interleavedReasoning,
+  });
+  return { ...fromAiProfile(saved), validated: saved.validated };
+}
+
+export async function refreshProviderModels(): Promise<string[]> {
+  const r = await listAiModels();
+  return r.models;
+}
+
+// --- per-repo access profiles (sync prefs) ------------------------------------
+
+const PREF_KEY = 'assistant_profiles';
+
 async function load(): Promise<StoredProfiles> {
   const prefs = await sync.getAllPrefs();
   const parsed = prefs[PREF_KEY];
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { provider: defaultProviderProfile(), repoProfiles: {} };
+    return { repoProfiles: {} };
   }
-  const p = parsed as Partial<StoredProfiles>;
-  return {
-    provider: { ...defaultProviderProfile(), ...(p.provider ?? {}) },
-    repoProfiles:
-      p.repoProfiles && typeof p.repoProfiles === 'object' && !Array.isArray(p.repoProfiles)
-        ? p.repoProfiles
-        : {},
-  };
+  const repoProfiles =
+    (parsed as any).repoProfiles &&
+    typeof (parsed as any).repoProfiles === 'object' &&
+    !Array.isArray((parsed as any).repoProfiles)
+      ? (parsed as any).repoProfiles
+      : {};
+  return { repoProfiles };
 }
 
 async function save(data: StoredProfiles): Promise<void> {
-  await sync.putPref(PREF_KEY, data);
-}
-
-export async function getActiveProviderProfile(): Promise<AssistantProviderProfile> {
-  return (await load()).provider;
-}
-
-export async function setActiveProviderProfile(profile: AssistantProviderProfile): Promise<void> {
-  const data = await load();
-  data.provider = profile;
-  await save(data);
+  const prefs = await sync.getAllPrefs();
+  await sync.putPref(PREF_KEY, { ...(prefs[PREF_KEY] as object | undefined), repoProfiles: data.repoProfiles });
 }
 
 export async function getRepoProfile(repoPath: string): Promise<AssistantRepoProfile | undefined> {

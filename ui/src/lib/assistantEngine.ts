@@ -227,4 +227,87 @@ export async function* runTurn(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Real turn — streams an actual model reply through nixre-core's /ai/chat
+// proxy. The provider credentials live server-side; this only carries the
+// conversation. `history` holds prior user/assistant turns for context.
+// ---------------------------------------------------------------------------
+
+let reasonSeq = 0;
+
+export async function* runRealTurn(
+  prompt: string,
+  profile: AssistantProviderProfile,
+  history: { role: 'user' | 'assistant'; content: string }[],
+  overrides: { model?: string; reasoningLevel?: string } = {},
+): AsyncGenerator<EngineEvent> {
+  const { streamAiChat } = await import('./aiApi');
+
+  const messages = [
+    {
+      role: 'system' as const,
+      content:
+        'You are the Nixre Assistant, an AI copilot embedded in the Nixre code forge. ' +
+        'You help with repository work: reviewing changes, explaining code, running checks, and advising on pull requests. ' +
+        'Be concise and technical. Use markdown.',
+    },
+    ...history.slice(-20),
+    { role: 'user' as const, content: prompt },
+  ];
+
+  let errored: string | null = null;
+  yield* (async function* () {
+    // Bridge the callback-based stream into the generator.
+    const queue: EngineEvent[] = [];
+    let resolveNext: (() => void) | null = null;
+    let finished = false;
+
+    const push = (evt: EngineEvent) => {
+      queue.push(evt);
+      resolveNext?.();
+      resolveNext = null;
+    };
+
+    const done = streamAiChat(
+      messages,
+      {
+        model: overrides.model || profile.model,
+        reasoningLevel: overrides.reasoningLevel || profile.reasoningLevel,
+      },
+      evt => {
+        if (evt.type === 'reasoning') {
+          // Interleaved reasoning is a display toggle: when off, drop the
+          // thinking deltas server... they still stream, we just ignore them.
+          if (profile.interleavedReasoning) {
+            push({ type: 'reasoning', blockId: `reason_${Date.now()}_${reasonSeq++}`, text: evt.text });
+          }
+        } else if (evt.type === 'text') {
+          push({ type: 'message_text', text: evt.text });
+        } else if (evt.type === 'error') {
+          errored = evt.message;
+          finished = true;
+          push({ type: 'done' });
+        } else if (evt.type === 'done') {
+          finished = true;
+          push({ type: 'done' });
+        }
+      },
+    );
+
+    for (;;) {
+      if (queue.length === 0) {
+        if (finished) break;
+        await new Promise<void>(r => (resolveNext = r));
+        continue;
+      }
+      yield queue.shift()!;
+    }
+    await done.catch(() => {});
+  })();
+
+  if (errored) {
+    throw new Error(errored);
+  }
+}
+
 export { getPlugin };

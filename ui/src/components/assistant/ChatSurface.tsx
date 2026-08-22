@@ -14,7 +14,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { getPlugin } from '../../lib/plugins';
-import type { AssistantProviderProfile } from '../../lib/assistantProfiles';
+import { isRealAi, type AssistantProviderProfile } from '../../lib/assistantProfiles';
 import {
   listConversations,
   getConversation,
@@ -22,6 +22,7 @@ import {
   updateConversation,
   deleteConversation,
   runTurn,
+  runRealTurn,
   uid,
   type ChatMessage,
   type Conversation,
@@ -94,10 +95,14 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   suggestions = EMPTY_STATE_SUGGESTIONS,
 }) => {
   const assistant = getPlugin('nixre-assistant');
-  const modelField = assistant?.providerFields?.find(f => f.key === 'model');
   const reasoningField = assistant?.providerFields?.find(f => f.key === 'reasoningLevel');
-  const modelsByProvider = modelField?.modelsByProvider ?? {};
   const reasoningOptions = reasoningField?.options ?? ['none', 'low', 'medium', 'high'];
+
+  // Real mode needs a validated provider; otherwise the mock engine runs
+  // and the UI says so.
+  const realAi = isRealAi(profile);
+  // Model options come from the live provider list (server-fetched cache).
+  const modelOptions = profile.models.length > 0 ? profile.models : [profile.model].filter(Boolean);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -190,9 +195,33 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         model: workingModel,
         reasoningLevel: workingReasoning,
       };
-      for await (const ev of runTurn(prompt, workingProfile, 35)) {
-        local = applyEvent(local, ev);
-        setMessages(local);
+
+      if (realAi) {
+        // Real turn: stream the actual model through nixre-core's proxy.
+        const history = messages
+          .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+          .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+        try {
+          for await (const ev of runRealTurn(prompt, workingProfile, history, {
+            model: workingModel,
+            reasoningLevel: workingReasoning,
+          })) {
+            local = applyEvent(local, ev);
+            setMessages(local);
+          }
+        } catch (err: any) {
+          local = applyEvent(local, {
+            type: 'message_text',
+            text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}`,
+          });
+          setMessages(local);
+        }
+      } else {
+        // Demo turn: deterministic mock agent.
+        for await (const ev of runTurn(prompt, workingProfile, 35)) {
+          local = applyEvent(local, ev);
+          setMessages(local);
+        }
       }
       await updateConversation({ id: convId, repoPath, title, messages: local, updatedAt: Date.now() });
     } catch {
@@ -211,9 +240,9 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     }
   };
 
-  const activeModelLabel = modelsByProvider[profile.provider]?.includes(workingModel)
+  const activeModelLabel = modelOptions.includes(workingModel)
     ? workingModel
-    : profile.model;
+    : workingModel || profile.model;
 
   return (
     <div className="flex h-full min-h-0 bg-surface-base">
@@ -275,7 +304,10 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
               <Sparkles className="w-4 h-4 text-brand shrink-0" />
               <span>{title || repoPath}</span>
             </div>
-            <p className="text-[11px] text-txt-tertiary truncate">Nixre Assistant • {profile.provider}</p>
+            <p className="text-[11px] text-txt-tertiary truncate">
+              Nixre Assistant • {profile.provider}
+              {!realAi && <span className="text-feedback-warn-text"> • demo mode</span>}
+            </p>
           </div>
           {onClose && (
             <button
@@ -341,7 +373,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
               </button>
               {modelOpen && (
                 <div className="absolute left-0 bottom-8 w-56 rounded-md border border-border-mid bg-surface-canvas shadow-xl py-1 z-30 animate-pop max-h-64 overflow-y-auto">
-                  {(modelsByProvider[profile.provider] ?? []).map(m => (
+                  {modelOptions.map(m => (
                     <button
                       key={m}
                       onClick={() => { setWorkingModel(m); setModelOpen(false); }}

@@ -138,7 +138,7 @@ A plugin is only *live* when **both** allow it. All activation state, plugin con
 ### Bundled plugins
 | Plugin | What it does | Configuration |
 | --- | --- | --- |
-| **Nixre Assistant** | AI copilot for agentic engineering work. Runs in an isolated Docker environment with the tools `file_read` (reads images too), `file_write`, `bash`, `run_tests`, `web_search`, and `git`. Per-repo profiles choose the AI provider and what it may do (edit, run bash/tests, push, merge, auto-merge-on-green, auto-fix bugs, path allow/block lists). | per-repo profile (`/plugins` + repo **Settings**) |
+| **Nixre Assistant** | AI copilot for agentic engineering work. Bring your own provider — DeepSeek, OpenAI, Anthropic, Ollama, or any OpenAI-compatible endpoint. API keys are stored **encrypted server-side** (never sent to the browser), validated against the live provider on save, and model lists are fetched live. Streaming chat with configurable reasoning levels and interleaved thinking. Per-repo profiles choose what the assistant may do (edit, run bash/tests, push, merge, auto-merge-on-green, auto-fix bugs, path allow/block lists). Without a validated key the assistant runs in a clearly-labeled demo mode. | per-repo profile (`/plugins` + repo **Settings**) |
 | **CI/CD Pipelines** | Webhook-based pipeline status surface — point your CI at a Nixre webhook and surface runs in the UI. | settings form |
 | **Security Scanner** | Scan repos/PRs for secrets, dependency CVEs, and static-analysis issues. | settings form |
 | **Issues Tracker** | Create, list, assign, label and close issues. | settings form |

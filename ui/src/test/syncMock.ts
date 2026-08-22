@@ -141,14 +141,57 @@ async function handleSync(url: URL, method: string, body: any): Promise<Response
   return json(404, { message: `No sync mock route for ${method} ${path}` });
 }
 
+// --- AI endpoints (used by assistantProfiles via lib/aiApi) --------------------
+// Minimal in-memory provider profile so provider-backed code paths work in
+// tests without a live backend.
+
+export const aiMockProfile = {
+  provider: 'deepseek',
+  providerLabel: 'DeepSeek',
+  baseUrl: 'https://api.deepseek.com',
+  keyConfigured: false,
+  keyMask: null,
+  validatedAt: null,
+  model: 'deepseek-chat',
+  reasoningLevel: 'none',
+  interleavedReasoning: false,
+  models: ['deepseek-chat', 'deepseek-reasoner'] as string[],
+  updatedAt: 1700000000000,
+};
+
+function handleAi(path: string, method: string, body: any): Response | null {
+  if (path !== '/ai/profile' && path !== '/ai/models' && path !== '/ai/chat') return null;
+  if (path === '/ai/profile' && method === 'GET') {
+    return json(200, aiMockProfile);
+  }
+  if (path === '/ai/profile' && method === 'PUT') {
+    Object.assign(aiMockProfile, {
+      provider: body?.provider ?? aiMockProfile.provider,
+      baseUrl: body?.baseUrl ?? aiMockProfile.baseUrl,
+      model: body?.model ?? aiMockProfile.model,
+      reasoningLevel: body?.reasoningLevel ?? aiMockProfile.reasoningLevel,
+      interleavedReasoning: body?.interleavedReasoning ?? aiMockProfile.interleavedReasoning,
+      validatedAt: body?.apiKey ? Date.now() : aiMockProfile.validatedAt,
+    });
+    return json(200, { ...aiMockProfile, validated: true });
+  }
+  if (path === '/ai/models' && method === 'GET') {
+    return json(200, { models: aiMockProfile.models, cached: true });
+  }
+  return json(404, { message: `No ai mock route for ${method} ${path}` });
+}
+
 /** Install the /api/sync/v1 fetch interceptor (idempotent). */
 export function installSyncFetchMock(): void {
   const realFetch = globalThis.fetch.bind(globalThis);
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     const url = new URL(raw, 'http://mock.local');
-    const response = await handleSync(url, init?.method ?? 'GET', parseBody(init?.body));
-    if (response) return response;
+    const syncResponse = await handleSync(url, init?.method ?? 'GET', parseBody(init?.body));
+    if (syncResponse) return syncResponse;
+    // aiApi talks to /api/v1/ai/* — mock that too when tests use it.
+    const aiResponse = handleAi(url.pathname.replace('/api/v1', ''), init?.method ?? 'GET', parseBody(init?.body));
+    if (aiResponse) return aiResponse;
     return realFetch(input, init);
   }) as typeof fetch;
 }

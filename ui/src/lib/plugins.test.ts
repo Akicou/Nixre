@@ -44,12 +44,17 @@ describe('plugin registry', () => {
     ]);
   });
 
-  it('scopes the model picker to the selected provider and adds reasoning controls', () => {
+  it('frees the model picker from hardcoded lists and adds reasoning controls', () => {
     const assistant = getPlugin('nixre-assistant')!;
     const modelField = assistant.providerFields!.find(f => f.key === 'model');
     expect(modelField?.type).toBe('select');
-    expect(modelField?.modelsByProvider).toBeDefined();
-    expect(modelField?.modelsByProvider?.deepseek).toContain('deepseek-reasoner');
+    // Models are fetched live from the provider (server-side), so the field
+    // ships no hardcoded per-provider lists anymore.
+    expect(modelField?.modelsByProvider).toBeUndefined();
+    expect((modelField?.options ?? []).length).toBe(0);
+
+    const providerField = assistant.providerFields!.find(f => f.key === 'provider');
+    expect(providerField?.options).not.toContain('github-copilot');
 
     const reasoningLevel = assistant.providerFields!.find(f => f.key === 'reasoningLevel');
     const interleaved = assistant.providerFields!.find(f => f.key === 'interleavedReasoning');
