@@ -149,9 +149,9 @@ export const aiMockProfile = {
   provider: 'deepseek',
   providerLabel: 'DeepSeek',
   baseUrl: 'https://api.deepseek.com',
-  keyConfigured: false,
-  keyMask: null,
-  validatedAt: null,
+  keyConfigured: true,
+  keyMask: '…test',
+  validatedAt: 1700000000000,
   model: 'deepseek-chat',
   reasoningLevel: 'none',
   interleavedReasoning: false,
@@ -177,6 +177,21 @@ function handleAi(path: string, method: string, body: any): Response | null {
   }
   if (path === '/ai/models' && method === 'GET') {
     return json(200, { models: aiMockProfile.models, cached: true });
+  }
+  if (path === '/ai/chat' && method === 'POST') {
+    // Minimal SSE stream: reasoning + text + done, like the real proxy.
+    const frames = [
+      { type: 'reasoning', text: 'Checking the suite first. ' },
+      { type: 'text', text: 'The suite is green: **15 tests passing** across 2 files. ' },
+      { type: 'text', text: 'Nothing blocking for this change.' },
+      { type: 'done' },
+    ]
+      .map(evt => `data: ${JSON.stringify(evt)}`)
+      .join('\n\n');
+    return new Response(`${frames}\n\n`, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
   }
   return json(404, { message: `No ai mock route for ${method} ${path}` });
 }

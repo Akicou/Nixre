@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Bot, Loader2, RefreshCw, AlertTriangle, XCircle, Zap } from 'lucide-react';
+import { Check, Bot, Loader2, RefreshCw, AlertTriangle, Zap } from 'lucide-react';
 import { getPlugin } from '../../lib/plugins';
 import {
   defaultRepoProfile,
@@ -300,12 +300,6 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
         </button>
       </div>
 
-      {!validatedAt && !saving && (
-        <p className="text-[11px] text-txt-tertiary flex items-center gap-1.5">
-          <XCircle className="w-3.5 h-3.5" />
-          Until a key is validated the assistant runs in demo mode (canned responses).
-        </p>
-      )}
     </div>
   );
 };

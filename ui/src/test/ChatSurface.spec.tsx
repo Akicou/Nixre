@@ -22,7 +22,7 @@ describe('ChatSurface', () => {
     syncMockReset();
   });
 
-  it('shows an empty state with suggestion chips', async () => {
+  it('shows the empty state with suggestion chips once a provider is validated', async () => {
     await mount();
     expect(screen.getByText(/How can I help in acme\/website/i)).toBeInTheDocument();
     expect(screen.getByText(/Run the tests and lint/i)).toBeInTheDocument();
@@ -30,18 +30,20 @@ describe('ChatSurface', () => {
 
   it('renders the model and reasoning pickers', async () => {
     await mount();
-    // active model label defaults to the provider's default model.
-    expect(screen.getByText((await getActiveProviderProfile()).model)).toBeInTheDocument();
+    expect(await screen.findByText(/deepseek-chat/)).toBeInTheDocument();
     expect(screen.getByText(/Reasoning:/i)).toBeInTheDocument();
   });
 
-  it('streams a user turn and shows the assistant summary', async () => {
+  it('streams a real turn through the provider proxy', async () => {
     await mount();
     fireEvent.click(screen.getByText(/Run the tests and lint/i));
 
-    // The tool block for run_tests appears, then the green summary.
-    await waitFor(() => expect(screen.getByText(/run_tests/i)).toBeInTheDocument());
+    // The mock /ai/chat stream answers with the green-suite summary.
     expect(await screen.findByText(/suite is green/i)).toBeInTheDocument();
+    // Reasoning was streamed (interleaved flag off drops it — text only).
+    await waitFor(() =>
+      expect(screen.getByText(/Nothing blocking/i)).toBeInTheDocument(),
+    );
   });
 
   it('persists conversations and lists them on reload', async () => {

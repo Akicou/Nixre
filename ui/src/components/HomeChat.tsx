@@ -19,7 +19,6 @@ import {
   listConversations,
   createConversation,
   updateConversation,
-  runTurn,
   runRealTurn,
   applyEvent,
   uid,
@@ -113,7 +112,7 @@ export const HomeChat: React.FC = () => {
 
   const send = async (text?: string) => {
     const prompt = (text ?? input).trim();
-    if (!prompt || streaming || !profile) return;
+    if (!prompt || streaming || !profile || !realAi) return;
     setInput('');
     openSession(false);
 
@@ -137,24 +136,17 @@ export const HomeChat: React.FC = () => {
         .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
         .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-      if (realAi) {
-        try {
-          for await (const ev of runRealTurn(prompt, { ...profile, model: workingModel || profile.model }, history, {
-            model: workingModel || undefined,
-            mode,
-          })) {
-            local = applyEvent(local, ev);
-            setMessages(local);
-          }
-        } catch (err: any) {
-          local = applyEvent(local, { type: 'message_text', text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}` });
-          setMessages(local);
-        }
-      } else {
-        for await (const ev of runTurn(prompt, profile, 35)) {
+      try {
+        for await (const ev of runRealTurn(prompt, { ...profile, model: workingModel || profile.model }, history, {
+          model: workingModel || undefined,
+          mode,
+        })) {
           local = applyEvent(local, ev);
           setMessages(local);
         }
+      } catch (err: any) {
+        local = applyEvent(local, { type: 'message_text', text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}` });
+        setMessages(local);
       }
       await updateConversation({ id, repoPath: HOME_PATH, title, messages: local, updatedAt: Date.now() });
     } catch {
@@ -189,8 +181,7 @@ export const HomeChat: React.FC = () => {
             <h2 className="text-sm font-semibold text-txt-primary leading-tight">Nixre Assistant</h2>
             <p className="text-[11px] text-txt-tertiary truncate">
               {profile?.provider ?? '…'}
-              {!realAi && <span className="text-feedback-warning-text"> · demo mode</span>}
-              {realAi && <span className={accent.text}> · {activeMode.label}</span>}
+              {realAi ? <span className={accent.text}> · {activeMode.label}</span> : <span> · not configured</span>}
             </p>
           </div>
         </div>
@@ -220,22 +211,40 @@ export const HomeChat: React.FC = () => {
           {/* Messages / empty state */}
           <div ref={scrollRef} className="max-h-[380px] overflow-y-auto min-h-[120px] px-4 py-4">
             {messages.length === 0 ? (
-              <div className="text-center py-4">
-                <p className="text-xs text-txt-secondary max-w-xs mx-auto">
-                  Ask anything about your codebase — or pick a mode and put the assistant to work.
-                </p>
-                <div className="mt-3 grid gap-1.5 max-w-xs mx-auto">
-                  {HOME_SUGGESTIONS.map(s => (
-                    <button
-                      key={s}
-                      onClick={() => send(s)}
-                      className="text-left text-[11px] px-3 py-1.5 rounded-md border border-border-subtle bg-surface-base text-txt-secondary hover:border-brand/50 hover:text-txt-primary transition"
-                    >
-                      {s}
-                    </button>
-                  ))}
+              realAi ? (
+                <div className="text-center py-4">
+                  <p className="text-xs text-txt-secondary max-w-xs mx-auto">
+                    Ask anything about your codebase — or pick a mode and put the assistant to work.
+                  </p>
+                  <div className="mt-3 grid gap-1.5 max-w-xs mx-auto">
+                    {HOME_SUGGESTIONS.map(s => (
+                      <button
+                        key={s}
+                        onClick={() => send(s)}
+                        className="text-left text-[11px] px-3 py-1.5 rounded-md border border-border-subtle bg-surface-base text-txt-secondary hover:border-brand/50 hover:text-txt-primary transition"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="text-center py-4">
+                  <div className="w-10 h-10 rounded-xl bg-surface-subtle border border-border-subtle flex items-center justify-center mx-auto mb-3">
+                    <Settings2 className="w-5 h-5 text-txt-tertiary" />
+                  </div>
+                  <p className="text-xs text-txt-secondary max-w-xs mx-auto">
+                    The assistant needs a validated AI provider before it can chat.
+                  </p>
+                  <Link
+                    to="/plugins"
+                    className="inline-flex items-center gap-1.5 mt-3 px-3 py-1.5 rounded-md bg-brand text-white text-[11px] font-medium hover:bg-brand-hover transition shadow-sm"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" />
+                    Configure a provider
+                  </Link>
+                </div>
+              )
             ) : (
               <div className="space-y-4">
                 {messages.map(msg => (
@@ -293,16 +302,13 @@ export const HomeChat: React.FC = () => {
                     send();
                   }
                 }}
-                placeholder={
-                  realAi
-                    ? `Ask in ${activeMode.label} mode…`
-                    : 'Ask anything (demo mode until a provider is configured)…'
-                }
-                className="flex-1 resize-none px-3 py-2 rounded-md bg-surface-canvas border border-border-subtle text-txt-primary text-xs font-mono placeholder:text-txt-tertiary focus:border-brand outline-none transition max-h-28"
+                placeholder={realAi ? `Ask in ${activeMode.label} mode…` : 'Configure a provider to start chatting…'}
+                className="flex-1 resize-none px-3 py-2 rounded-md bg-surface-canvas border border-border-subtle text-txt-primary text-xs font-mono placeholder:text-txt-tertiary focus:border-brand outline-none transition max-h-28 disabled:opacity-50"
+                disabled={streaming || !realAi}
               />
               <button
                 onClick={() => send()}
-                disabled={streaming || !input.trim()}
+                disabled={streaming || !input.trim() || !realAi}
                 className="p-2.5 rounded-md bg-brand text-white hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm shrink-0"
                 title="Send"
               >
@@ -359,7 +365,7 @@ export const HomeChat: React.FC = () => {
                   to="/plugins"
                   className="text-[11px] text-txt-tertiary hover:text-txt-secondary underline underline-offset-2 transition"
                 >
-                  Configure AI provider
+                  Configure AI provider →
                 </Link>
               )}
             </div>
@@ -376,7 +382,7 @@ export const HomeChat: React.FC = () => {
           <div className="flex items-center gap-2.5">
             <Bot className="w-4 h-4 text-txt-tertiary group-hover:text-brand transition" />
             <span className="text-xs text-txt-tertiary group-hover:text-txt-secondary transition">
-              Ask, plan, build or debug — the assistant lives here…
+              {realAi ? 'Ask, plan, build or debug — the assistant lives here…' : 'Set up an AI provider to unlock the assistant…'}
             </span>
             <span className="ml-auto text-[10px] font-mono uppercase tracking-wider text-txt-tertiary/70">
               open ⏎

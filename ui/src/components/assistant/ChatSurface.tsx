@@ -12,7 +12,8 @@ import {
   Loader2,
   Sparkles,
   User,
-  XCircle
+  XCircle,
+  Settings2
 } from 'lucide-react';
 import { getPlugin } from '../../lib/plugins';
 import { isRealAi, type AssistantProviderProfile } from '../../lib/assistantProfiles';
@@ -23,7 +24,6 @@ import {
   createConversation,
   updateConversation,
   deleteConversation,
-  runTurn,
   runRealTurn,
   applyEvent,
   uid,
@@ -129,7 +129,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
 
   const send = async (text?: string) => {
     const prompt = (text ?? input).trim();
-    if (!prompt || streaming) return;
+    if (!prompt || streaming || !realAi) return;
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
@@ -163,33 +163,25 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         reasoningLevel: workingReasoning,
       };
 
-      if (realAi) {
-        // Real turn: stream the actual model through nixre-core's proxy.
-        const history = messages
-          .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
-          .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
-        try {
-          for await (const ev of runRealTurn(prompt, workingProfile, history, {
-            model: workingModel,
-            reasoningLevel: workingReasoning,
-            mode,
-          })) {
-            local = applyEvent(local, ev);
-            setMessages(local);
-          }
-        } catch (err: any) {
-          local = applyEvent(local, {
-            type: 'message_text',
-            text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}`,
-          });
-          setMessages(local);
-        }
-      } else {
-        // Demo turn: deterministic mock agent.
-        for await (const ev of runTurn(prompt, workingProfile, 35)) {
+      // Stream the actual model through nixre-core's proxy.
+      const history = messages
+        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      try {
+        for await (const ev of runRealTurn(prompt, workingProfile, history, {
+          model: workingModel,
+          reasoningLevel: workingReasoning,
+          mode,
+        })) {
           local = applyEvent(local, ev);
           setMessages(local);
         }
+      } catch (err: any) {
+        local = applyEvent(local, {
+          type: 'message_text',
+          text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}`,
+        });
+        setMessages(local);
       }
       await updateConversation({ id: convId, repoPath, title, messages: local, updatedAt: Date.now() });
     } catch {
@@ -276,7 +268,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
             </div>
             <p className="text-[11px] text-txt-tertiary truncate">
               Nixre Assistant • {profile.provider}
-              {!realAi && <span className="text-feedback-warn-text"> • demo mode</span>}
+              {realAi ? <span className={MODE_ACCENT_CLASSES[getMode(mode).accent].text}> • {getMode(mode).label}</span> : <span> • not configured</span>}
             </p>
           </div>
           {onClose && (
@@ -293,26 +285,46 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         {/* Messages */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
           {messages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center px-6 text-center">
-              <div className="w-12 h-12 rounded-xl bg-surface-subtle border border-border-subtle flex items-center justify-center mb-4">
-                <Bot className="w-6 h-6 text-brand" />
+            realAi ? (
+              <div className="h-full flex flex-col items-center justify-center px-6 text-center">
+                <div className="w-12 h-12 rounded-xl bg-surface-subtle border border-border-subtle flex items-center justify-center mb-4">
+                  <Bot className="w-6 h-6 text-brand" />
+                </div>
+                <h2 className="text-base font-semibold text-txt-primary mb-1">How can I help in {repoPath}?</h2>
+                <p className="text-xs text-txt-secondary max-w-md mb-6">
+                  Pick a mode below and ask anything — answers come straight from your configured provider.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-lg w-full">
+                  {suggestions.map(s => (
+                    <button
+                      key={s}
+                      onClick={() => send(s)}
+                      className="text-left text-xs px-3 py-2 rounded-md border border-border-subtle bg-surface-base text-txt-secondary hover:border-brand hover:text-txt-primary transition"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <h2 className="text-base font-semibold text-txt-primary mb-1">How can I help in {repoPath}?</h2>
-              <p className="text-xs text-txt-secondary max-w-md mb-6">
-                I read files, run the build and tests, search the web, and — with your access profile — can edit, commit and open PRs.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-lg w-full">
-                {suggestions.map(s => (
-                  <button
-                    key={s}
-                    onClick={() => send(s)}
-                    className="text-left text-xs px-3 py-2 rounded-md border border-border-subtle bg-surface-base text-txt-secondary hover:border-brand hover:text-txt-primary transition"
-                  >
-                    {s}
-                  </button>
-                ))}
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center px-6 text-center">
+                <div className="w-12 h-12 rounded-xl bg-surface-subtle border border-border-subtle flex items-center justify-center mb-4">
+                  <Settings2 className="w-6 h-6 text-txt-tertiary" />
+                </div>
+                <h2 className="text-base font-semibold text-txt-primary mb-1">No AI provider configured</h2>
+                <p className="text-xs text-txt-secondary max-w-md mb-5">
+                  The assistant needs a validated provider (DeepSeek, OpenAI, Anthropic, Ollama or any
+                  OpenAI-compatible endpoint) before it can answer. Keys are stored encrypted server-side.
+                </p>
+                <Link
+                  to="/plugins"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-brand text-white text-xs font-medium hover:bg-brand-hover transition shadow-sm"
+                >
+                  <Settings2 className="w-4 h-4" />
+                  Configure a provider
+                </Link>
               </div>
-            </div>
+            )
           ) : (
             <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
               {messages.map(msg => (
@@ -442,13 +454,13 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
                 el.style.height = Math.min(el.scrollHeight, 160) + 'px';
               }}
               onKeyDown={handleKeyDown}
-              placeholder="Ask the assistant anything…"
-              className="flex-1 resize-none px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono placeholder:text-txt-tertiary focus:border-brand outline-none transition max-h-40"
-              disabled={streaming}
+              placeholder={realAi ? 'Ask the assistant anything…' : 'Configure a provider to start chatting…'}
+              className="flex-1 resize-none px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono placeholder:text-txt-tertiary focus:border-brand outline-none transition max-h-40 disabled:opacity-50"
+              disabled={streaming || !realAi}
             />
             <button
               onClick={() => send()}
-              disabled={streaming || !input.trim()}
+              disabled={streaming || !input.trim() || !realAi}
               className="p-2.5 rounded-md bg-brand text-white hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm shrink-0"
               title="Send"
             >
