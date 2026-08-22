@@ -85,8 +85,9 @@ export interface Plugin {
 //
 // The tool set below is exactly what nixre-core's /ai/tools endpoint
 // implements (backend/src/lib/agentTools.js). Read tools work against the
-// bare repo on disk; run_command execs a shell command in a fresh clone of
-// the repo; web_search queries the web. The active profile selects the AI
+// bare repo on disk; run_command runs in a per-conversation Docker sandbox
+// (persistent shell + volume) when available, otherwise a fresh clone;
+// web_search queries the web. The active profile selects the AI
 // provider; per-repo profiles control what it may do.
 // ---------------------------------------------------------------------------
 
@@ -94,7 +95,7 @@ const assistantTools: PluginTool[] = [
   { name: 'list_files', description: 'List all file paths in the repository (default branch).' },
   { name: 'read_file', description: 'Read a file from the repository. Paths pointing to images are read analytically (multimodal).' },
   { name: 'search_code', description: 'Regex search across all tracked files. Returns matching lines as path:line: text.' },
-  { name: 'run_command', description: 'Run a shell command in a fresh clone of the repository (tests, builds, inspection).' },
+  { name: 'run_command', description: 'Run a shell command in the agent sandbox (persistent per conversation) or a fresh clone. cd, env and installs persist in the sandbox.' },
   { name: 'show_images', description: 'Display one or more images from the repository inline in the chat.' },
   { name: 'web_search', description: 'Search the web for up-to-date docs, APIs and fixes.' },
 ];

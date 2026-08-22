@@ -18,4 +18,14 @@ if ! su-exec 1000:1000 test -w "$ROOT"; then
   exit 1
 fi
 
-exec su-exec 1000:1000 "$@"
+# Docker socket access for agent sandboxes (run_command).
+RUN_AS="1000:1000"
+if [ -S /var/run/docker.sock ]; then
+  DG="${DOCKER_GID:-$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo '')}"
+  if [ -n "$DG" ] && [ "$DG" != "0" ]; then
+    addgroup -g "$DG" -S dockersock 2>/dev/null || true
+    RUN_AS="1000:dockersock"
+  fi
+fi
+
+exec su-exec "$RUN_AS" "$@"

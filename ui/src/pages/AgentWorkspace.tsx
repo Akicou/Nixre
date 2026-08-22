@@ -25,7 +25,7 @@ import {
   type AssistantProviderProfile,
 } from '../lib/assistantProfiles';
 import { ASSISTANT_MODES, getMode, type ModeId } from '../lib/assistantModes';
-import { modelLabel, executeAssistantTool } from '../lib/aiApi';
+import { modelLabel, executeAssistantTool, touchAgentSandbox } from '../lib/aiApi';
 import {
   listConversations,
   createConversation,
@@ -378,6 +378,10 @@ export const AgentWorkspace: React.FC = () => {
       }
 
       const { summary, history } = buildModelContext(base);
+      const agentMode = mode === 'agent' || mode === 'debug';
+      if (agentMode && convId) {
+        void touchAgentSandbox(activeRepo, convId);
+      }
       const startedAt = performance.now();
       let outputChars = 0;
       let reasoningChars = 0;
@@ -389,7 +393,8 @@ export const AgentWorkspace: React.FC = () => {
           mode,
           compactionSummary: summary ?? undefined,
           repoPath: activeRepo,
-          agent: mode === 'agent' || mode === 'debug',
+          conversationId: convId ?? undefined,
+          agent: agentMode,
           signal: controller.signal,
           images: images.length ? images : undefined,
         })) {

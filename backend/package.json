@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
+    "dockerode": "^4.0.9",
     "express": "^4.21.2",
     "pg": "^8.13.1"
   }

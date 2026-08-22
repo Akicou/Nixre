@@ -1,4 +1,10 @@
 services:
+  nixre-agent-sandbox:
+    build: ./backend/agent-sandbox
+    image: nixre-agent-sandbox:latest
+    restart: "no"
+    entrypoint: ["true"]
+
   nixre-db:
     image: postgres:16-alpine
     container_name: nixre-db
@@ -24,14 +30,22 @@ services:
       REPOS_ROOT: /data/repos
       INTERNAL_TOKEN: ${NIXRE_INTERNAL_TOKEN:-dev-internal-token-change-me}
       AI_SECRET: ${NIXRE_AI_SECRET:-dev-ai-secret-change-me}
+      SANDBOX_IMAGE: nixre-agent-sandbox:latest
+      SANDBOX_IDLE_MS: ${SANDBOX_IDLE_MS:-900000}
+      DOCKER_GID: ${DOCKER_GID:-}
+    group_add:
+      - ${DOCKER_GID:-999}
     volumes:
       # :z so Fedora/SELinux allows the container to write the bind mount.
       - ./data/repos:/data/repos:z
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "127.0.0.1:3002:3002"
     depends_on:
       nixre-db:
         condition: service_healthy
+      nixre-agent-sandbox:
+        condition: service_completed_successfully
 
   nixre-ssh:
     build: ./ssh

@@ -411,6 +411,7 @@ export async function* runRealTurn(
     mode?: string;
     compactionSummary?: string;
     repoPath?: string;
+    conversationId?: string;
     agent?: boolean;
     signal?: AbortSignal;
     extraContext?: string;
@@ -424,7 +425,11 @@ export async function* runRealTurn(
   const signal = overrides.signal;
   const useTools = overrides.agent === true && Boolean(overrides.repoPath);
 
-  // The provider-side thread. Tool rounds append to it and re-stream.
+  if (useTools && overrides.repoPath && overrides.conversationId) {
+    void aiApi.touchAgentSandbox(overrides.repoPath, overrides.conversationId);
+  }
+
+  // The provider-side thread.
   const thread: ChatTurn[] = [
     { role: 'system', content: mode.systemPrompt },
     // Attached working context (e.g. a PR diff) — above history, below the
@@ -600,7 +605,9 @@ export async function* runRealTurn(
         }
         push({ type: 'tool_start', tool: { id: call.id, name: call.name, status: 'running', argsText: call.args } });
         try {
-          const output = await aiApi.executeAssistantTool(overrides.repoPath!, call.name, argsObj);
+          const output = await aiApi.executeAssistantTool(overrides.repoPath!, call.name, argsObj, {
+            conversationId: overrides.conversationId,
+          });
           push({ type: 'tool_output', toolId: call.id, output });
           thread.push({ role: 'tool', tool_call_id: call.id, content: output });
         } catch (err: unknown) {

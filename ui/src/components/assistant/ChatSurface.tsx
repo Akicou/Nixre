@@ -21,7 +21,7 @@ import {
 import { getPlugin } from '../../lib/plugins';
 import { isRealAi, type AssistantProviderProfile } from '../../lib/assistantProfiles';
 import { ASSISTANT_MODES, MODE_ACCENT_CLASSES, getMode, type ModeId } from '../../lib/assistantModes';
-import { modelLabel, executeAssistantTool } from '../../lib/aiApi';
+import { modelLabel, executeAssistantTool, touchAgentSandbox } from '../../lib/aiApi';
 import {
   listConversations,
   createConversation,
@@ -273,6 +273,10 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
       // History comes from the pre-turn transcript; auto-compaction replaces
       // everything before the last compaction entry with its summary.
       const { summary, history } = buildModelContext(base);
+      const agentMode = mode === 'agent' || mode === 'debug';
+      if (agentMode && convId) {
+        void touchAgentSandbox(repoPath, convId);
+      }
       try {
         for await (const ev of runRealTurn(modelPrompt, workingProfile, history, {
           model: workingModel,
@@ -280,7 +284,8 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           mode,
           compactionSummary: summary ?? undefined,
           repoPath,
-          agent: mode === 'agent' || mode === 'debug',
+          conversationId: convId ?? undefined,
+          agent: agentMode,
           signal: controller.signal,
           extraContext: extraContext ? `${extraContext.label}\n\n${extraContext.text}` : undefined,
           images: images.length ? images : undefined,

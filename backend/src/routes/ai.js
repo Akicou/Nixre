@@ -17,6 +17,7 @@ import {
   AuthError,
 } from '../lib/ai.js';
 import { TOOL_SCHEMAS, executeTool } from '../lib/agentTools.js';
+import { touchSandbox } from '../lib/agentSandbox.js';
 
 const MODEL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const MAX_MSG = 64_000;
@@ -497,13 +498,15 @@ export function aiRoutes(pool, authenticate) {
 
   // --- agent tool execution ---------------------------------------------------
 
-  // POST /ai/tools {repoPath, tool, args} — runs one assistant tool against
-  // the repo on disk. Read-only tools are available to everyone; run_command
-  // is on by default and can be turned off in the per-repo access profile.
+  // POST /ai/tools {repoPath, tool, args, conversationId?} — runs one assistant
+  // tool against the repo on disk. Read-only tools are available to everyone;
+  // run_command is on by default and can be turned off in the per-repo access
+  // profile. When conversationId is set, run_command uses the Docker sandbox.
   api.post('/ai/tools', auth, async (req, res) => {
     const uid = req.auth.user.uid;
     const repoPath = String(req.body?.repoPath || '');
     const tool = String(req.body?.tool || '');
+    const conversationId = String(req.body?.conversationId || '');
     const args = req.body?.args && typeof req.body.args === 'object' ? req.body.args : {};
 
     const slash = repoPath.indexOf('/');
@@ -527,8 +530,32 @@ export function aiRoutes(pool, authenticate) {
     }
 
     try {
-      const result = await executeTool(tool, space, repo, args, permissions);
+      const result = await executeTool(tool, space, repo, args, permissions, {
+        userId: uid,
+        conversationId: conversationId || undefined,
+        repoPath,
+      });
       res.json(result);
+    } catch (err) {
+      res.status(400).json({ message: err.message });
+    }
+  });
+
+  // POST /ai/sandbox/touch — reset idle timer while the user is chatting.
+  api.post('/ai/sandbox/touch', auth, async (req, res) => {
+    const uid = req.auth.user.uid;
+    const repoPath = String(req.body?.repoPath || '');
+    const conversationId = String(req.body?.conversationId || '');
+    const slash = repoPath.indexOf('/');
+    if (slash <= 0 || slash === repoPath.length - 1 || !conversationId) {
+      res.status(400).json({ message: 'repoPath and conversationId required' });
+      return;
+    }
+    const space = repoPath.slice(0, slash);
+    const repo = repoPath.slice(slash + 1);
+    try {
+      await touchSandbox({ userId: uid, conversationId, repoPath, space, repo });
+      res.json({ ok: true });
     } catch (err) {
       res.status(400).json({ message: err.message });
     }

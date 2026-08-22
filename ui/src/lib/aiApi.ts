@@ -164,11 +164,17 @@ export async function executeAssistantTool(
   repoPath: string,
   tool: string,
   args: Record<string, unknown>,
+  opts?: { conversationId?: string },
 ): Promise<string> {
   const res = await fetch('/api/v1/ai/tools', {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ repoPath, tool, args }),
+    body: JSON.stringify({
+      repoPath,
+      tool,
+      args,
+      ...(opts?.conversationId ? { conversationId: opts.conversationId } : {}),
+    }),
   });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
@@ -180,6 +186,15 @@ export async function executeAssistantTool(
   }
   const body = await res.json();
   return String(body.output ?? '');
+}
+
+/** Reset the agent sandbox idle timer while the user is chatting. */
+export async function touchAgentSandbox(repoPath: string, conversationId: string): Promise<void> {
+  await fetch('/api/v1/ai/sandbox/touch', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ repoPath, conversationId }),
+  }).catch(() => {});
 }
 
 // Streams a chat completion; `onEvent` receives unified events.

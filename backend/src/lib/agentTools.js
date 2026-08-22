@@ -2,8 +2,9 @@
 //
 // Read-only tools (list_files, read_file, search_code, show_images) work
 // against the bare repo on disk via git plumbing and are safe to expose to
-// any authenticated user with repo access. run_command clones the repo to a
-// temp dir and execs a shell command there — gated behind the caller's
+// any authenticated user with repo access. run_command uses a Docker sandbox
+// (persistent shell + volume per conversation) when available, otherwise
+// clones the repo to a temp dir — gated behind the caller's per-repo access
 // per-repo access profile (canRunBash / canRunTests; both default on), with
 // hard timeouts and output caps. web_search queries the web and is gated
 // behind canSearchWeb.
@@ -19,6 +20,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import { repoDir } from '../git/repo.js';
 import { webSearch } from './webSearch.js';
+import { isSandboxEnabled, runCommandInSandbox } from './agentSandbox.js';
 
 const exec = promisify(execFile);
 
@@ -55,7 +57,7 @@ export const TOOL_SCHEMAS = [
   {
     name: 'run_command',
     description:
-      'Run a shell command in a fresh clone of the repository (e.g. "npm test", "make lint"). Use for tests, builds and inspection. Output is truncated.',
+      'Run a shell command in the agent sandbox (persistent workspace per conversation) or a fresh clone when no sandbox is available. Use for tests, builds and inspection. cd, env and installs persist between calls in the sandbox. Output is truncated.',
     parameters: {
       type: 'object',
       properties: { command: { type: 'string', description: 'Shell command to run inside the repo clone' } },
@@ -240,11 +242,27 @@ export async function searchCode(space, repo, args, permissions = {}) {
 
 const BLOCKED = /\brm\s+-rf\s+[/~]|\bmkfs\b|:\(\)\{.*\};:|dd\s+if=\/dev\/[\w]+\s+of=\/dev\/|shutdown|reboot/i;
 
-export async function runCommand(space, repo, args) {
+export async function runCommand(space, repo, args, _permissions = {}, context = {}) {
   assertRepo(space, repo);
   const command = String(args?.command || '').trim();
   if (!command || command.length > 2000) throw new Error('Invalid command');
   if (BLOCKED.test(command)) throw new Error('Command blocked by safety policy');
+
+  const { userId, conversationId, repoPath } = context;
+  if (userId && conversationId && repoPath && (await isSandboxEnabled())) {
+    try {
+      return await runCommandInSandbox({
+        userId,
+        conversationId,
+        repoPath,
+        space,
+        repo,
+        command,
+      });
+    } catch (err) {
+      console.warn('sandbox run_command failed, falling back to ephemeral clone:', err.message);
+    }
+  }
 
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
   // Clone into a path that does not exist yet. `git clone <src> <existing-dir>`
@@ -349,7 +367,8 @@ const EXECUTORS = {
   list_files: (space, repo, args, permissions) => listFiles(space, repo, args, permissions),
   read_file: (space, repo, args, permissions) => readFile(space, repo, args, permissions),
   search_code: (space, repo, args, permissions) => searchCode(space, repo, args, permissions),
-  run_command: (space, repo, args) => runCommand(space, repo, args),
+  run_command: (space, repo, args, permissions, context) =>
+    runCommand(space, repo, args, permissions, context),
   show_images: (space, repo, args, permissions) => showImages(space, repo, args, permissions),
   web_search: (space, repo, args) => webSearchTool(args),
 };
@@ -373,7 +392,7 @@ async function webSearchTool(args) {
  * access profile: { canRunBash, canRunTests, canSearchWeb, allowedPaths,
  * blockedPaths } — missing run_command flags default on.
  */
-export async function executeTool(tool, space, repo, args, permissions = {}) {
+export async function executeTool(tool, space, repo, args, permissions = {}, context = {}) {
   const fn = EXECUTORS[tool];
   if (!fn) throw new Error(`Unknown tool '${tool}'`);
   if (tool === 'run_command') {
@@ -393,5 +412,5 @@ export async function executeTool(tool, space, repo, args, permissions = {}) {
       );
     }
   }
-  return fn(space, repo, args, permissions);
+  return fn(space, repo, args, permissions, context);
 }

@@ -21,6 +21,7 @@ import { installSyncFetchMock, syncMockReset } from '../test/syncMock';
 vi.mock('./aiApi', () => ({
   streamAiChat: vi.fn(),
   executeAssistantTool: vi.fn(),
+  touchAgentSandbox: vi.fn(),
 }));
 
 const mockedStream = vi.mocked(streamAiChat);
@@ -161,7 +162,9 @@ describe('assistantEngine agent loop', () => {
     }
 
     expect(mockedStream).toHaveBeenCalledTimes(2);
-    expect(mockedExec).toHaveBeenCalledWith('acme/website', 'read_file', { path: 'src/index.ts' });
+    expect(mockedExec).toHaveBeenCalledWith('acme/website', 'read_file', { path: 'src/index.ts' }, {
+      conversationId: undefined,
+    });
 
     // The second round's thread contains the tool result message.
     const secondThread = mockedStream.mock.calls[1][0];
