@@ -23,6 +23,8 @@ import { internalRoutes } from './routes/internal.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { aiRoutes } from './routes/ai.js';
 import { smartHttp } from './git/smartHttp.js';
+import { REPOS_ROOT } from './git/repo.js';
+import { mkdir, access, constants } from 'node:fs/promises';
 
 const PORT = Number(process.env.PORT || 3002);
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://nixre:nixre@localhost:5432/nixre';
@@ -100,7 +102,19 @@ app.use((err, _req, res, _next) => {
 // Boot
 // ---------------------------------------------------------------------------
 
+async function ensureReposRoot() {
+  await mkdir(REPOS_ROOT, { recursive: true });
+  await access(REPOS_ROOT, constants.W_OK);
+}
+
 async function boot() {
+  try {
+    await ensureReposRoot();
+  } catch (err) {
+    throw new Error(
+      `REPOS_ROOT ${REPOS_ROOT} is not writable (${err.message}). New spaces cannot be created.`,
+    );
+  }
   let retries = 30;
   while (retries-- > 0) {
     try {

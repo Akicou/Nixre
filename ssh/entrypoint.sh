@@ -23,4 +23,7 @@ EOF
 chmod 644 /srv/nixre-env.sh
 
 mkdir -p /run/sshd /data/repos
+# Same uid as nixre-core. A root-owned bind mount would block new spaces.
+chown -R 1000:1000 /data/repos || true
+chmod u+rwx,g+rwxs /data/repos || true
 exec /usr/sbin/sshd -D -e

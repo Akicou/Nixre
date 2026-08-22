@@ -66,7 +66,17 @@ export async function installPostReceiveHook(dir) {
 
 export async function initBareRepo(space, repo, { defaultBranch = 'main' } = {}) {
   const dir = repoDir(space, repo);
-  await mkdir(path.dirname(dir), { recursive: true });
+  try {
+    await mkdir(path.dirname(dir), { recursive: true });
+  } catch (err) {
+    const code = err && err.code;
+    if (code === 'EACCES' || code === 'EPERM') {
+      throw new Error(
+        `${path.dirname(dir)} is not writable by nixre-core. The /data/repos volume must be owned by uid 1000.`,
+      );
+    }
+    throw err;
+  }
   // Re-creating a repo (UI retry after a 502, leftover disk from a failed
   // insert) must not throw — git init on an existing dir is fine, but a
   // non-git leftover or a missing parent used to 502 the HTTP request.
