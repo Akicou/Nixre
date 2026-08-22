@@ -315,7 +315,12 @@ async function execInShell(key, containerId, command) {
       timer,
     });
 
-    state.stream.write(`${command}\nprintf '${MARKER}:%s\\n' $?\n`);
+    if (!command.includes('\n')) {
+      state.stream.write(`( ${command} )\n`);
+    } else {
+      state.stream.write(`${command}\n`);
+    }
+    state.stream.write(`printf '${MARKER}:%s\\n' $?\n`);
     drainWaiters(state);
   });
 }
@@ -345,6 +350,33 @@ export async function runCommandInSandbox({ userId, conversationId, repoPath, sp
   touch(key);
   const containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo);
   return execInShell(key, containerId, command);
+}
+
+export async function writeFileInSandbox({
+  userId,
+  conversationId,
+  repoPath,
+  space,
+  repo,
+  filePath,
+  content,
+}) {
+  if (!(await isSandboxEnabled())) {
+    throw new Error('Agent sandbox unavailable (Docker socket not accessible)');
+  }
+  const key = sessionKey(userId, conversationId, repoPath);
+  touch(key);
+  const containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo);
+  const rel = String(filePath || '').replace(/\\/g, '/');
+  const target = `${WORK_DIR}/${rel}`;
+  const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : WORK_DIR;
+  const b64 = Buffer.from(String(content ?? ''), 'utf8').toString('base64');
+  const cmd = `mkdir -p ${JSON.stringify(parent)} && echo ${JSON.stringify(b64)} | base64 -d > ${JSON.stringify(target)}`;
+  const { output, exitCode } = await execInShell(key, containerId, cmd);
+  if (exitCode !== 0) {
+    throw new Error(output || `write_file failed (exit ${exitCode})`);
+  }
+  return { output: `Wrote ${Buffer.byteLength(content ?? '', 'utf8')} bytes to ${rel}` };
 }
 
 async function stopContainerByName(name) {

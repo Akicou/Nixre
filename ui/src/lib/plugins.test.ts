@@ -22,6 +22,7 @@ describe('plugin registry', () => {
       'read_file',
       'search_code',
       'run_command',
+      'write_file',
       'show_images',
       'web_search',
     ]);

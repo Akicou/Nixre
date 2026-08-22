@@ -20,7 +20,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import { repoDir } from '../git/repo.js';
 import { webSearch } from './webSearch.js';
-import { isSandboxEnabled, runCommandInSandbox } from './agentSandbox.js';
+import { isSandboxEnabled, runCommandInSandbox, writeFileInSandbox } from './agentSandbox.js';
 
 const exec = promisify(execFile);
 
@@ -57,11 +57,24 @@ export const TOOL_SCHEMAS = [
   {
     name: 'run_command',
     description:
-      'Run a shell command in the agent sandbox (persistent workspace per conversation) or a fresh clone when no sandbox is available. Use for tests, builds and inspection. cd, env and installs persist between calls in the sandbox. Output is truncated.',
+      'Run a shell command in the agent sandbox (persistent workspace per conversation) or a fresh clone when no sandbox is available. Use for tests, builds and inspection. cd, env and installs persist between calls in the sandbox. Do not use cat > or interactive redirects — use write_file to create or overwrite files. Output is truncated.',
     parameters: {
       type: 'object',
-      properties: { command: { type: 'string', description: 'Shell command to run inside the repo clone' } },
+      properties: { command: { type: 'string', description: 'Shell command to run inside the repo workspace' } },
       required: ['command'],
+    },
+  },
+  {
+    name: 'write_file',
+    description:
+      'Create or overwrite a text file in the agent workspace (sandbox or temp clone). Use this instead of cat > / heredocs. Parent directories are created as needed. Not committed to git until the user commits.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Repo-relative file path' },
+        content: { type: 'string', description: 'Full file contents to write' },
+      },
+      required: ['path', 'content'],
     },
   },
   {
@@ -242,11 +255,66 @@ export async function searchCode(space, repo, args, permissions = {}) {
 
 const BLOCKED = /\brm\s+-rf\s+[/~]|\bmkfs\b|:\(\)\{.*\};:|dd\s+if=\/dev\/[\w]+\s+of=\/dev\/|shutdown|reboot/i;
 
+/** cat > with no heredoc/pipe waits for stdin and hangs across separate tool calls. */
+const INTERACTIVE_CAT = /^\s*cat\s+>\s*(\S+)?\s*$/;
+
+export async function writeFile(space, repo, args, permissions = {}, context = {}) {
+  assertRepo(space, repo);
+  const p = assertSafePath(args?.path);
+  const rules = pathRules(permissions);
+  if (!pathAllowed(p, rules)) {
+    throw new Error(`Path '${p}' is outside the allowed paths for this repo`);
+  }
+  const content = String(args?.content ?? '');
+  if (content.length > MAX_FILE_BYTES) {
+    throw new Error(`Content too large (max ${MAX_FILE_BYTES} bytes)`);
+  }
+
+  const { userId, conversationId, repoPath } = context;
+  if (userId && conversationId && repoPath && (await isSandboxEnabled())) {
+    try {
+      return await writeFileInSandbox({
+        userId,
+        conversationId,
+        repoPath,
+        space,
+        repo,
+        filePath: p,
+        content,
+      });
+    } catch (err) {
+      console.warn('sandbox write_file failed, falling back to temp clone:', err.message);
+    }
+  }
+
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
+  const workdir = path.join(parent, 'repo');
+  try {
+    const src = repoDir(space, repo);
+    try {
+      await exec('git', ['clone', '--depth', '1', '--quiet', src, workdir], { timeout: 60_000 });
+    } catch {
+      await exec('git', ['clone', '--quiet', src, workdir], { timeout: 60_000 });
+    }
+    const dest = path.join(workdir, p.split('/').join(path.sep));
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.writeFile(dest, content, 'utf8');
+    return { output: `Wrote ${content.length} bytes to ${p}` };
+  } finally {
+    await fs.rm(parent, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export async function runCommand(space, repo, args, _permissions = {}, context = {}) {
   assertRepo(space, repo);
   const command = String(args?.command || '').trim();
   if (!command || command.length > 2000) throw new Error('Invalid command');
   if (BLOCKED.test(command)) throw new Error('Command blocked by safety policy');
+  if (INTERACTIVE_CAT.test(command)) {
+    throw new Error(
+      'cat > waits for interactive stdin and does not work across tool calls. Use write_file to create or overwrite a file instead.',
+    );
+  }
 
   const { userId, conversationId, repoPath } = context;
   if (userId && conversationId && repoPath && (await isSandboxEnabled())) {
@@ -369,6 +437,8 @@ const EXECUTORS = {
   search_code: (space, repo, args, permissions) => searchCode(space, repo, args, permissions),
   run_command: (space, repo, args, permissions, context) =>
     runCommand(space, repo, args, permissions, context),
+  write_file: (space, repo, args, permissions, context) =>
+    writeFile(space, repo, args, permissions, context),
   show_images: (space, repo, args, permissions) => showImages(space, repo, args, permissions),
   web_search: (space, repo, args) => webSearchTool(args),
 };
@@ -402,6 +472,14 @@ export async function executeTool(tool, space, repo, args, permissions = {}, con
     if (!bash && !tests) {
       throw new Error(
         "run_command requires the 'Run shell commands' or 'Run tests' permission for this repo (Assistant → repo settings).",
+      );
+    }
+  }
+  if (tool === 'write_file') {
+    const bash = permissions.canRunBash !== false;
+    if (!bash) {
+      throw new Error(
+        "write_file requires the 'Run shell commands' permission for this repo (Assistant → repo settings).",
       );
     }
   }

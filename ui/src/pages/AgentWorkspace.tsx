@@ -774,7 +774,7 @@ export const AgentWorkspace: React.FC = () => {
                           .catch(() => {})
                           .finally(refreshSessions);
                       }}
-                      className="flex sm:hidden sm:group-hover:flex min-h-11 min-w-11 items-center justify-center rounded text-txt-tertiary hover:text-rose-400 transition shrink-0"
+                      className="opacity-70 sm:opacity-0 sm:group-hover:opacity-100 flex min-h-11 min-w-11 items-center justify-center rounded text-txt-tertiary hover:text-rose-400 transition shrink-0"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
