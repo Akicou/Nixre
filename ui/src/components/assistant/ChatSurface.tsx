@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { getPlugin } from '../../lib/plugins';
 import { isRealAi, type AssistantProviderProfile } from '../../lib/assistantProfiles';
+import { ASSISTANT_MODES, MODE_ACCENT_CLASSES, getMode, type ModeId } from '../../lib/assistantModes';
 import {
   listConversations,
   getConversation,
@@ -24,6 +25,7 @@ import {
   deleteConversation,
   runTurn,
   runRealTurn,
+  applyEvent,
   uid,
   type ChatMessage,
   type Conversation,
@@ -48,45 +50,6 @@ const EMPTY_STATE_SUGGESTIONS = [
   'Scan for exposed secrets',
   'Explain what this repo does',
 ];
-
-function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessage[] {
-  let idx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant') {
-      idx = i;
-      break;
-    }
-  }
-  if (idx === -1) {
-    // No assistant message yet for this turn — create one so the first
-    // streamed event (reasoning / tool) has a target to append to.
-    const msg: ChatMessage = { id: uid('msg'), role: 'assistant', content: '', createdAt: Date.now() };
-    messages = [...messages, msg];
-    idx = messages.length - 1;
-  }
-  const message = { ...messages[idx] };
-  switch (ev.type) {
-    case 'reasoning':
-      message.reasoning = [...(message.reasoning ?? []), { id: ev.blockId, text: ev.text }];
-      break;
-    case 'tool_start':
-      message.toolCalls = [...(message.toolCalls ?? []), ev.tool];
-      break;
-    case 'tool_output':
-      message.toolCalls = (message.toolCalls ?? []).map(t =>
-        t.id === ev.toolId ? { ...t, status: 'success' as const, output: ev.output } : t,
-      );
-      break;
-    case 'message_text':
-      message.content = (message.content ?? '') + ev.text;
-      break;
-    default:
-      break;
-  }
-  const next = messages.slice();
-  next[idx] = message;
-  return next;
-}
 
 export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   repoPath,
@@ -115,6 +78,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   const [openTools, setOpenTools] = useState<Record<string, boolean>>({});
   const [workingModel, setWorkingModel] = useState(profile.model);
   const [workingReasoning, setWorkingReasoning] = useState(profile.reasoningLevel);
+  const [mode, setMode] = useState<ModeId>('ask');
   const [modelOpen, setModelOpen] = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(false);
 
@@ -208,6 +172,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           for await (const ev of runRealTurn(prompt, workingProfile, history, {
             model: workingModel,
             reasoningLevel: workingReasoning,
+            mode,
           })) {
             local = applyEvent(local, ev);
             setMessages(local);
@@ -365,7 +330,28 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
 
         {/* Input */}
         <div className="border-t border-border-subtle bg-surface-canvas p-3">
-          {/* Model + reasoning pickers */}
+          {/* Mode pills + model + reasoning pickers */}
+          <div className="flex items-center gap-1.5 max-w-3xl mx-auto mb-2 flex-wrap">
+            {ASSISTANT_MODES.map(m => {
+              const active = m.id === mode;
+              const accent = MODE_ACCENT_CLASSES[m.accent];
+              return (
+                <button
+                  key={m.id}
+                  onClick={() => setMode(m.id)}
+                  title={m.description}
+                  className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full border transition ${
+                    active
+                      ? `${accent.bg} ${accent.border} ${accent.text}`
+                      : 'border-border-subtle text-txt-tertiary hover:text-txt-secondary hover:border-border-mid'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${active ? accent.dot : 'bg-border-mid'}`} />
+                  {m.label}
+                </button>
+              );
+            })}
+          </div>
           <div className="flex items-center gap-2 max-w-3xl mx-auto mb-2 flex-wrap">
             <div ref={modelRef} className="relative">
               {modelOptions.length > 0 ? (

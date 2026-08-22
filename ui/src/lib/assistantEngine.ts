@@ -54,6 +54,50 @@ export const uid = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // ---------------------------------------------------------------------------
+// Event reducer — folds a streamed EngineEvent into a message list.
+// Shared by every chat surface (repo page, PR panel, dashboard).
+// ---------------------------------------------------------------------------
+
+export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessage[] {
+  let idx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') {
+      idx = i;
+      break;
+    }
+  }
+  if (idx === -1) {
+    // No assistant message yet for this turn — create one so the first
+    // streamed event (reasoning / tool) has a target to append to.
+    const msg: ChatMessage = { id: uid('msg'), role: 'assistant', content: '', createdAt: Date.now() };
+    messages = [...messages, msg];
+    idx = messages.length - 1;
+  }
+  const message = { ...messages[idx] };
+  switch (ev.type) {
+    case 'reasoning':
+      message.reasoning = [...(message.reasoning ?? []), { id: ev.blockId, text: ev.text }];
+      break;
+    case 'tool_start':
+      message.toolCalls = [...(message.toolCalls ?? []), ev.tool];
+      break;
+    case 'tool_output':
+      message.toolCalls = (message.toolCalls ?? []).map(t =>
+        t.id === ev.toolId ? { ...t, status: 'success' as const, output: ev.output } : t,
+      );
+      break;
+    case 'message_text':
+      message.content = (message.content ?? '') + ev.text;
+      break;
+    default:
+      break;
+  }
+  const next = messages.slice();
+  next[idx] = message;
+  return next;
+}
+
+// ---------------------------------------------------------------------------
 // Persistence (server-backed via nixre-sync)
 // ---------------------------------------------------------------------------
 
@@ -239,18 +283,14 @@ export async function* runRealTurn(
   prompt: string,
   profile: AssistantProviderProfile,
   history: { role: 'user' | 'assistant'; content: string }[],
-  overrides: { model?: string; reasoningLevel?: string } = {},
+  overrides: { model?: string; reasoningLevel?: string; mode?: string } = {},
 ): AsyncGenerator<EngineEvent> {
   const { streamAiChat } = await import('./aiApi');
+  const { getMode } = await import('./assistantModes');
 
+  const mode = getMode(overrides.mode);
   const messages = [
-    {
-      role: 'system' as const,
-      content:
-        'You are the Nixre Assistant, an AI copilot embedded in the Nixre code forge. ' +
-        'You help with repository work: reviewing changes, explaining code, running checks, and advising on pull requests. ' +
-        'Be concise and technical. Use markdown.',
-    },
+    { role: 'system' as const, content: mode.systemPrompt },
     ...history.slice(-20),
     { role: 'user' as const, content: prompt },
   ];
