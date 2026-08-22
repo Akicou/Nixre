@@ -3,6 +3,13 @@
 
 import express from 'express';
 import { rowToUser, hashPassword, verifyPassword, newSessionToken } from '../lib/auth.js';
+import {
+  newChallenge,
+  takeChallenge,
+  coseToKeyObject,
+  verifyAssertion,
+  originFromRequest,
+} from '../lib/webauthn.js';
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -52,6 +59,131 @@ export function authRoutes(pool, authenticate) {
     }
     const token = await createSession(pool, user.uid);
     res.json({ access_token: token });
+  });
+
+  // --- passkey login (server-verified WebAuthn) ----------------------------------
+  //
+  // Two steps, both unauthenticated by design: the challenge endpoint issues
+  // a single-use server challenge (2-min TTL, in memory), the login endpoint
+  // verifies the assertion signature against the public key stored at
+  // registration and mints a normal session. Only credentials registered
+  // with a public key (current UI) can log in — legacy vault rows without
+  // one are metadata only.
+
+  // POST /webauthn/login-challenge {userUid?} -> {challenge, allowCredentials: [{id}]}
+  api.post('/webauthn/login-challenge', async (req, res) => {
+    let rpId;
+    let origin;
+    try {
+      ({ origin, rpId } = originFromRequest(req));
+    } catch {
+      res.status(400).json({ message: 'Origin header required' });
+      return;
+    }
+    const userUid = String(req.body?.userUid || '').trim();
+    let allowCredentials = [];
+    if (userUid) {
+      const { rows } = await pool.query(
+        `SELECT id FROM passkeys
+         WHERE lower(user_uid) = lower($1) AND public_key IS NOT NULL AND COALESCE(rp_id, '') = $2`,
+        [userUid, rpId],
+      );
+      allowCredentials = rows.map(r => ({ id: r.id }));
+      if (allowCredentials.length === 0) {
+        res.status(404).json({
+          message: `No passkeys registered for '${userUid}' on ${rpId}. Register one in Settings → Passkeys after signing in.`,
+        });
+        return;
+      }
+    }
+    res.json({ challenge: newChallenge(), allowCredentials });
+  });
+
+  // POST /webauthn/login {id, response: {clientDataJSON, authenticatorData, signature}}
+  //   -> {access_token, user}
+  api.post('/webauthn/login', async (req, res) => {
+    const b = req.body || {};
+    const credentialId = String(b.id || '');
+    const resp = b.response || {};
+    if (!credentialId || !resp.clientDataJSON || !resp.authenticatorData || !resp.signature) {
+      res.status(400).json({ message: 'id, clientDataJSON, authenticatorData and signature are required' });
+      return;
+    }
+    let rpId;
+    let origin;
+    try {
+      ({ origin, rpId } = originFromRequest(req));
+    } catch {
+      res.status(400).json({ message: 'Origin header required' });
+      return;
+    }
+
+    const { rows } = await pool.query(
+      `SELECT p.*, u.uid AS account_uid, u.email AS account_email, u.display_name AS account_name,
+              u.admin AS account_admin, u.blocked AS account_blocked, u.created AS account_created,
+              u.updated AS account_updated
+       FROM passkeys p JOIN users u ON u.uid = p.user_uid
+       WHERE p.id = $1 AND p.public_key IS NOT NULL AND COALESCE(p.rp_id, '') = $2`,
+      [credentialId, rpId],
+    );
+    const cred = rows[0];
+    if (!cred) {
+      res.status(401).json({ message: 'Unknown passkey' });
+      return;
+    }
+
+    let clientData;
+    try {
+      clientData = JSON.parse(Buffer.from(String(resp.clientDataJSON), 'base64url').toString('utf8'));
+    } catch {
+      res.status(401).json({ message: 'Malformed client data' });
+      return;
+    }
+    if (!takeChallenge(clientData.challenge)) {
+      res.status(401).json({ message: 'Challenge expired or already used' });
+      return;
+    }
+
+    try {
+      const keyObject = coseToKeyObject(cred.public_key);
+      const { signCount, userVerified } = verifyAssertion({
+        clientDataJSON: resp.clientDataJSON,
+        authenticatorData: resp.authenticatorData,
+        signature: resp.signature,
+        keyObject,
+        alg: cred.alg || 'ES256',
+        expectedChallenge: String(clientData.challenge),
+        expectedOrigin: origin,
+        expectedRpId: rpId,
+      });
+      // Replay hygiene: authenticator counters only increase (0 = not tracked).
+      if (signCount > 0 && signCount <= Number(cred.sign_count || 0)) {
+        throw new Error('authenticator counter did not advance');
+      }
+      void userVerified;
+      const token = await createSession(pool, cred.account_uid);
+      await pool.query('UPDATE passkeys SET last_used_at = $2, sign_count = $3 WHERE id = $1', [
+        credentialId,
+        Date.now(),
+        signCount,
+      ]);
+      res.json({
+        access_token: token,
+        user: publicUser(
+          rowToUser({
+            uid: cred.account_uid,
+            email: cred.account_email,
+            display_name: cred.account_name,
+            admin: cred.account_admin,
+            blocked: cred.account_blocked,
+            created: cred.account_created,
+            updated: cred.account_updated,
+          }),
+        ),
+      });
+    } catch (err) {
+      res.status(401).json({ message: `Passkey verification failed: ${err.message}` });
+    }
   });
 
   // POST /register {uid, email, display_name, password} -> {access_token}

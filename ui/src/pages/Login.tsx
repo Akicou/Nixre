@@ -40,19 +40,13 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     setPasskeyLoading(true);
 
     try {
-      await WebAuthnService.authenticatePasskey(identifier || undefined);
-
-      // Passkey verification only proves control of a locally-stored credential;
-      // it does not establish a session with the backend (Gitness has no WebAuthn
-      // API to verify against). It can only confirm an *existing* session, not
-      // create a new one.
-      try {
-        const user = await api.currentUser();
-        onLoginSuccess(user);
-        navigate('/');
-      } catch {
-        setError('Passkey verified, but no active session was found. Please sign in with your password to start a session first.');
-      }
+      // The ceremony is verified server-side and returns a fresh session
+      // token — no prior session is required.
+      const { token, user } = await WebAuthnService.loginWithPasskey(identifier || undefined);
+      localStorage.setItem('nixre_token', token);
+      localStorage.setItem('nixre_user', JSON.stringify(user));
+      onLoginSuccess(user as User);
+      navigate('/');
     } catch (err: any) {
       setError(err.message || 'Passkey authentication failed.');
     } finally {

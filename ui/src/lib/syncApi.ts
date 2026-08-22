@@ -123,11 +123,46 @@ export function createPasskey(key: {
   name: string;
   userUid: string;
   userEmail: string;
+  /** COSE public key (base64url) — enables server-verified passkey login. */
   publicKey?: string;
+  /** COSE alg label as a string ('-7' ES256, '-257' RS256, '-8' Ed25519). */
+  alg?: string;
+  /** rpId (hostname) the credential was created for. */
+  rpId?: string;
 }): Promise<SyncPasskey> {
   return request<SyncPasskey>('/passkeys', {
     method: 'POST',
     body: JSON.stringify(key),
+  });
+}
+
+// --- passkey login (unauthenticated — the whole point) -----------------------------
+
+export function passkeyLoginChallenge(userUid?: string): Promise<{
+  challenge: string;
+  allowCredentials: { id: string }[];
+}> {
+  return fetch('/api/v1/webauthn/login-challenge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userUid }),
+  }).then(async res => {
+    if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.message || `HTTP ${res.status}`);
+    return res.json();
+  });
+}
+
+export function passkeyLogin(assertion: {
+  id: string;
+  response: { clientDataJSON: string; authenticatorData: string; signature: string };
+}): Promise<{ access_token: string; user: { uid: string; display_name: string } }> {
+  return fetch('/api/v1/webauthn/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(assertion),
+  }).then(async res => {
+    if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.message || `HTTP ${res.status}`);
+    return res.json();
   });
 }
 

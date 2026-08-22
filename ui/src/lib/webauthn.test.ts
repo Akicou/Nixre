@@ -4,7 +4,7 @@ import { installSyncFetchMock, syncMockReset } from '../test/syncMock';
 
 installSyncFetchMock();
 
-describe('WebAuthnService.authenticatePasskey', () => {
+describe('WebAuthnService', () => {
   beforeEach(() => {
     localStorage.clear();
     syncMockReset();
@@ -23,7 +23,21 @@ describe('WebAuthnService.authenticatePasskey', () => {
     });
   });
 
-  it('throws instead of fabricating a fake identity when no passkeys are registered', async () => {
+  it('authenticatePasskey throws instead of fabricating a fake identity when no passkeys are registered', async () => {
     await expect(WebAuthnService.authenticatePasskey()).rejects.toThrow(/no passkeys/i);
+  });
+
+  it('loginWithPasskey surfaces the challenge error when the user has no registered keys', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      json: async () => ({ message: "No passkeys registered for 'x' on localhost." }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(WebAuthnService.loginWithPasskey('x')).rejects.toThrow(/no passkeys registered/i);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/webauthn/login-challenge',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });

@@ -81,16 +81,72 @@ export class WebAuthnService {
     // Convert rawId to base64url
     const rawIdBase64 = this.bufferToBase64URL(credential.rawId);
 
-    // Persist the credential metadata in the server-side vault.
+    // The public key is what the server needs to verify future logins.
+    const response = credential.response as AuthenticatorAttestationResponse;
+    let publicKey: string | undefined;
+    let alg: number | undefined;
+    if (typeof response.getPublicKey === 'function') {
+      const cose = response.getPublicKey();
+      if (cose) publicKey = this.bufferToBase64URL(cose);
+      alg = typeof response.getPublicKeyAlgorithm === 'function' ? response.getPublicKeyAlgorithm() : undefined;
+    }
+
+    // Persist the credential metadata + public key in the server-side vault.
     return sync.createPasskey({
       id: rawIdBase64,
       name: keyName || `Passkey (${new Date().toLocaleDateString()})`,
       userUid: user.uid,
       userEmail: user.email || '',
+      publicKey,
+      alg: alg !== undefined ? String(alg) : undefined,
+      rpId,
     });
   }
 
-  // Authenticate with a passkey
+  /**
+   * Full passkey login: ask the server for a single-use challenge, produce a
+   * WebAuthn assertion against it, and exchange it for a fresh session token.
+   * Works from the logged-out sign-in page — no prior session required.
+   */
+  static async loginWithPasskey(userUid?: string): Promise<{ token: string; user: { uid: string; display_name: string } }> {
+    if (!this.isSupported()) {
+      throw new Error('WebAuthn is not supported on this device.');
+    }
+
+    const { challenge, allowCredentials } = await sync.passkeyLoginChallenge(userUid);
+
+    const getOptions: CredentialRequestOptions = {
+      publicKey: {
+        challenge: this.base64URLToBuffer(challenge) as ArrayBuffer,
+        rpId: window.location.hostname,
+        allowCredentials:
+          allowCredentials.length > 0
+            ? allowCredentials.map(k => ({ id: this.base64URLToBuffer(k.id) as ArrayBuffer, type: 'public-key' as const }))
+            : undefined,
+        userVerification: 'preferred',
+        timeout: 60000,
+      },
+    };
+
+    const assertion = (await navigator.credentials.get(getOptions)) as PublicKeyCredential;
+    if (!assertion) {
+      throw new Error('Authentication aborted.');
+    }
+
+    const resp = assertion.response as AuthenticatorAssertionResponse;
+    const { access_token, user } = await sync.passkeyLogin({
+      id: this.bufferToBase64URL(assertion.rawId),
+      response: {
+        clientDataJSON: this.bufferToBase64URL(resp.clientDataJSON),
+        authenticatorData: this.bufferToBase64URL(resp.authenticatorData),
+        signature: this.bufferToBase64URL(resp.signature),
+      },
+    });
+    return { token: access_token, user };
+  }
+
+  // Authenticate with an existing session: verifies the credential locally and
+  // touches the vault entry (used by Settings, where a session already exists).
   static async authenticatePasskey(userUid?: string): Promise<{ passkey: StoredPasskey }> {
     if (!this.isSupported()) {
       throw new Error('WebAuthn is not supported on this device.');

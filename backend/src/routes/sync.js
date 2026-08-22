@@ -174,16 +174,26 @@ export function syncRoutes(pool, authenticate) {
     const name = String(b.name || 'Passkey').slice(0, 128);
     const userUid = String(b.userUid || req.auth.user.uid);
     const userEmail = String(b.userEmail || '');
+    // Optional WebAuthn material (current UI): COSE public key + alg + the
+    // rpId the credential was created for. Without a public key the entry is
+    // vault metadata only and cannot be used for passkey login.
+    const publicKey = b.publicKey ? String(b.publicKey).slice(0, 4096) : null;
+    const alg = b.alg ? String(b.alg).slice(0, 16) : null;
+    const rpId = b.rpId ? String(b.rpId).slice(0, 255) : null;
     if (!id) {
       res.status(400).json({ message: 'id is required' });
       return;
     }
     const { rows } = await pool.query(
-      `INSERT INTO passkeys (id, user_id, name, user_uid, user_email, public_key, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
+      `INSERT INTO passkeys (id, user_id, name, user_uid, user_email, public_key, alg, rp_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         public_key = COALESCE(EXCLUDED.public_key, passkeys.public_key),
+         alg = COALESCE(EXCLUDED.alg, passkeys.alg),
+         rp_id = COALESCE(EXCLUDED.rp_id, passkeys.rp_id)
        RETURNING *`,
-      [id, uid(req), name, userUid, userEmail, b.publicKey ?? null, nowMs()],
+      [id, uid(req), name, userUid, userEmail, publicKey, alg, rpId, nowMs()],
     );
     res.status(201).json(rowToPasskey(rows[0]));
   });

@@ -582,9 +582,11 @@ export async function* runRealTurn(
                 errored = evt.message;
                 settle();
               } else if (evt.type === 'done') {
-                // Some providers never send a finish frame; flush any text
-                // suppressed during a tool round so it isn't lost.
-                if (useTools && roundToolSeen && stepText && !stepTextLive) {
+                // Some providers never send a finish frame; text suppressed
+                // during a round is replayed only when the round asked for no
+                // tools — a tool round intentionally drops its preamble.
+                const hasToolCalls = [...pending.values()].some(c => c.id && c.name);
+                if (!hasToolCalls && stepText && !stepTextLive) {
                   stepTextLive = true;
                   push({ type: 'message_text', text: stepText });
                 }

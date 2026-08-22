@@ -148,7 +148,10 @@ Instruct the user to open `http://192.168.1.1` in their browser and add:
 
 ### Passkeys
 - Users register device credentials (Touch ID, Face ID, Windows Hello, YubiKey) in **Settings → Passkeys**.
-- Passkeys can **start a fresh login session**: the sign-in page performs a WebAuthn ceremony against Nixre's own vault (`/api/v1/webauthn/login-challenge` → `/webauthn/login`) and receives a normal session token. Passwords remain a fully supported fallback.
+- Passkeys can **start a fresh login session**: the sign-in page performs a WebAuthn ceremony against Nixre's own vault (`/api/v1/webauthn/login-challenge` → `/webauthn/login`) — the server issues a single-use challenge, verifies the assertion signature against the stored public key, and returns a normal session token. No prior session is needed.
+- Passkeys are bound to the hostname they were created for (`rp.id`): a passkey registered on `git.example.com` cannot sign in on `localhost`, and the challenge endpoint only offers keys whose `rpId` matches the request origin.
+- **Legacy vault entries** (registered before public keys were stored) are metadata only — they cannot log in. If passkey login reports "no passkeys registered", sign in with the password once and re-add the passkey in **Settings → Passkeys**.
+- Passwords remain a fully supported fallback.
 
 ### Closing Registrations
 - An admin can hide the registration page per browser (**Admin Console → Registration Page**). This is client-side only.
