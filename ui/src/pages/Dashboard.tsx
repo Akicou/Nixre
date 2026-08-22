@@ -41,11 +41,11 @@ export const Dashboard: React.FC<DashboardProps> = () => {
   );
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 w-full min-w-0">
       {/* Top Banner & Quick Stats */}
       <div className="mb-8 border-b border-border-subtle pb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-txt-primary flex items-center gap-3">
+          <h1 className="text-2xl font-bold tracking-tight text-txt-primary flex flex-wrap items-center gap-x-3 gap-y-1">
             <span>Repositories & Spaces</span>
             <span className="text-xs px-2 py-0.5 rounded-full bg-surface-subtle text-txt-secondary font-mono border border-border-subtle font-normal">
               {repos.length} repos

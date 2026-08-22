@@ -6,6 +6,18 @@
   * {
     border-color: var(--color-border-subtle);
   }
+
+  html,
+  body {
+    overflow-x: clip;
+    max-width: 100%;
+  }
+
+  #root {
+    overflow-x: clip;
+    max-width: 100%;
+    min-height: 100vh;
+  }
 }
 
 @keyframes pop-in {
@@ -23,6 +35,8 @@
 .agent-shell {
   height: calc(100dvh - 3.5rem);
   min-height: 28rem;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 /* HomeChat — animated open/close of the session body.

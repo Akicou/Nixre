@@ -65,7 +65,7 @@ export const AssistantPage: React.FC = () => {
   // The app shell adds a 57px sticky navbar (h-14 + border) and ~48px footer;
   // the chat needs a bounded height so its internal flex/scroll layout works.
   return (
-    <div className="flex flex-col h-[calc(100dvh-7rem)] min-h-[28rem]">
+    <div className="flex flex-col h-[calc(100dvh-7rem)] min-h-[28rem] min-w-0 overflow-hidden">
       <div className="flex flex-wrap items-center justify-end gap-2 px-3 sm:px-4 py-2 border-b border-border-subtle bg-surface-canvas shrink-0">
         <button
           onClick={() => navigate(`/agent?repo=${encodeURIComponent(repoPath)}`)}

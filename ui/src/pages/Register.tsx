@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Lock, ArrowRight } from 'lucide-react';
 import { api, User } from '../lib/api';
 import { isRegistrationHidden } from '../lib/authLock';
+import { BrandMark } from '../components/BrandMark';
 
 interface RegisterProps {
   onRegisterSuccess: (user: User) => void;
@@ -46,9 +47,7 @@ export const Register: React.FC<RegisterProps> = ({ onRegisterSuccess }) => {
     <div className="min-h-[85vh] flex items-center justify-center px-4 py-12">
       <div className="max-w-md w-full border border-border-subtle rounded-xl bg-surface-canvas p-8 shadow-xl space-y-6 animate-pop">
         <div className="text-center space-y-2">
-          <div className="w-10 h-10 rounded-lg bg-brand mx-auto flex items-center justify-center text-white font-mono text-base font-bold shadow-sm">
-            NX
-          </div>
+          <BrandMark size="md" className="mx-auto rounded-lg shadow-sm" />
           <h1 className="text-xl font-bold tracking-tight text-txt-primary">
             Create a Nixre Account
           </h1>

@@ -845,7 +845,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   );
 
   return (
-    <div className="flex h-full min-h-0 bg-surface-base">
+    <div className="flex h-full min-h-0 min-w-0 bg-surface-base">
       {!workspace && (
         <MobileDrawer
           open={sessionDrawerOpen}

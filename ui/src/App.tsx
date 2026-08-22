@@ -15,6 +15,7 @@ import { Login } from './pages/Login';
 import { Register } from './pages/Register';
 import { api, User } from './lib/api';
 import { migrateLegacyLocalStorage } from './lib/syncApi';
+import { BrandMark } from './components/BrandMark';
 
 export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -42,8 +43,9 @@ export const App: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-surface-base flex items-center justify-center font-mono text-xs text-txt-tertiary">
-        Initializing Nixre...
+      <div className="min-h-screen bg-surface-base flex flex-col items-center justify-center gap-3">
+        <BrandMark size="md" />
+        <p className="font-mono text-xs text-txt-tertiary">Initializing Nixre...</p>
       </div>
     );
   }
@@ -65,10 +67,10 @@ const AppShell: React.FC<{
   const immersive = location.pathname === '/agent';
 
   return (
-    <div className="min-h-screen bg-surface-base flex flex-col font-sans">
+    <div className="min-h-screen bg-surface-base flex flex-col font-sans overflow-x-clip max-w-[100vw]">
       <Navbar currentUser={currentUser} onLogout={onLogout} />
 
-      <main className={immersive ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1'}>
+      <main className={immersive ? 'flex-1 min-h-0 min-w-0 overflow-hidden' : 'flex-1 min-w-0 overflow-x-clip'}>
         <Routes>
           <Route path="/" element={currentUser ? <Dashboard user={currentUser} /> : <Navigate to="/login" />} />
           <Route path="/new-repo" element={currentUser ? <NewRepo /> : <Navigate to="/login" />} />
@@ -89,8 +91,8 @@ const AppShell: React.FC<{
       </main>
 
       {!immersive && (
-        <footer className="border-t border-border-subtle py-4 px-6 text-center font-mono text-[11px] text-txt-tertiary">
-          <span>Nixre • Sovereign Code Collaboration • <a href="https://nixre.dev" target="_blank" rel="noreferrer" className="hover:text-txt-brand underline">nixre.dev</a></span>
+        <footer className="border-t border-border-subtle py-4 px-4 sm:px-6 text-center font-mono text-[11px] text-txt-tertiary overflow-x-clip">
+          <span className="inline-block max-w-full break-words">Nixre • Sovereign Code Collaboration • <a href="https://nixre.dev" target="_blank" rel="noreferrer" className="hover:text-txt-brand underline">nixre.dev</a></span>
         </footer>
       )}
     </div>

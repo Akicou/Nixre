@@ -149,11 +149,11 @@ export const RepoView: React.FC = () => {
   const pathParts = currentPath ? currentPath.split('/').filter(Boolean) : [];
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6 w-full min-w-0">
       {/* Repo Top Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border-subtle pb-6">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-base font-mono">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border-subtle pb-6 min-w-0">
+        <div className="space-y-1 min-w-0">
+          <div className="flex items-center gap-2 text-base font-mono flex-wrap min-w-0">
             <Link to={`/${space}`} className="text-txt-brand hover:underline font-medium">
               {space}
             </Link>
@@ -220,7 +220,7 @@ export const RepoView: React.FC = () => {
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-border-subtle overflow-x-auto flex-nowrap scrollbar-thin">
+      <div className="flex items-center gap-1 border-b border-border-subtle overflow-x-auto flex-nowrap scrollbar-thin w-full min-w-0 -mx-4 px-4 sm:mx-0 sm:px-0">
         <button
           onClick={() => { setSearchParams({ tab: 'code', branch: currentBranch, type: 'tree' }); }}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
@@ -281,8 +281,8 @@ export const RepoView: React.FC = () => {
       {activeTab === 'code' && (
         <div className="space-y-6">
           {/* Branch & Path Bar */}
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center justify-between gap-4 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
               {/* Branch Picker */}
               <div className="relative" ref={branchMenuRef}>
                 <button
@@ -317,7 +317,7 @@ export const RepoView: React.FC = () => {
               </div>
 
               {/* Breadcrumb Path */}
-              <div className="flex items-center gap-1.5 text-xs font-mono text-txt-secondary">
+              <div className="flex items-center gap-1.5 text-xs font-mono text-txt-secondary min-w-0 overflow-x-auto flex-nowrap scrollbar-thin max-w-full">
                 <button
                   onClick={() => setSearchParams({ tab: 'code', branch: currentBranch, type: 'tree' })}
                   className="hover:text-txt-brand transition"
@@ -345,11 +345,11 @@ export const RepoView: React.FC = () => {
           {/* If Single File Blob is active */}
           {fileBlob ? (
             <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden">
-              <div className="p-3 bg-surface-base border-b border-border-subtle flex items-center justify-between text-xs font-mono">
-                <div className="flex items-center gap-2 text-txt-primary font-semibold">
-                  <File className="w-4 h-4 text-brand" />
-                  <span>{fileBlob.name}</span>
-                  <span className="text-txt-tertiary font-normal">({fileBlob.size} bytes)</span>
+              <div className="p-3 bg-surface-base border-b border-border-subtle flex items-center justify-between gap-2 text-xs font-mono min-w-0">
+                <div className="flex items-center gap-2 text-txt-primary font-semibold min-w-0">
+                  <File className="w-4 h-4 text-brand shrink-0" />
+                  <span className="truncate">{fileBlob.name}</span>
+                  <span className="text-txt-tertiary font-normal shrink-0">({fileBlob.size} bytes)</span>
                 </div>
                 <button
                   onClick={() => copyToClipboard(fileBlob.content)}

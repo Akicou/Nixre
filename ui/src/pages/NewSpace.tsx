@@ -26,7 +26,7 @@ export const NewSpace: React.FC = () => {
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-10">
+    <div className="max-w-2xl mx-auto px-4 py-10 w-full min-w-0">
       <Link to="/" className="inline-flex items-center gap-1.5 text-xs text-txt-secondary hover:text-txt-primary mb-6 transition">
         <ArrowLeft className="w-4 h-4" />
         <span>Back to Dashboard</span>

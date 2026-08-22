@@ -124,7 +124,7 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8 w-full min-w-0">
       {/* Settings Header */}
       <div className="border-b border-border-subtle pb-4">
         <h1 className="text-xl font-bold text-txt-primary">Account & Security Settings</h1>

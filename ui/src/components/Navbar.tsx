@@ -17,6 +17,7 @@ import { api, User, Space } from '../lib/api';
 import { currentSpaceFromPathname } from '../lib/repoPath';
 import { useOutsideClick } from '../lib/useOutsideClick';
 import { isPluginLive } from '../lib/pluginPreferences';
+import { BrandMark } from './BrandMark';
 
 interface NavbarProps {
   currentUser: User | null;
@@ -61,32 +62,32 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
   }, []);
 
   return (
-    <header className="border-b border-border-subtle bg-surface-canvas/90 backdrop-blur sticky top-0 z-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+    <header className="border-b border-border-subtle bg-surface-canvas/90 backdrop-blur sticky top-0 z-50 overflow-x-clip">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-4 min-w-0">
         {/* Brand & Space Switcher */}
-        <div className="flex items-center gap-6">
-          <Link to="/" className="flex items-center gap-2 font-semibold tracking-tight text-txt-primary hover:opacity-90">
-            <img src="/nixre-mark.png" alt="" className="w-7 h-7 object-contain" />
-            <span className="text-base font-semibold tracking-wide">Nixre</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-subtle text-txt-tertiary border border-border-subtle hidden sm:inline">
+        <div className="flex items-center gap-2 sm:gap-6 min-w-0 flex-1">
+          <Link to="/" className="flex items-center gap-2 shrink-0 font-semibold tracking-tight text-txt-primary hover:opacity-90" title="Nixre">
+            <BrandMark size="sm" alt="" />
+            <span className="hidden sm:inline text-base font-semibold tracking-wide">Nixre</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-subtle text-txt-tertiary border border-border-subtle hidden md:inline">
               nixre.dev
             </span>
           </Link>
 
           {currentUser && (
-            <div className="relative" ref={spaceMenuRef}>
+            <div className="relative min-w-0" ref={spaceMenuRef}>
               <button
                 onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
-                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium text-txt-primary bg-surface-base border border-border-subtle hover:border-border-strong transition"
+                className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-1.5 rounded-md text-xs font-medium text-txt-primary bg-surface-base border border-border-subtle hover:border-border-strong transition max-w-full min-w-0"
               >
-                <Layers className="w-3.5 h-3.5 text-brand" />
-                <span className="font-semibold">{switcherLabel}</span>
+                <Layers className="w-3.5 h-3.5 text-brand shrink-0" />
+                <span className="font-semibold truncate">{switcherLabel}</span>
                 {spaces.length > 1 && (
-                  <span className="text-[10px] font-mono px-1 py-0.5 rounded bg-surface-subtle text-txt-tertiary">
+                  <span className="text-[10px] font-mono px-1 py-0.5 rounded bg-surface-subtle text-txt-tertiary shrink-0 hidden sm:inline">
                     +{spaces.length - 1}
                   </span>
                 )}
-                <ChevronDown className="w-3 h-3 opacity-60 ml-0.5" />
+                <ChevronDown className="w-3 h-3 opacity-60 shrink-0" />
               </button>
 
               {spaceDropdownOpen && (
@@ -129,7 +130,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
         </div>
 
         {/* Right Actions */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
           {currentUser ? (
             <>
               {/* Agentic engineering workspace — only when the assistant plugin is live */}
