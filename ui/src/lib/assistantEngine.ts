@@ -235,9 +235,6 @@ export type EngineEvent =
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; conversationId?: string; messageId?: string };
 
-/** Safety bound on agent loop iterations per turn. */
-export const MAX_AGENT_STEPS = 8;
-
 /** Retries for the provider stream immediately after tool results were sent. */
 export const MAX_POST_TOOL_RETRIES = 3;
 
@@ -415,8 +412,8 @@ export async function deleteConversation(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Real turn — streams a model reply through nixre-core's /ai/chat proxy and,
 // in agent/debug mode, runs the tool loop: the model requests tools, we
-// execute them server-side, feed results back, and let it continue — up to
-// MAX_AGENT_STEPS rounds. Provider credentials never leave the server.
+// execute them server-side, feed results back, and let it continue until the
+// model stops requesting tools. Provider credentials never leave the server.
 // ---------------------------------------------------------------------------
 
 let reasonSeq = 0;
@@ -516,9 +513,16 @@ export async function* runRealTurn(
         let currentBlockId: string | null = null;
 
         const settle = () => {
-          const calls = [...pending.values()]
+          const all = [...pending.values()];
+          const calls = all
             .filter(c => c.id && c.name)
             .map(c => ({ id: c.id!, name: c.name!, args: c.args }));
+          // The model streamed tool-call fragments but none were complete
+          // (missing id/name). Treat it as a stream failure so the retry
+          // machinery handles it instead of silently ending the turn.
+          if (calls.length === 0 && all.length > 0) {
+            errored = errored ?? 'Model returned an incomplete tool call';
+          }
           resolve({ calls, text: stepText });
         };
 
@@ -571,12 +575,19 @@ export async function* runRealTurn(
                 if (useTools && evt.reason === 'tool_calls') {
                   // Preamble already cleared when the first tool delta arrived.
                 } else if (useTools && evt.reason === 'stop' && stepText && !stepTextLive) {
+                  stepTextLive = true;
                   push({ type: 'message_text', text: stepText });
                 }
               } else if (evt.type === 'error') {
                 errored = evt.message;
                 settle();
               } else if (evt.type === 'done') {
+                // Some providers never send a finish frame; flush any text
+                // suppressed during a tool round so it isn't lost.
+                if (useTools && roundToolSeen && stepText && !stepTextLive) {
+                  stepTextLive = true;
+                  push({ type: 'message_text', text: stepText });
+                }
                 settle();
               }
             },
@@ -594,7 +605,8 @@ export async function* runRealTurn(
       });
     };
 
-    for (let step = 0; step < MAX_AGENT_STEPS; step++) {
+    while (true) {
+      if (signal?.aborted) aborted = true;
       let calls: { id: string; name: string; args: string }[] = [];
       let text = '';
       let attempt = 0;
@@ -628,7 +640,10 @@ export async function* runRealTurn(
       });
 
       for (const call of calls) {
-        if (signal?.aborted) return;
+        if (signal?.aborted) {
+          aborted = true;
+          return;
+        }
         let argsObj: Record<string, unknown> = {};
         try {
           argsObj = call.args ? JSON.parse(call.args) : {};

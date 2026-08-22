@@ -429,13 +429,15 @@ export const AgentWorkspace: React.FC = () => {
           setMessages(local);
         }
       } catch (err: any) {
-        if (err?.name !== 'AbortError') {
+        if (err?.name === 'AbortError') {
+          local = applyEvent(local, { type: 'message_text', text: '\n\n> ⏹ Stopped.' });
+        } else {
           local = applyEvent(local, {
             type: 'message_text',
             text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}`,
           });
-          setMessages(local);
         }
+        setMessages(local);
       }
       const elapsedMs = Math.round(performance.now() - startedAt);
       const estimatedTokens = usage?.output ?? estimateTokens(outputChars + reasoningChars);
