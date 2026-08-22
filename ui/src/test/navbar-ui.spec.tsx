@@ -4,15 +4,18 @@ import { MemoryRouter } from 'react-router-dom';
 import { Navbar } from '../components/Navbar';
 import { user, adminUser } from './fixtures';
 
-const { api } = vi.hoisted(() => ({
+const { api, isPluginLive } = vi.hoisted(() => ({
   api: { listSpaces: vi.fn() },
+  isPluginLive: vi.fn(),
 }));
 vi.mock('../lib/api', () => ({ api }));
+vi.mock('../lib/pluginPreferences', () => ({ isPluginLive }));
 
 beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
   api.listSpaces.mockResolvedValue([]);
+  isPluginLive.mockResolvedValue(false);
 });
 
 function mount(currentUser = user, onLogout = vi.fn()) {
@@ -53,5 +56,19 @@ describe('Navbar user menu', () => {
     fireEvent.click(screen.getByText('jane').closest('button')!);
     fireEvent.click(await screen.findByText(/Sign Out/));
     await waitFor(() => expect(onLogout).toHaveBeenCalled());
+  });
+});
+
+describe('Navbar Agent link', () => {
+  it('hides the Agent workspace when the assistant plugin is not live', async () => {
+    mount();
+    await waitFor(() => expect(isPluginLive).toHaveBeenCalledWith('nixre-assistant'));
+    expect(screen.queryByTitle('Agentic engineering workspace')).toBeNull();
+  });
+
+  it('shows the Agent workspace when the assistant plugin is live', async () => {
+    isPluginLive.mockResolvedValue(true);
+    mount();
+    expect(await screen.findByTitle('Agentic engineering workspace')).toHaveAttribute('href', '/agent');
   });
 });
