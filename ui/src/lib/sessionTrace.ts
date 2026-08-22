@@ -93,14 +93,19 @@ export function newTraceId(): string {
   return `tr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function stamp<T extends { type: string }>(
-  entry: T,
-): T & { id: string; timestamp: string } {
+/** One variant of SessionTraceEntry without id/timestamp. Distributes over the union. */
+export type SessionTraceDraft = SessionTraceEntry extends infer E
+  ? E extends SessionTraceEntry
+    ? Omit<E, 'id' | 'timestamp'>
+    : never
+  : never;
+
+export function stamp(entry: SessionTraceDraft): SessionTraceEntry {
   return {
     ...entry,
     id: newTraceId(),
     timestamp: new Date().toISOString(),
-  };
+  } as SessionTraceEntry;
 }
 
 export function peelTrace<T>(messages: T[]): { messages: T[]; trace: SessionTraceEntry[] } {

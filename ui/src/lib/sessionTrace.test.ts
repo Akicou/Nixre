@@ -28,7 +28,7 @@ describe('sessionTrace', () => {
     ];
     const stored = withTrace(chat, entries);
     expect(stored).toHaveLength(2);
-    expect((stored[1] as { kind: string }).kind).toBe(TRACE_KIND);
+    expect((stored[1] as unknown as { kind: string }).kind).toBe(TRACE_KIND);
 
     const peeled = peelTrace(stored);
     expect(peeled.messages).toEqual(chat);

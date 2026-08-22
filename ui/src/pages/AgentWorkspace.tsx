@@ -50,6 +50,7 @@ import {
   lastTurnMetrics,
   stamp,
   tokensPerSecond,
+  type SessionTraceDraft,
   type SessionTraceEntry,
   type TokenUsage,
 } from '../lib/sessionTrace';
@@ -213,7 +214,7 @@ export const AgentWorkspace: React.FC = () => {
     }).catch(() => {});
   };
 
-  const logTrace = (entry: Omit<SessionTraceEntry, 'id' | 'timestamp'>) => {
+  const logTrace = (entry: SessionTraceDraft) => {
     persistTrace([...traceRef.current, stamp(entry)]);
   };
 
