@@ -398,9 +398,9 @@ export const AgentWorkspace: React.FC = () => {
           setRepoOpen(false);
           setModeOpen(false);
         }}
-        className="flex items-center gap-1.5 h-8 px-2.5 rounded-full text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-white/[0.04] transition"
+        className="flex items-center gap-1.5 h-8 px-2.5 rounded-full text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
       >
-        <span className="w-4 h-4 rounded-full bg-white/[0.06] border border-white/[0.08] flex items-center justify-center">
+        <span className="w-4 h-4 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center">
           <Plus className="w-2.5 h-2.5" />
         </span>
         <span className="font-medium">{modelLabel(activeModelLabel) || 'Model'}</span>
@@ -410,8 +410,8 @@ export const AgentWorkspace: React.FC = () => {
         <ChevronDown className="w-3 h-3 text-txt-tertiary" />
       </button>
       {modelOpen && (
-        <div className="absolute left-0 bottom-[calc(100%+8px)] w-[22rem] rounded-xl border border-white/[0.08] bg-[#141414] shadow-2xl shadow-black/50 z-40 overflow-hidden animate-pop">
-          <div className="px-3 py-2 border-b border-white/[0.06]">
+        <div className="absolute left-0 bottom-[calc(100%+8px)] w-[22rem] rounded-xl border border-border-subtle bg-surface-canvas shadow-xl z-40 overflow-hidden animate-pop">
+          <div className="px-3 py-2 border-b border-border-subtle">
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
               Model
             </p>
@@ -426,7 +426,7 @@ export const AgentWorkspace: React.FC = () => {
                   setModelOpen(false);
                 }}
                 className={`w-full flex items-center justify-between gap-3 px-3 py-2 text-left text-[12px] transition ${
-                  m === workingModel ? 'bg-white/[0.06]' : 'hover:bg-white/[0.04]'
+                  m === workingModel ? 'bg-surface-subtle' : 'hover:bg-surface-subtle'
                 }`}
               >
                 <span
@@ -439,7 +439,7 @@ export const AgentWorkspace: React.FC = () => {
                 <span
                   className={`shrink-0 text-[9px] uppercase tracking-wider rounded-md border px-1.5 py-0.5 ${
                     workingReasoning === 'none'
-                      ? 'border-white/[0.08] text-txt-tertiary'
+                      ? 'border-border-subtle text-txt-tertiary'
                       : 'border-emerald-400/25 bg-emerald-400/10 text-emerald-400'
                   }`}
                 >
@@ -448,7 +448,7 @@ export const AgentWorkspace: React.FC = () => {
               </button>
             ))}
           </div>
-          <div className="border-t border-white/[0.06] px-3 py-2.5">
+          <div className="border-t border-border-subtle px-3 py-2.5">
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary mb-2">
               Reasoning effort
             </p>
@@ -460,8 +460,8 @@ export const AgentWorkspace: React.FC = () => {
                   onClick={() => setWorkingReasoning(r)}
                   className={`text-[11px] capitalize py-1.5 rounded-md border transition ${
                     r === workingReasoning
-                      ? 'border-white/20 bg-white/[0.08] text-txt-primary'
-                      : 'border-transparent text-txt-tertiary hover:text-txt-secondary hover:bg-white/[0.04]'
+                      ? 'border-border-mid bg-surface-subtle text-txt-primary'
+                      : 'border-transparent text-txt-tertiary hover:text-txt-secondary hover:bg-surface-subtle'
                   }`}
                 >
                   {r === 'none' ? 'off' : r}
@@ -476,7 +476,7 @@ export const AgentWorkspace: React.FC = () => {
 
   const composer = (
     <div
-      className={`w-full rounded-2xl border border-white/[0.08] bg-[#161616] shadow-[0_0_0_1px_rgba(255,255,255,0.02),0_20px_50px_-20px_rgba(0,0,0,0.7)] transition focus-within:border-white/[0.14] focus-within:shadow-[0_0_0_1px_rgba(255,255,255,0.04),0_24px_60px_-18px_rgba(0,0,0,0.75)] ${
+      className={`w-full rounded-2xl border border-border-subtle bg-surface-canvas shadow-lg transition focus-within:border-border-mid focus-within:border-border-mid ${
         empty ? 'max-w-[40rem]' : 'max-w-3xl'
       }`}
     >
@@ -501,7 +501,7 @@ export const AgentWorkspace: React.FC = () => {
                 : 'Ask anything about this repo…'
         }
         disabled={streaming || !activeRepo}
-        className={`w-full resize-none bg-transparent text-txt-primary placeholder:text-txt-tertiary/80 outline-none px-4 pt-3.5 pb-2 disabled:opacity-50 ${
+        className={`w-full resize-none bg-transparent text-txt-primary placeholder:text-txt-tertiary outline-none px-4 pt-3.5 pb-2 disabled:opacity-50 ${
           empty ? 'text-[15px] leading-relaxed min-h-[84px]' : 'text-[13px] min-h-[44px] max-h-40'
         }`}
       />
@@ -512,7 +512,7 @@ export const AgentWorkspace: React.FC = () => {
             type="button"
             onClick={() => abortRef.current?.abort()}
             title="Stop (Esc)"
-            className="w-8 h-8 rounded-full flex items-center justify-center bg-white/[0.08] text-txt-primary hover:bg-white/[0.12] transition"
+            className="w-8 h-8 rounded-full flex items-center justify-center bg-surface-subtle text-txt-primary hover:bg-surface-mid transition"
           >
             <Square className="w-3.5 h-3.5 fill-current" />
           </button>
@@ -522,7 +522,7 @@ export const AgentWorkspace: React.FC = () => {
             onClick={() => send()}
             disabled={!input.trim() || !activeRepo}
             title="Send"
-            className="w-8 h-8 rounded-full flex items-center justify-center bg-white text-black hover:bg-white/90 disabled:opacity-25 disabled:cursor-not-allowed transition"
+            className="w-8 h-8 rounded-full flex items-center justify-center bg-txt-primary text-surface-base hover:opacity-90 disabled:opacity-25 disabled:cursor-not-allowed transition"
           >
             <ArrowUp className="w-4 h-4" strokeWidth={2.5} />
           </button>
@@ -533,17 +533,17 @@ export const AgentWorkspace: React.FC = () => {
 
   // --- layout --------------------------------------------------------------
   return (
-    <div className="agent-shell flex bg-[#0a0a0a] text-txt-primary">
+    <div className="agent-shell flex bg-surface-base text-txt-primary">
       {/* Left rail — quiet session list */}
-      <aside className="hidden md:flex flex-col w-[15.5rem] shrink-0 border-r border-white/[0.05] bg-[#0c0c0c]">
+      <aside className="hidden md:flex flex-col w-[15.5rem] shrink-0 border-r border-border-subtle bg-surface-canvas">
         <div className="p-3 pb-2">
           <button
             type="button"
             onClick={startNew}
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium transition ${
               empty
-                ? 'bg-white/[0.08] text-txt-primary'
-                : 'text-txt-secondary hover:bg-white/[0.04] hover:text-txt-primary'
+                ? 'bg-surface-subtle text-txt-primary'
+                : 'text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary'
             }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
@@ -559,7 +559,7 @@ export const AgentWorkspace: React.FC = () => {
           ) : (
             groupedSessions.map(([groupPath, convs]) => (
               <div key={groupPath}>
-                <div className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-txt-tertiary/80">
+                <div className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-txt-tertiary">
                   <FolderGit2 className="w-3 h-3 shrink-0 opacity-70" />
                   <span className="truncate">{groupPath}</span>
                 </div>
@@ -569,8 +569,8 @@ export const AgentWorkspace: React.FC = () => {
                       key={c.id}
                       className={`group flex items-center gap-1 rounded-md pl-2.5 pr-1 py-1.5 cursor-pointer transition ${
                         c.id === currentId
-                          ? 'bg-white/[0.07] text-txt-primary'
-                          : 'text-txt-secondary hover:bg-white/[0.04] hover:text-txt-primary'
+                          ? 'bg-surface-subtle text-txt-primary'
+                          : 'text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary'
                       }`}
                       onClick={() => openConversation(c)}
                     >
@@ -609,7 +609,7 @@ export const AgentWorkspace: React.FC = () => {
       <div className="flex-1 min-w-0 flex flex-col relative">
         {/* Top chrome — only when a session is open */}
         {!empty && (
-          <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.04]">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border-subtle">
             <div className="min-w-0">
               <p className="text-[13px] font-medium text-txt-primary truncate">
                 {allConversations.find(c => c.id === currentId)?.title || 'Agent'}
@@ -622,7 +622,7 @@ export const AgentWorkspace: React.FC = () => {
               {activeRepo.includes('/') && (
                 <Link
                   to={`/${activeRepo}/assistant`}
-                  className="text-[11px] px-2.5 py-1 rounded-md text-txt-tertiary hover:text-txt-secondary hover:bg-white/[0.04] transition"
+                  className="text-[11px] px-2.5 py-1 rounded-md text-txt-tertiary hover:text-txt-secondary hover:bg-surface-subtle transition"
                 >
                   Repo assistant
                 </Link>
@@ -630,7 +630,7 @@ export const AgentWorkspace: React.FC = () => {
               <button
                 type="button"
                 onClick={startNew}
-                className="text-[11px] px-2.5 py-1 rounded-md border border-white/[0.08] text-txt-secondary hover:text-txt-primary hover:bg-white/[0.04] transition"
+                className="text-[11px] px-2.5 py-1 rounded-md border border-border-subtle text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
               >
                 New
               </button>
@@ -651,7 +651,7 @@ export const AgentWorkspace: React.FC = () => {
                     setModelOpen(false);
                     setModeOpen(false);
                   }}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-white/[0.04] hover:text-txt-secondary transition"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-surface-subtle hover:text-txt-secondary transition"
                 >
                   <span className="font-mono text-txt-secondary">
                     {activeRepo || 'pick a repo'}
@@ -659,7 +659,7 @@ export const AgentWorkspace: React.FC = () => {
                   <ChevronDown className="w-3 h-3" />
                 </button>
                 {repoOpen && (
-                  <div className="absolute left-1/2 -translate-x-1/2 top-[calc(100%+6px)] w-64 max-h-64 overflow-y-auto rounded-xl border border-white/[0.08] bg-[#141414] shadow-2xl z-40 py-1 animate-pop">
+                  <div className="absolute left-1/2 -translate-x-1/2 top-[calc(100%+6px)] w-64 max-h-64 overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop">
                     {repos.length === 0 ? (
                       <p className="px-3 py-2 text-[12px] text-txt-tertiary">No repos yet.</p>
                     ) : (
@@ -673,8 +673,8 @@ export const AgentWorkspace: React.FC = () => {
                           }}
                           className={`w-full text-left px-3 py-1.5 text-[12px] font-mono truncate transition ${
                             r.path === activeRepo
-                              ? 'bg-white/[0.06] text-txt-primary'
-                              : 'text-txt-secondary hover:bg-white/[0.04]'
+                              ? 'bg-surface-subtle text-txt-primary'
+                              : 'text-txt-secondary hover:bg-surface-subtle'
                           }`}
                         >
                           {r.path}
@@ -693,20 +693,20 @@ export const AgentWorkspace: React.FC = () => {
                     setRepoOpen(false);
                     setModelOpen(false);
                   }}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-white/[0.04] hover:text-txt-secondary transition"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-surface-subtle hover:text-txt-secondary transition"
                 >
                   <span className="text-txt-secondary">{getMode(mode).label}</span>
                   <ChevronDown className="w-3 h-3" />
                 </button>
                 {modeOpen && (
-                  <div className="absolute left-1/2 -translate-x-1/2 top-[calc(100%+6px)] w-72 rounded-xl border border-white/[0.08] bg-[#141414] shadow-2xl z-40 py-1 animate-pop">
+                  <div className="absolute left-1/2 -translate-x-1/2 top-[calc(100%+6px)] w-72 rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop">
                     {ASSISTANT_MODES.map(m => (
                       <button
                         key={m.id}
                         type="button"
                         onClick={() => changeMode(m.id)}
                         className={`w-full text-left px-3 py-2 transition ${
-                          m.id === mode ? 'bg-white/[0.06]' : 'hover:bg-white/[0.04]'
+                          m.id === mode ? 'bg-surface-subtle' : 'hover:bg-surface-subtle'
                         }`}
                       >
                         <div
@@ -736,20 +736,20 @@ export const AgentWorkspace: React.FC = () => {
                   type="button"
                   onClick={() => send(chip.prompt)}
                   disabled={!activeRepo || streaming}
-                  className="px-3 py-1.5 rounded-full border border-white/[0.08] text-[12px] text-txt-tertiary hover:text-txt-secondary hover:border-white/[0.14] hover:bg-white/[0.03] disabled:opacity-40 transition"
+                  className="px-3 py-1.5 rounded-full border border-border-subtle text-[12px] text-txt-tertiary hover:text-txt-secondary hover:border-border-mid hover:bg-surface-subtle/70 disabled:opacity-40 transition"
                 >
                   {chip.label}
                 </button>
               ))}
             </div>
 
-            <p className="mt-10 text-[11px] text-txt-tertiary/70">
+            <p className="mt-10 text-[11px] text-txt-tertiary">
               Use{' '}
-              <kbd className="px-1.5 py-0.5 rounded bg-white/[0.05] border border-white/[0.06] font-mono text-[10px]">
+              <kbd className="px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle font-mono text-[10px]">
                 @file
               </kbd>{' '}
               to attach code ·{' '}
-              <kbd className="px-1.5 py-0.5 rounded bg-white/[0.05] border border-white/[0.06] font-mono text-[10px]">
+              <kbd className="px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle font-mono text-[10px]">
                 Enter
               </kbd>{' '}
               to send
@@ -822,14 +822,14 @@ const GateCard: React.FC<{
   action: { to: string; label: string };
 }> = ({ title, body, action }) => (
   <div className="max-w-sm text-center">
-    <div className="mx-auto w-11 h-11 rounded-2xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mb-4">
+    <div className="mx-auto w-11 h-11 rounded-2xl bg-surface-subtle border border-border-subtle flex items-center justify-center mb-4">
       <Bot className="w-5 h-5 text-txt-tertiary" />
     </div>
     <h1 className="text-[15px] font-medium text-txt-primary mb-1.5">{title}</h1>
     <p className="text-[13px] text-txt-tertiary leading-relaxed mb-5">{body}</p>
     <Link
       to={action.to}
-      className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white text-black text-[12.5px] font-medium hover:bg-white/90 transition"
+      className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-txt-primary text-surface-base text-[12.5px] font-medium hover:opacity-90 transition"
     >
       {action.label}
     </Link>
