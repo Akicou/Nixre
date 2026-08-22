@@ -29,6 +29,7 @@ import {
   deleteConversation,
   runRealTurn,
   applyEvent,
+  messageParts,
   uid,
   buildModelContext,
   shouldAutoCompact,
@@ -369,19 +370,19 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
       if (m.role === 'user') {
         lines.push(`**You:**\n\n${m.content}`, '');
       } else {
-        if (m.reasoning?.length) {
-          lines.push('<details><summary>Thought process</summary>', '', m.reasoning.map(r => r.text).join('\n'), '', '</details>', '');
-        }
-        if (m.toolCalls?.length) {
-          for (const t of m.toolCalls) {
+        for (const part of messageParts(m)) {
+          if (part.type === 'reasoning') {
+            lines.push('<details><summary>Thought process</summary>', '', part.text, '', '</details>', '');
+          } else if (part.type === 'tool') {
+            const t = part.tool;
             lines.push(`\`${t.name}\`${t.argsText && t.argsText !== '{}' ? ` ${t.argsText}` : ''}`);
             if (t.output) lines.push('```', t.output, '```');
             lines.push('');
+          } else if (part.type === 'text' && part.text) {
+            lines.push(`**Assistant:**\n\n${part.text}`, '');
           }
         }
-        if (m.content) {
-          lines.push(`**Assistant:**\n\n${m.content}`, '');
-        } else if (!m.toolCalls?.length) {
+        if (!messageParts(m).some(p => p.type === 'text' || p.type === 'tool')) {
           lines.push(`**Assistant:**\n\n_(stopped before answering)_`, '');
         }
       }

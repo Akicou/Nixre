@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   applyEvent,
   buildModelContext,
+  messageParts,
   COMPACT_AFTER_MESSAGES,
   createConversation,
   listConversations,
@@ -44,11 +45,11 @@ describe('assistantEngine.applyEvent', () => {
   it('appends reasoning and text to the latest assistant message', () => {
     let messages: ChatMessage[] = [
       { id: 'u1', role: 'user', content: 'hi', createdAt: 1 },
-      { id: 'a1', role: 'assistant', content: '', createdAt: 2 },
+      { id: 'a1', role: 'assistant', content: '', parts: [], createdAt: 2 },
     ];
     messages = applyEvent(messages, { type: 'reasoning', blockId: 'r1', text: 'thinking…' });
     messages = applyEvent(messages, { type: 'message_text', text: 'Answer' });
-    expect(messages[1].reasoning).toHaveLength(1);
+    expect(messageParts(messages[1]).map(p => p.type)).toEqual(['reasoning', 'text']);
     expect(messages[1].content).toBe('Answer');
   });
 
@@ -65,29 +66,26 @@ describe('assistantEngine.applyEvent', () => {
     expect(messages[3].content).toBe('second answer');
   });
 
-  it('places each tool call as its own latest row, then starts a new assistant reply', () => {
+  it('keeps reasoning, tools, and answer as chronological parts in one assistant turn', () => {
     let messages: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'run tests', createdAt: 1 }];
     messages = applyEvent(messages, { type: 'reasoning', blockId: 'r1', text: 'I should run the suite.' });
+    messages = applyEvent(messages, { type: 'message_text', text: 'Let me check.' });
+    messages = applyEvent(messages, { type: 'step_clear_preamble' });
     messages = applyEvent(messages, {
       type: 'tool_start',
       tool: { id: 't1', name: 'run_command', status: 'running', argsText: '{"command":"npm test"}' },
     });
-    expect(messages).toHaveLength(3);
-    expect(messages[1].reasoning?.[0].text).toBe('I should run the suite.');
-    expect(messages[1].toolCalls).toBeUndefined();
-    expect(messages[2].toolCalls?.[0].name).toBe('run_command');
-    expect(messages[2].content).toBe('');
+    expect(messages).toHaveLength(2);
+    const parts = messageParts(messages[1]);
+    expect(parts.map(p => p.type)).toEqual(['reasoning', 'tool']);
+    expect(parts[0]).toMatchObject({ type: 'reasoning', text: 'I should run the suite.' });
+    expect((parts[1] as { tool: { name: string } }).tool.name).toBe('run_command');
 
     messages = applyEvent(messages, { type: 'tool_output', toolId: 't1', output: 'ok' });
-    expect(messages[2].toolCalls?.[0].status).toBe('success');
-    expect(messages[2].toolCalls?.[0].output).toBe('ok');
-
     messages = applyEvent(messages, { type: 'message_text', text: 'All green.' });
-    expect(messages).toHaveLength(4);
-    expect(messages[3].role).toBe('assistant');
-    expect(messages[3].content).toBe('All green.');
-    expect(messages[3].toolCalls).toBeUndefined();
-    expect(messages[1].content).toBe('');
+    const finalParts = messageParts(messages[1]);
+    expect(finalParts.map(p => p.type)).toEqual(['reasoning', 'tool', 'text']);
+    expect(messages[1].content).toBe('All green.');
   });
 
   it('merges reasoning deltas sharing a blockId instead of stacking fragments', () => {
@@ -97,8 +95,8 @@ describe('assistantEngine.applyEvent', () => {
     // New block after answer text starts a separate thinking segment.
     messages = applyEvent(messages, { type: 'message_text', text: 'Answer' });
     messages = applyEvent(messages, { type: 'reasoning', blockId: 'r2', text: 'more thinking' });
-    expect(messages[1].reasoning).toHaveLength(2);
-    expect(messages[1].reasoning![0]).toEqual({ id: 'r1', text: 'step one. step two.' });
+    expect(messageParts(messages[1]).filter(p => p.type === 'reasoning')).toHaveLength(2);
+    expect(messageParts(messages[1])[0]).toEqual({ type: 'reasoning', id: 'r1', text: 'step one. step two.' });
   });
 
   it('tracks compaction coverage and builds the model context from the summary', () => {
@@ -176,6 +174,42 @@ describe('assistantEngine agent loop', () => {
     expect(events.some(e => e.type === 'tool_start')).toBe(true);
     expect(events.some(e => e.type === 'tool_output' && /export const x/.test(e.output))).toBe(true);
     expect(events.some(e => e.type === 'message_text' && e.text === 'The file looks good.')).toBe(true);
+  });
+
+  it('drops preamble text when the model switches to tool_calls in the same round', async () => {
+    mockedStream.mockImplementationOnce((_messages, _opts, onEvent) => {
+      onEvent({ type: 'text', text: 'Let me read that.' });
+      onEvent({ type: 'tool_delta', index: 0, id: 't1', name: 'read_file' });
+      onEvent({ type: 'finish', reason: 'tool_calls' });
+      onEvent({ type: 'done' });
+      return Promise.resolve();
+    });
+    mockedStream.mockImplementationOnce((_messages, _opts, onEvent) => {
+      onEvent({ type: 'text', text: 'Done.' });
+      onEvent({ type: 'done' });
+      return Promise.resolve();
+    });
+    mockedExec.mockResolvedValue('file contents');
+
+    const profile = {
+      provider: 'custom',
+      baseUrl: 'http://vllm:8000/v1',
+      model: 'm',
+      reasoningLevel: 'medium',
+      interleavedReasoning: true,
+      keyConfigured: true,
+      keyMask: null,
+      validatedAt: 1,
+      models: [],
+    };
+    let messages: ChatMessage[] = [{ id: 'u1', role: 'user', content: 'go', createdAt: 1 }];
+    for await (const ev of runRealTurn('go', profile as any, [], {
+      mode: 'agent', repoPath: 'acme/website', agent: true,
+    })) {
+      messages = applyEvent(messages, ev);
+    }
+    expect(messageParts(messages[1]).map(p => p.type)).toEqual(['tool', 'text']);
+    expect(messages[1].content).toBe('Done.');
   });
 
   it('does not enable tools outside agent mode', async () => {

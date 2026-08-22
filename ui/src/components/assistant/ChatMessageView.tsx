@@ -12,6 +12,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { ChatMessage, ToolCall } from '../../lib/assistantEngine';
+import { messageParts } from '../../lib/assistantEngine';
 import { Markdown } from '../Markdown';
 import { parseShownImages, type ChatImage } from '../../lib/chatImages';
 
@@ -19,9 +20,8 @@ import { parseShownImages, type ChatImage } from '../../lib/chatImages';
  * Shared renderer for a single chat turn — used by the repo ChatSurface and
  * the dashboard HomeChat so both stay visually identical.
  *
- * Assistant reasoning renders as a collapsible ("extendable & compactable")
- * block: it auto-expands while the model is thinking, then folds down to a
- * one-line "Thought process" header once answer text starts streaming.
+ * Assistant turns render ordered parts (reasoning → tool cards → answer text),
+ * matching LibreChat-style chronological content arrays.
  */
 
 interface ChatMessageViewProps {
@@ -34,30 +34,16 @@ interface ChatMessageViewProps {
 
 export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, streaming = false, onEdit }) => {
   const isUser = message.role === 'user';
-  const hasReasoning = !isUser && (message.reasoning?.length ?? 0) > 0;
-  const toolOnly =
-    !isUser &&
-    !message.content &&
-    !hasReasoning &&
-    (message.toolCalls?.length ?? 0) > 0;
-  const thinking = streaming && !message.content && hasReasoning;
-  const waiting = streaming && !message.content && !hasReasoning && !toolOnly;
+  const parts = isUser ? [] : messageParts(message);
+  const hasText = parts.some(p => p.type === 'text');
+  const hasReasoning = parts.some(p => p.type === 'reasoning');
+  const hasTools = parts.some(p => p.type === 'tool');
+  const waiting = streaming && !hasText && !hasReasoning && !hasTools;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
 
-  if (toolOnly) {
-    return (
-      <div className="space-y-1.5 pl-10">
-        {message.toolCalls!.map(tool => (
-          <ToolBlock key={tool.id} tool={tool} />
-        ))}
-      </div>
-    );
-  }
-
   return (
     <div className={`group flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
-      {/* Avatar */}
       <div
         className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center mt-0.5 ${
           isUser
@@ -69,8 +55,6 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
       </div>
 
       <div className={`min-w-0 flex-1 ${isUser ? 'flex flex-col items-end' : ''}`}>
-        {!isUser && hasReasoning && <ReasoningPanel message={message} thinking={thinking} />}
-
         {isUser ? (
           editing ? (
             <div className="w-full max-w-[85%] flex flex-col gap-1.5">
@@ -128,19 +112,33 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
             </>
           )
         ) : (
-          <div className="min-w-0">
-            {message.content ? (
-              <div className="text-xs leading-relaxed text-txt-primary markdown-body max-w-none">
-                <Markdown content={message.content} />
-                {streaming && <StreamingCaret />}
-              </div>
-            ) : (
-              waiting && (
-                <div className="flex items-center gap-2 text-xs text-txt-tertiary">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Thinking…</span>
+          <div className="min-w-0 space-y-2">
+            {parts.map((part, i) => {
+              const isLast = i === parts.length - 1;
+              if (part.type === 'reasoning') {
+                return (
+                  <ReasoningPanel
+                    key={part.id}
+                    text={part.text}
+                    thinking={streaming && isLast && part.type === 'reasoning' && !hasText}
+                  />
+                );
+              }
+              if (part.type === 'tool') {
+                return <ToolBlock key={part.tool.id} tool={part.tool} />;
+              }
+              return (
+                <div key={`text-${i}`} className="text-xs leading-relaxed text-txt-primary markdown-body max-w-none">
+                  <Markdown content={part.text} />
+                  {streaming && isLast && <StreamingCaret />}
                 </div>
-              )
+              );
+            })}
+            {waiting && (
+              <div className="flex items-center gap-2 text-xs text-txt-tertiary">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Thinking…</span>
+              </div>
             )}
           </div>
         )}
@@ -151,13 +149,7 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
   );
 };
 
-/** Collapsible reasoning — expanded while thinking starts, folded after. */
-const ReasoningPanel: React.FC<{ message: ChatMessage; thinking: boolean }> = ({
-  message,
-  thinking,
-}) => {
-  // Open while there is only thinking to show; fold automatically once the
-  // actual answer arrives. The user can always re-expand.
+const ReasoningPanel: React.FC<{ text: string; thinking: boolean }> = ({ text, thinking }) => {
   const [open, setOpen] = useState(thinking);
   const wasThinking = useRef(thinking);
 
@@ -168,7 +160,7 @@ const ReasoningPanel: React.FC<{ message: ChatMessage; thinking: boolean }> = ({
   }, [thinking]);
 
   return (
-    <div className="mb-2 max-w-full">
+    <div className="max-w-full">
       <button
         onClick={() => setOpen(o => !o)}
         className={`flex items-center gap-1.5 text-[11px] font-medium transition ${
@@ -178,26 +170,15 @@ const ReasoningPanel: React.FC<{ message: ChatMessage; thinking: boolean }> = ({
       >
         <Brain className={`w-3.5 h-3.5 ${thinking ? 'animate-pulse' : ''}`} />
         <span>{thinking ? 'Thinking…' : 'Thought process'}</span>
-        {open ? (
-          <ChevronDown className="w-3 h-3" />
-        ) : (
-          <ChevronRight className="w-3 h-3" />
-        )}
+        {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
       </button>
       <div
         className={`overflow-hidden transition-all duration-200 ${
           open ? 'max-h-96 opacity-100 mt-1.5' : 'max-h-0 opacity-0'
         }`}
       >
-        <div className="border-l-2 border-brand/30 pl-3 ml-1.5 space-y-2 py-1">
-          {message.reasoning!.map(block => (
-            <p
-              key={block.id}
-              className="text-[11px] text-txt-secondary italic leading-relaxed whitespace-pre-line"
-            >
-              {block.text}
-            </p>
-          ))}
+        <div className="border-l-2 border-brand/30 pl-3 ml-1.5 py-1">
+          <p className="text-[11px] text-txt-secondary italic leading-relaxed whitespace-pre-line">{text}</p>
         </div>
       </div>
     </div>

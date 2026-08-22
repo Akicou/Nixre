@@ -28,14 +28,58 @@ export interface ReasoningBlock {
   text: string;
 }
 
+/** One visual segment inside an assistant turn — rendered in array order (LibreChat-style). */
+export type MessagePart =
+  | { type: 'reasoning'; id: string; text: string }
+  | { type: 'tool'; tool: ToolCall }
+  | { type: 'text'; text: string };
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   images?: ChatImage[];
+  /** Chronological segments for this turn (reasoning → tools → answer text). */
+  parts?: MessagePart[];
+  /** Legacy mirrors — kept in sync for export and older saved chats. */
   toolCalls?: ToolCall[];
   reasoning?: ReasoningBlock[];
   createdAt: number;
+}
+
+/** Ordered segments to render; falls back to legacy fields on old conversations. */
+export function messageParts(message: ChatMessage): MessagePart[] {
+  if (message.parts?.length) return message.parts;
+  const parts: MessagePart[] = [];
+  for (const r of message.reasoning ?? []) {
+    parts.push({ type: 'reasoning', id: r.id, text: r.text });
+  }
+  for (const t of message.toolCalls ?? []) {
+    parts.push({ type: 'tool', tool: t });
+  }
+  if (message.content) {
+    parts.push({ type: 'text', text: message.content });
+  }
+  return parts;
+}
+
+function syncLegacyFields(message: ChatMessage): ChatMessage {
+  const parts = message.parts ?? [];
+  const reasoning: ReasoningBlock[] = [];
+  const toolCalls: ToolCall[] = [];
+  let content = '';
+  for (const p of parts) {
+    if (p.type === 'reasoning') reasoning.push({ id: p.id, text: p.text });
+    else if (p.type === 'tool') toolCalls.push(p.tool);
+    else if (p.type === 'text') content += p.text;
+  }
+  return {
+    ...message,
+    parts,
+    content,
+    reasoning: reasoning.length ? reasoning : undefined,
+    toolCalls: toolCalls.length ? toolCalls : undefined,
+  };
 }
 
 export interface Conversation {
@@ -184,6 +228,8 @@ export type EngineEvent =
   | { type: 'tool_output'; toolId: string; output: string }
   | { type: 'tool_error'; toolId: string; output: string }
   | { type: 'message_text'; text: string }
+  /** Drop preamble text streamed before the model commits to tool_calls. */
+  | { type: 'step_clear_preamble' }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; conversationId?: string; messageId?: string };
 
@@ -198,100 +244,108 @@ export const uid = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(
 // Shared by every chat surface (repo page, PR panel, dashboard).
 // ---------------------------------------------------------------------------
 
-/** True when this row is a standalone tool card, not an assistant reply. */
-export function isToolRow(message: ChatMessage): boolean {
-  return (
-    message.role === 'assistant' &&
-    (message.toolCalls?.length ?? 0) > 0 &&
-    !message.content &&
-    !(message.reasoning?.length)
-  );
-}
-
-function findToolRowIndex(messages: ChatMessage[], toolId: string): number {
+function activeAssistantIndex(messages: ChatMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].toolCalls?.some(t => t.id === toolId)) return i;
+    const m = messages[i];
+    if (m.role === 'user') break;
+    if (m.role === 'assistant' && (m as { kind?: string }).kind !== 'compaction') {
+      return i;
+    }
   }
   return -1;
 }
 
-function patchTool(
-  messages: ChatMessage[],
-  toolId: string,
-  patch: (tool: ToolCall) => ToolCall,
-): ChatMessage[] {
-  const idx = findToolRowIndex(messages, toolId);
-  if (idx === -1) return messages;
-  const message = { ...messages[idx] };
-  message.toolCalls = (message.toolCalls ?? []).map(t => (t.id === toolId ? patch(t) : t));
-  const next = messages.slice();
-  next[idx] = message;
-  return next;
+function ensureActiveAssistant(messages: ChatMessage[]): { messages: ChatMessage[]; idx: number } {
+  const idx = activeAssistantIndex(messages);
+  if (idx >= 0) return { messages, idx };
+  const msg: ChatMessage = {
+    id: uid('msg'),
+    role: 'assistant',
+    content: '',
+    parts: [],
+    createdAt: Date.now(),
+  };
+  messages = [...messages, msg];
+  return { messages, idx: messages.length - 1 };
 }
 
 export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessage[] {
-  if (ev.type === 'tool_start') {
-    const existing = findToolRowIndex(messages, ev.tool.id);
-    if (existing >= 0) {
-      return patchTool(messages, ev.tool.id, t => ({
-        ...t,
-        name: ev.tool.name || t.name,
-        argsText: ev.tool.argsText ?? t.argsText,
-        status: t.status === 'success' || t.status === 'error' ? t.status : ev.tool.status,
-      }));
+  if (ev.type === 'step_clear_preamble') {
+    const { messages: ms, idx } = ensureActiveAssistant(messages);
+    const message = { ...ms[idx] };
+    const parts = [...(message.parts ?? [])];
+    while (parts.length > 0 && parts[parts.length - 1].type === 'text') {
+      parts.pop();
     }
-    // Tool cards are their own transcript rows so they land as the latest
-    // message while they run, not inside the eventual assistant reply.
-    return [
-      ...messages,
-      { id: uid('msg'), role: 'assistant', content: '', toolCalls: [ev.tool], createdAt: Date.now() },
-    ];
-  }
-  if (ev.type === 'tool_output') {
-    return patchTool(messages, ev.toolId, t => ({ ...t, status: 'success', output: ev.output }));
-  }
-  if (ev.type === 'tool_error') {
-    return patchTool(messages, ev.toolId, t => ({ ...t, status: 'error', output: ev.output }));
+    message.parts = parts;
+    const next = ms.slice();
+    next[idx] = syncLegacyFields(message);
+    return next;
   }
 
-  // Only continue an assistant message that follows the latest user message —
-  // otherwise turn N's events would stream into turn N-1's reply. A tool-only
-  // row at the tail is not that reply: start a fresh assistant after it.
-  let idx = -1;
-  const last = messages[messages.length - 1];
-  if (last && last.role === 'assistant' && (last as { kind?: string }).kind !== 'compaction' && !isToolRow(last)) {
-    idx = messages.length - 1;
-  }
-  if (idx === -1) {
-    // No in-progress assistant for this turn — create one so the first
-    // streamed event (reasoning / text) has a target to append to.
-    const msg: ChatMessage = { id: uid('msg'), role: 'assistant', content: '', createdAt: Date.now() };
-    messages = [...messages, msg];
-    idx = messages.length - 1;
-  }
-  const message = { ...messages[idx] };
+  const { messages: ms, idx } = ensureActiveAssistant(messages);
+  const message = { ...ms[idx] };
+  let parts = [...(message.parts ?? [])];
+
   switch (ev.type) {
     case 'reasoning': {
-      // Deltas with the same blockId belong to one contiguous thinking block —
-      // merge them instead of stacking a new fragment per token.
-      const blocks = [...(message.reasoning ?? [])];
-      const lastBlock = blocks[blocks.length - 1];
-      if (lastBlock && lastBlock.id === ev.blockId) {
-        blocks[blocks.length - 1] = { ...lastBlock, text: lastBlock.text + ev.text };
+      const last = parts[parts.length - 1];
+      if (last?.type === 'reasoning' && last.id === ev.blockId) {
+        parts[parts.length - 1] = { ...last, text: last.text + ev.text };
       } else {
-        blocks.push({ id: ev.blockId, text: ev.text });
+        parts.push({ type: 'reasoning', id: ev.blockId, text: ev.text });
       }
-      message.reasoning = blocks;
       break;
     }
-    case 'message_text':
-      message.content = (message.content ?? '') + ev.text;
+    case 'tool_start': {
+      const ti = parts.findIndex(p => p.type === 'tool' && p.tool.id === ev.tool.id);
+      if (ti >= 0) {
+        const part = parts[ti] as Extract<MessagePart, { type: 'tool' }>;
+        parts[ti] = {
+          type: 'tool',
+          tool: {
+            ...part.tool,
+            name: ev.tool.name || part.tool.name,
+            argsText: ev.tool.argsText ?? part.tool.argsText,
+            status:
+              part.tool.status === 'success' || part.tool.status === 'error'
+                ? part.tool.status
+                : ev.tool.status,
+          },
+        };
+      } else {
+        parts.push({ type: 'tool', tool: ev.tool });
+      }
       break;
+    }
+    case 'tool_output':
+      parts = parts.map(p => {
+        if (p.type !== 'tool' || p.tool.id !== ev.toolId) return p;
+        return { type: 'tool', tool: { ...p.tool, status: 'success' as const, output: ev.output } };
+      });
+      break;
+    case 'tool_error':
+      parts = parts.map(p => {
+        if (p.type !== 'tool' || p.tool.id !== ev.toolId) return p;
+        return { type: 'tool', tool: { ...p.tool, status: 'error' as const, output: ev.output } };
+      });
+      break;
+    case 'message_text': {
+      const last = parts[parts.length - 1];
+      if (last?.type === 'text') {
+        parts[parts.length - 1] = { ...last, text: last.text + ev.text };
+      } else {
+        parts.push({ type: 'text', text: ev.text });
+      }
+      break;
+    }
     default:
-      break;
+      return messages;
   }
-  const next = messages.slice();
-  next[idx] = message;
+
+  message.parts = parts;
+  const next = ms.slice();
+  next[idx] = syncLegacyFields(message);
   return next;
 }
 
@@ -431,6 +485,8 @@ export async function* runRealTurn(
         const pending = new Map<number, { id?: string; name?: string; args: string }>();
         const started = new Set<string>();
         let stepText = '';
+        let stepTextLive = false;
+        let roundToolSeen = false;
         let currentBlockId: string | null = null;
 
         const settle = () => {
@@ -460,15 +516,21 @@ export async function* runRealTurn(
               } else if (evt.type === 'text') {
                 currentBlockId = null;
                 stepText += evt.text;
-                push({ type: 'message_text', text: evt.text });
+                if (!useTools || !roundToolSeen) {
+                  stepTextLive = true;
+                  push({ type: 'message_text', text: evt.text });
+                }
               } else if (evt.type === 'tool_delta') {
+                if (useTools && !roundToolSeen && stepTextLive) {
+                  push({ type: 'step_clear_preamble' });
+                  stepTextLive = false;
+                }
+                roundToolSeen = true;
                 const cur = pending.get(evt.index) ?? { args: '' };
                 if (evt.id) cur.id = evt.id;
                 if (evt.name) cur.name = evt.name;
                 if (evt.argsDelta) cur.args += evt.argsDelta;
                 pending.set(evt.index, cur);
-                // Surface the card as soon as the model names the tool so it
-                // appears as the latest message while arguments still stream.
                 if (cur.id && cur.name && !started.has(cur.id)) {
                   started.add(cur.id);
                   push({
@@ -484,8 +546,11 @@ export async function* runRealTurn(
               } else if (evt.type === 'usage') {
                 push({ type: 'usage', usage: evt.usage });
               } else if (evt.type === 'finish') {
-                // 'tool_calls' vs 'stop' — the accumulated calls tell us
-                // which; nothing to do here.
+                if (useTools && evt.reason === 'tool_calls') {
+                  // Preamble already cleared when the first tool delta arrived.
+                } else if (useTools && evt.reason === 'stop' && stepText && !stepTextLive) {
+                  push({ type: 'message_text', text: stepText });
+                }
               } else if (evt.type === 'error') {
                 errored = evt.message;
                 settle();
