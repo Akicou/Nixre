@@ -403,6 +403,14 @@ class ApiClient {
     return Array.isArray(res) ? res : [];
   }
 
+  /** Branch-to-branch diff without a PR (assistant description drafting). */
+  async compareBranches(repoRef: string, base: string, head: string): Promise<FileDiff[]> {
+    const res = await this.request<FileDiff[]>(
+      `/repos/${repoRef}/+/compare?base=${encodeURIComponent(base)}&head=${encodeURIComponent(head)}`,
+    );
+    return Array.isArray(res) ? res : [];
+  }
+
   // Keys & Tokens
   async listPublicKeys(): Promise<PublicKey[]> {
     const res = await this.request<any>('/user/publickeys');

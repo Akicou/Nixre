@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   applyEvent,
   buildModelContext,
@@ -9,10 +9,21 @@ import {
   shouldAutoCompact,
   updateConversation,
   deleteConversation,
+  runRealTurn,
   withCompaction,
   type ChatMessage,
 } from './assistantEngine';
+import { streamAiChat, executeAssistantTool } from './aiApi';
 import { installSyncFetchMock, syncMockReset } from '../test/syncMock';
+
+// Agent-loop double: streamAiChat / executeAssistantTool are mocked per-test.
+vi.mock('./aiApi', () => ({
+  streamAiChat: vi.fn(),
+  executeAssistantTool: vi.fn(),
+}));
+
+const mockedStream = vi.mocked(streamAiChat);
+const mockedExec = vi.mocked(executeAssistantTool);
 
 installSyncFetchMock();
 
@@ -82,6 +93,73 @@ describe('assistantEngine.applyEvent', () => {
     const ctx = buildModelContext(messages);
     expect(ctx.summary).toBe('handoff summary');
     expect(ctx.history).toHaveLength(0);
+  });
+});
+
+describe('assistantEngine agent loop', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('executes requested tools and feeds results back for a second round', async () => {
+    // Round 1: model asks to read a file (args arrive in fragments).
+    mockedStream.mockImplementationOnce((_messages, _opts, onEvent) => {
+      onEvent({ type: 'tool_delta', index: 0, id: 't1', name: 'read_file' });
+      onEvent({ type: 'tool_delta', index: 0, argsDelta: '{"path":"src/in' });
+      onEvent({ type: 'tool_delta', index: 0, argsDelta: 'dex.ts"}' });
+      onEvent({ type: 'finish', reason: 'tool_calls' });
+      onEvent({ type: 'done' });
+      return Promise.resolve();
+    });
+    // Round 2: after the tool result, the model answers.
+    mockedStream.mockImplementationOnce((_messages, _opts, onEvent) => {
+      onEvent({ type: 'text', text: 'The file looks good.' });
+      onEvent({ type: 'done' });
+      return Promise.resolve();
+    });
+    mockedExec.mockResolvedValue('export const x = 1;');
+
+    const profile = {
+      provider: 'deepseek', baseUrl: '', model: 'm', temperature: 0.2, maxTokens: 1024,
+      reasoningLevel: 'none', interleavedReasoning: false,
+      keyConfigured: true, keyMask: null, validatedAt: 1, models: [],
+    };
+    const events = [];
+    for await (const ev of runRealTurn('check src/index.ts', profile as any, [], {
+      mode: 'agent', repoPath: 'acme/website', agent: true,
+    })) {
+      events.push(ev);
+    }
+
+    expect(mockedStream).toHaveBeenCalledTimes(2);
+    expect(mockedExec).toHaveBeenCalledWith('acme/website', 'read_file', { path: 'src/index.ts' });
+
+    // The second round's thread contains the tool result message.
+    const secondThread = mockedStream.mock.calls[1][0];
+    const toolMsgs = secondThread.filter(m => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(1);
+    expect(toolMsgs[0].content).toBe('export const x = 1;');
+    expect(toolMsgs[0].tool_call_id).toBe('t1');
+
+    // Events surfaced the tool lifecycle.
+    expect(events.some(e => e.type === 'tool_start')).toBe(true);
+    expect(events.some(e => e.type === 'tool_output' && /export const x/.test(e.output))).toBe(true);
+    expect(events.some(e => e.type === 'message_text' && e.text === 'The file looks good.')).toBe(true);
+  });
+
+  it('does not enable tools outside agent mode', async () => {
+    mockedStream.mockImplementationOnce((_messages, opts, onEvent) => {
+      expect((opts as any).tools).toBeFalsy();
+      onEvent({ type: 'text', text: 'hi' });
+      onEvent({ type: 'done' });
+      return Promise.resolve();
+    });
+    const profile = { reasoningLevel: 'none', interleavedReasoning: false, model: 'm' } as any;
+    for await (const _ev of runRealTurn('q', profile, [], { mode: 'ask', agent: false })) {
+      // drain
+    }
+    expect(mockedStream).toHaveBeenCalledTimes(1);
+    expect((mockedStream.mock.calls[0][1] as any).tools).toBeFalsy();
   });
 });
 

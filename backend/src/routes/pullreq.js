@@ -192,6 +192,31 @@ export function pullRequestRoutes(pool, authenticate) {
     }
   });
 
+  // GET /repos/{space}/{repo}/+/compare?base=&head= — branch diff without a
+  // PR (used by the assistant description generator).
+  api.get('/repos/:space/:repo/\+/compare', auth, async (req, res) => {
+    const repo = await loadRepo(req, res);
+    if (!repo) return;
+    const base = String(req.query.base || '');
+    const head = String(req.query.head || '');
+    if (!base || !head) {
+      res.status(400).json({ message: 'base and head are required' });
+      return;
+    }
+    try {
+      const files = await diffRefs(repo.space_uid, repo.uid, base, head);
+      res.json(
+        files.map(f => ({
+          ...f,
+          patch: Buffer.from(f.patch, 'utf8').toString('base64'),
+        })),
+      );
+    } catch (err) {
+      console.error('compare failed:', err.message);
+      res.json([]);
+    }
+  });
+
   // POST /repos/{space}/{repo}/+/pullreq/{n}/merge {method}
   api.post('/repos/:space/:repo/\\+/pullreq/:number/merge', auth, async (req, res) => {
     const repo = await loadRepo(req, res);

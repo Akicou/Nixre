@@ -148,20 +148,34 @@ export class AuthError extends Error {
 //   data: {"type":"error","message":"..."}
 //   data: {"type":"done"}
 // `send(event)` is an async callback; the caller wires it to the HTTP response.
-export async function streamChat({ provider, apiKey, baseUrl, model, messages, reasoningLevel }, send) {
+export async function streamChat({ provider, apiKey, baseUrl, model, messages, reasoningLevel, tools }, send) {
   const { def, base } = resolveProvider(provider, baseUrl);
   if (def.kind === 'anthropic') {
-    return streamAnthropic({ base, apiKey, model, messages, reasoningLevel }, send);
+    return streamAnthropic({ base, apiKey, model, messages, reasoningLevel, tools }, send);
   }
-  return streamOpenAICompatible({ base, apiKey, model, messages, reasoningLevel, provider }, send);
+  return streamOpenAICompatible({ base, apiKey, model, messages, reasoningLevel, tools, provider }, send);
 }
 
-async function streamOpenAICompatible({ base, apiKey, model, messages, reasoningLevel, provider }, send) {
+// Unified agent-tool events forwarded to the browser:
+//   {type:'tool_delta', index, id?, name?, argsDelta?} — streamed fragments
+//   {type:'finish', reason:'stop'|'tool_calls'}
+function toolSchemasOpenAI(tools) {
+  return (tools ?? []).map(t => ({
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+}
+
+async function streamOpenAICompatible({ base, apiKey, model, messages, reasoningLevel, tools, provider }, send) {
   const body = {
     model,
     messages,
     stream: true,
   };
+  if (Array.isArray(tools) && tools.length > 0) {
+    body.tools = toolSchemasOpenAI(tools);
+    body.tool_choice = 'auto';
+  }
   // Reasoning-effort knobs: OpenAI o-series/gpt-5 accept reasoning_effort;
   // DeepSeek's reasoner model enables thinking by itself (no param needed).
   if (provider === 'openai' && /^(o\d|gpt-5)/.test(model) && reasoningLevel !== 'none') {
@@ -192,6 +206,21 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
       return;
     }
     const delta = evt.choices?.[0]?.delta;
+    if (delta?.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        await send({
+          type: 'tool_delta',
+          index: Number(tc.index ?? 0),
+          id: tc.id || undefined,
+          name: tc.function?.name || undefined,
+          argsDelta: tc.function?.arguments || undefined,
+        });
+      }
+    }
+    const finish = evt.choices?.[0]?.finish_reason;
+    if (finish) {
+      await send({ type: 'finish', reason: finish === 'tool_calls' ? 'tool_calls' : 'stop' });
+    }
     if (!delta) return;
     if (delta.reasoning_content) {
       await send({ type: 'reasoning', text: delta.reasoning_content });
@@ -202,10 +231,29 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
   });
 }
 
-async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel }, send) {
+async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, tools }, send) {
   // Anthropic requires a system role outside the messages array.
   const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
-  const rest = messages.filter(m => m.role !== 'system');
+  const rest = messages.filter(m => m.role !== 'system').map(m => {
+    // OpenAI-style tool result messages → Anthropic tool_result blocks.
+    if (m.role === 'tool') {
+      return {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: m.tool_call_id, content: String(m.content ?? '') }],
+      };
+    }
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+      const content = [];
+      if (m.content) content.push({ type: 'text', text: m.content });
+      for (const tc of m.tool_calls) {
+        let input = {};
+        try { input = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+        content.push({ type: 'tool_use', id: tc.id, name: tc.function?.name, input });
+      }
+      return { role: 'assistant', content };
+    }
+    return m;
+  });
 
   const body = {
     model,
@@ -214,6 +262,9 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel }
     stream: true,
     ...(system ? { system } : {}),
   };
+  if (Array.isArray(tools) && tools.length > 0) {
+    body.tools = tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+  }
   const wantsThinking = reasoningLevel !== 'none';
   if (wantsThinking) {
     body.thinking = { type: 'enabled', budget_tokens: { low: 2048, medium: 8192, high: 16384 }[reasoningLevel] || 4096 };
@@ -242,12 +293,23 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel }
     } catch {
       return;
     }
-    if (evt.type === 'content_block_delta') {
+    if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+      await send({
+        type: 'tool_delta',
+        index: Number(evt.index ?? 0),
+        id: evt.content_block.id,
+        name: evt.content_block.name,
+      });
+    } else if (evt.type === 'content_block_delta') {
       if (evt.delta?.type === 'thinking_delta' && evt.delta.thinking) {
         await send({ type: 'reasoning', text: evt.delta.thinking });
       } else if (evt.delta?.type === 'text_delta' && evt.delta.text) {
         await send({ type: 'text', text: evt.delta.text });
+      } else if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
+        await send({ type: 'tool_delta', index: Number(evt.index ?? 0), argsDelta: evt.delta.partial_json });
       }
+    } else if (evt.type === 'message_delta' && evt.delta?.stop_reason) {
+      await send({ type: 'finish', reason: evt.delta.stop_reason === 'tool_use' ? 'tool_calls' : 'stop' });
     }
   });
 }

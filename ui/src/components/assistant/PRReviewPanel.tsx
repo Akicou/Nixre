@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { PanelRightClose, Bot, Loader2 } from 'lucide-react';
 import type { PullRequest } from '../../lib/api';
+import { api } from '../../lib/api';
+import { decodeBase64Patch } from '../../lib/diff';
 import { getActiveProviderProfile, type AssistantProviderProfile } from '../../lib/assistantProfiles';
 import { ChatSurface } from './ChatSurface';
 
@@ -12,6 +14,9 @@ interface PRReviewPanelProps {
 
 export const PRReviewPanel: React.FC<PRReviewPanelProps> = ({ repoPath, pr, onClose }) => {
   const [profile, setProfile] = useState<AssistantProviderProfile | null>(null);
+  // The full PR diff is fetched once and attached to every turn so the
+  // assistant reviews what actually changed instead of guessing.
+  const [diffContext, setDiffContext] = useState<{ label: string; text: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -20,10 +25,24 @@ export const PRReviewPanel: React.FC<PRReviewPanelProps> = ({ repoPath, pr, onCl
         if (!cancelled) setProfile(p);
       })
       .catch(() => {});
+    api
+      .getPullRequestDiff(repoPath, pr.number)
+      .then(files => {
+        if (cancelled) return;
+        const text = files
+          .map(f => `--- ${f.path} (${f.status}, +${f.additions}/-${f.deletions}) ---\n${decodeBase64Patch(f.patch)}`)
+          .join('\n\n')
+          .slice(0, 120_000); // keep inside a sane context budget
+        setDiffContext({
+          label: `Full diff of PR #${pr.number} "${pr.title}" (${pr.source_branch} → ${pr.target_branch})`,
+          text,
+        });
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [repoPath, pr.number]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -58,7 +77,13 @@ export const PRReviewPanel: React.FC<PRReviewPanelProps> = ({ repoPath, pr, onCl
               profile={profile}
               title={`PR #${pr.number} · ${pr.title}`}
               onClose={onClose}
-              suggestions={['Review this PR for regressions', 'Run the tests and lint', 'Scan for vulnerabilities', 'Summarize the changes']}
+              extraContext={diffContext}
+              suggestions={[
+                'Review this PR for regressions',
+                'Summarize the changes for the PR description',
+                'Scan for vulnerabilities',
+                'What could break in production?',
+              ]}
             />
           ) : (
             <div className="h-full flex items-center justify-center gap-2 text-xs text-txt-tertiary">

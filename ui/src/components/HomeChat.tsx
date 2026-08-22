@@ -3,11 +3,11 @@ import { Link } from 'react-router-dom';
 import {
   Send,
   Bot,
-  Loader2,
   ChevronDown,
   Plus,
   Sparkles,
   Settings2,
+  Square,
 } from 'lucide-react';
 import {
   getActiveProviderProfile,
@@ -66,6 +66,7 @@ export const HomeChat: React.FC = () => {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const realAi = profile ? isRealAi(profile) : false;
   const modelOptions = profile?.models ?? [];
@@ -123,6 +124,8 @@ export const HomeChat: React.FC = () => {
     let id = convoId;
     let title = prompt.slice(0, 48);
     setStreaming(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       if (!id) {
         const conv = await createConversation(HOME_PATH, title);
@@ -144,13 +147,16 @@ export const HomeChat: React.FC = () => {
           model: workingModel || undefined,
           mode,
           compactionSummary: summary ?? undefined,
+          signal: controller.signal,
         })) {
           local = applyEvent(local, ev);
           setMessages(local);
         }
       } catch (err: any) {
-        local = applyEvent(local, { type: 'message_text', text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}` });
-        setMessages(local);
+        if (err?.name !== 'AbortError') {
+          local = applyEvent(local, { type: 'message_text', text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}` });
+          setMessages(local);
+        }
       }
       await updateConversation({ id, repoPath: HOME_PATH, title, messages: local, updatedAt: Date.now() });
 
@@ -170,6 +176,7 @@ export const HomeChat: React.FC = () => {
     } catch {
       // persistence failure — the turn still rendered
     } finally {
+      abortRef.current = null;
       setStreaming(false);
     }
   };
@@ -325,12 +332,16 @@ export const HomeChat: React.FC = () => {
                 disabled={streaming || !realAi}
               />
               <button
-                onClick={() => send()}
-                disabled={streaming || !input.trim() || !realAi}
-                className="p-2.5 rounded-md bg-brand text-white hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm shrink-0"
-                title="Send"
+                onClick={() => (streaming ? abortRef.current?.abort() : send())}
+                disabled={!streaming && (!input.trim() || !realAi)}
+                title={streaming ? 'Stop' : 'Send'}
+                className={`p-2.5 rounded-md transition shrink-0 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm ${
+                  streaming
+                    ? 'bg-feedback-error-bg text-feedback-error-text border border-feedback-error-text/30'
+                    : 'bg-brand text-white hover:bg-brand-hover'
+                }`}
               >
-                {streaming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                {streaming ? <Square className="w-4 h-4" /> : <Send className="w-4 h-4" />}
               </button>
             </div>
 

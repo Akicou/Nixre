@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { GitPullRequest, ArrowLeft } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { GitPullRequest, ArrowLeft, Sparkles, Loader2 } from 'lucide-react';
 import { api, Branch, PullRequest } from '../lib/api';
+import { getActiveProviderProfile, isRealAi, type AssistantProviderProfile } from '../lib/assistantProfiles';
+import { streamAiChat } from '../lib/aiApi';
 
 interface PullRequestFormProps {
   repoPath: string;
@@ -17,6 +19,54 @@ export const PullRequestForm: React.FC<PullRequestFormProps> = ({ repoPath, bran
   const [description, setDescription] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [profile, setProfile] = useState<AssistantProviderProfile | null>(null);
+  const [generating, setGenerating] = useState(false);
+
+  // Provider presence only gates the ✨ button; no hard dependency.
+  useEffect(() => {
+    let cancelled = false;
+    getActiveProviderProfile().then(p => { if (!cancelled) setProfile(p); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const generateDescription = async () => {
+    if (!profile || !isRealAi(profile) || !sourceBranch || !targetBranch) return;
+    setGenerating(true);
+    setError('');
+    try {
+      // Give the model the actual branch diff so the description reflects
+      // reality instead of just the title.
+      let diffText = '';
+      try {
+        const files = await api.compareBranches(repoPath, sourceBranch, targetBranch);
+        diffText = files.map(f => `--- ${f.path} (${f.status}, +${f.additions}/-${f.deletions}) ---`).join('\n');
+      } catch {}
+      let out = '';
+      await streamAiChat(
+        [
+          {
+            role: 'system',
+            content:
+              'You draft pull request descriptions. Output ONLY Markdown: a one-paragraph summary, then "## Changes" bullets, then "## Verification". Under 200 words. No preamble.',
+          },
+          {
+            role: 'user',
+            content: `Repo: ${repoPath}\nBranches: ${sourceBranch} → ${targetBranch}\nTitle: ${title || '(untitled)'}\n${diffText ? `Changed files:\n${diffText}` : ''}\n\nDraft the PR description.`,
+          },
+        ],
+        { model: profile.model, reasoningLevel: 'none' },
+        evt => {
+          if (evt.type === 'text') out += evt.text;
+          else if (evt.type === 'error') throw new Error(evt.message);
+        },
+      );
+      if (out.trim()) setDescription(out.trim());
+    } catch (err: any) {
+      setError(err.message || 'Could not generate a description.');
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,6 +162,18 @@ export const PullRequestForm: React.FC<PullRequestFormProps> = ({ repoPath, bran
             onChange={e => setDescription(e.target.value)}
             className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-sm focus:border-brand transition"
           />
+          {profile && isRealAi(profile) && (
+            <button
+              type="button"
+              onClick={generateDescription}
+              disabled={generating || !sourceBranch}
+              title="Draft the description from the branch changes"
+              className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md border border-border-subtle bg-surface-base text-txt-secondary hover:border-brand hover:text-txt-primary transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3 text-brand" />}
+              {generating ? 'Drafting…' : 'Generate with assistant'}
+            </button>
+          )}
         </div>
 
         <div className="pt-2 flex justify-end gap-3 border-t border-border-subtle">

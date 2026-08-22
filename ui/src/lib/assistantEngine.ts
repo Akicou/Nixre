@@ -8,14 +8,16 @@
 //     offline or canned-response fallback.
 
 import type { AssistantProviderProfile } from './assistantProfiles';
+import type { ChatTurn } from './aiApi';
 import * as sync from './syncApi';
 
 export type ToolStatus = 'running' | 'success' | 'error';
 
 export interface ToolCall {
   id: string;
-  name: string; // tool id, e.g. 'run_tests'
+  name: string; // tool id, e.g. 'read_file'
   status: ToolStatus;
+  argsText?: string; // raw JSON arguments requested by the model
   output?: string; // rendered output for a finished tool
 }
 
@@ -171,8 +173,12 @@ export type EngineEvent =
   | { type: 'reasoning'; blockId: string; text: string }
   | { type: 'tool_start'; tool: ToolCall }
   | { type: 'tool_output'; toolId: string; output: string }
+  | { type: 'tool_error'; toolId: string; output: string }
   | { type: 'message_text'; text: string }
   | { type: 'done'; conversationId?: string; messageId?: string };
+
+/** Safety bound on agent loop iterations per turn. */
+export const MAX_AGENT_STEPS = 8;
 
 let seq = 0;
 export const uid = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${(seq++).toString(36)}`;
@@ -222,6 +228,11 @@ export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessag
     case 'tool_output':
       message.toolCalls = (message.toolCalls ?? []).map(t =>
         t.id === ev.toolId ? { ...t, status: 'success' as const, output: ev.output } : t,
+      );
+      break;
+    case 'tool_error':
+      message.toolCalls = (message.toolCalls ?? []).map(t =>
+        t.id === ev.toolId ? { ...t, status: 'error' as const, output: ev.output } : t,
       );
       break;
     case 'message_text':
@@ -276,9 +287,10 @@ export async function deleteConversation(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Real turn — streams an actual model reply through nixre-core's /ai/chat
-// proxy. The provider credentials live server-side; this only carries the
-// conversation. `history` holds prior user/assistant turns for context.
+// Real turn — streams a model reply through nixre-core's /ai/chat proxy and,
+// in agent/debug mode, runs the tool loop: the model requests tools, we
+// execute them server-side, feed results back, and let it continue — up to
+// MAX_AGENT_STEPS rounds. Provider credentials never leave the server.
 // ---------------------------------------------------------------------------
 
 let reasonSeq = 0;
@@ -287,29 +299,50 @@ export async function* runRealTurn(
   prompt: string,
   profile: AssistantProviderProfile,
   history: { role: 'user' | 'assistant'; content: string }[],
-  overrides: { model?: string; reasoningLevel?: string; mode?: string; compactionSummary?: string } = {},
+  overrides: {
+    model?: string;
+    reasoningLevel?: string;
+    mode?: string;
+    compactionSummary?: string;
+    repoPath?: string;
+    agent?: boolean;
+    signal?: AbortSignal;
+    extraContext?: string;
+  } = {},
 ): AsyncGenerator<EngineEvent> {
-  const { streamAiChat } = await import('./aiApi');
+  const aiApi = await import('./aiApi');
   const { getMode } = await import('./assistantModes');
 
   const mode = getMode(overrides.mode);
-  const messages = [
-    { role: 'system' as const, content: mode.systemPrompt },
+  const signal = overrides.signal;
+  const useTools = overrides.agent === true && Boolean(overrides.repoPath);
+
+  // The provider-side thread. Tool rounds append to it and re-stream.
+  const thread: ChatTurn[] = [
+    { role: 'system', content: mode.systemPrompt },
+    // Attached working context (e.g. a PR diff) — above history, below the
+    // persona so it reads as data, not instructions.
+    ...(overrides.extraContext
+      ? [{ role: 'system' as const, content: `<attached_context>\n${overrides.extraContext}\n</attached_context>` }]
+      : []),
     // The compaction summary rides above the sliced history so it can never
     // be cut off by the window.
     ...(overrides.compactionSummary
       ? [{ role: 'system' as const, content: formatCompactionForPrompt(overrides.compactionSummary) }]
       : []),
     ...history.slice(-20),
-    { role: 'user' as const, content: prompt },
+    { role: 'user', content: prompt },
   ];
 
   let errored: string | null = null;
+  let aborted = false;
+
   yield* (async function* () {
-    // Bridge the callback-based stream into the generator.
+    // Bridge callback-based streams into the generator. `streamStep`
+    // resolves when the provider stream ends; live events flow through the
+    // queue the whole time.
     const queue: EngineEvent[] = [];
     let resolveNext: (() => void) | null = null;
-    let finished = false;
 
     const push = (evt: EngineEvent) => {
       queue.push(evt);
@@ -317,58 +350,131 @@ export async function* runRealTurn(
       resolveNext = null;
     };
 
-    // One stable blockId per contiguous thinking segment: reset when answer
-    // text arrives so interleaved reasoning renders as separate blocks.
-    let currentBlockId: string | null = null;
-
-    const done = streamAiChat(
-      messages,
-      {
-        model: overrides.model || profile.model,
-        reasoningLevel: overrides.reasoningLevel || profile.reasoningLevel,
-      },
-      evt => {
-        if (evt.type === 'reasoning') {
-          // Interleaved reasoning is a display toggle: when off, drop the
-          // thinking deltas... they still stream, we just ignore them.
-          if (profile.interleavedReasoning) {
-            currentBlockId ||= `reason_${Date.now()}_${reasonSeq++}`;
-            push({ type: 'reasoning', blockId: currentBlockId, text: evt.text });
-          }
-        } else if (evt.type === 'text') {
-          currentBlockId = null;
-          push({ type: 'message_text', text: evt.text });
-        } else if (evt.type === 'error') {
-          errored = evt.message;
-          finished = true;
-          push({ type: 'done' });
-        } else if (evt.type === 'done') {
-          finished = true;
-          push({ type: 'done' });
-        }
-      },
-    );
-    // A rejected fetch (network drop, aborted request) used to hang the turn
-    // forever because no `done` event ever reached the queue. Surface it.
-    done.catch((err: unknown) => {
-      errored = err instanceof Error ? err.message : 'The AI provider request failed.';
-      finished = true;
-      push({ type: 'done' });
-    });
-
-    for (;;) {
-      if (queue.length === 0) {
-        if (finished) break;
-        await new Promise<void>(r => (resolveNext = r));
-        continue;
+    const drain = async function* () {
+      for (;;) {
+        if (queue.length === 0) return;
+        yield queue.shift()!;
       }
-      yield queue.shift()!;
+    };
+
+    // One streaming round: forwards reasoning/text live, accumulates tool
+    // calls, and returns them when the model asked for tools.
+    const streamStep = (): Promise<{
+      calls: { id: string; name: string; args: string }[];
+      text: string;
+    }> => {
+      return new Promise(resolve => {
+        const pending = new Map<number, { id?: string; name?: string; args: string }>();
+        let stepText = '';
+        let currentBlockId: string | null = null;
+
+        const settle = () => {
+          const calls = [...pending.values()]
+            .filter(c => c.id && c.name)
+            .map(c => ({ id: c.id!, name: c.name!, args: c.args }));
+          resolve({ calls, text: stepText });
+        };
+
+        aiApi
+          .streamAiChat(
+            thread,
+            {
+              model: overrides.model || profile.model,
+              reasoningLevel: overrides.reasoningLevel || profile.reasoningLevel,
+              tools: useTools,
+              signal,
+            },
+            evt => {
+              if (evt.type === 'reasoning') {
+                // Interleaved reasoning is a display toggle: when off, drop
+                // the thinking deltas... they still stream, we just ignore.
+                if (profile.interleavedReasoning) {
+                  currentBlockId ||= `reason_${Date.now()}_${reasonSeq++}`;
+                  push({ type: 'reasoning', blockId: currentBlockId, text: evt.text });
+                }
+              } else if (evt.type === 'text') {
+                currentBlockId = null;
+                stepText += evt.text;
+                push({ type: 'message_text', text: evt.text });
+              } else if (evt.type === 'tool_delta') {
+                const cur = pending.get(evt.index) ?? { args: '' };
+                if (evt.id) cur.id = evt.id;
+                if (evt.name) cur.name = evt.name;
+                if (evt.argsDelta) cur.args += evt.argsDelta;
+                pending.set(evt.index, cur);
+              } else if (evt.type === 'finish') {
+                // 'tool_calls' vs 'stop' — the accumulated calls tell us
+                // which; nothing to do here.
+              } else if (evt.type === 'error') {
+                errored = evt.message;
+                settle();
+              } else if (evt.type === 'done') {
+                settle();
+              }
+            },
+          )
+          .catch((err: unknown) => {
+            // A rejected fetch (network drop) must not hang the turn; an
+            // AbortError is the user pressing Stop, not a failure.
+            if (err && (err as Error).name === 'AbortError') {
+              aborted = true;
+            } else {
+              errored = err instanceof Error ? err.message : 'The AI provider request failed.';
+            }
+            settle();
+          });
+      });
+    };
+
+    for (let step = 0; step < MAX_AGENT_STEPS; step++) {
+      const { calls, text } = await streamStep();
+      yield* drain();
+      if (aborted) return;
+      if (errored) return;
+      if (!useTools || calls.length === 0) return;
+
+      // Record the assistant's tool request so the next round has context.
+      thread.push({
+        role: 'assistant',
+        content: text,
+        tool_calls: calls.map(c => ({
+          id: c.id,
+          type: 'function' as const,
+          function: { name: c.name, arguments: c.args },
+        })),
+      });
+
+      for (const call of calls) {
+        if (signal?.aborted) return;
+        let argsObj: Record<string, unknown> = {};
+        try {
+          argsObj = call.args ? JSON.parse(call.args) : {};
+        } catch {
+          argsObj = {};
+        }
+        push({ type: 'tool_start', tool: { id: call.id, name: call.name, status: 'running', argsText: call.args } });
+        try {
+          const output = await aiApi.executeAssistantTool(overrides.repoPath!, call.name, argsObj);
+          push({ type: 'tool_output', toolId: call.id, output });
+          thread.push({ role: 'tool', tool_call_id: call.id, content: output });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Tool execution failed';
+          push({ type: 'tool_error', toolId: call.id, output: msg });
+          thread.push({ role: 'tool', tool_call_id: call.id, content: `Error: ${msg}` });
+        }
+      }
+      yield* drain();
+      // Loop: the model now sees the tool results and continues.
     }
-    await done.catch(() => {});
   })();
 
   if (errored) {
     throw new Error(errored);
+  }
+  if (aborted) {
+    const err = new Error('Turn stopped');
+    err.name = 'AbortError';
+    throw err;
   }
 }
 

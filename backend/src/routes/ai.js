@@ -16,6 +16,7 @@ import {
   maskSecret,
   AuthError,
 } from '../lib/ai.js';
+import { TOOL_SCHEMAS, executeTool } from '../lib/agentTools.js';
 
 const MODEL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 
@@ -425,8 +426,17 @@ export function aiRoutes(pool, authenticate) {
     }
     const messages = Array.isArray(req.body?.messages)
       ? req.body.messages
-          .filter(m => m && ['user', 'assistant', 'system'].includes(m.role) && typeof m.content === 'string')
-          .slice(-40)
+          .filter(
+            m =>
+              m &&
+              typeof m.content === 'string' &&
+              (['user', 'assistant', 'system'].includes(m.role) ||
+                // Tool results from the agent loop.
+                (m.role === 'tool' && typeof m.tool_call_id === 'string')) &&
+              // Bound tool payloads like everything else.
+              m.content.length <= 64_000,
+          )
+          .slice(-60)
       : [];
     if (messages.length === 0) {
       res.status(400).json({ message: 'messages required' });
@@ -443,6 +453,7 @@ export function aiRoutes(pool, authenticate) {
       res.write(`data: ${JSON.stringify(evt)}\n\n`);
     };
 
+    const wantsTools = req.body?.tools === true;
     try {
       await streamChat(
         {
@@ -452,6 +463,7 @@ export function aiRoutes(pool, authenticate) {
           model: model || row.default_model,
           messages,
           reasoningLevel: String(req.body?.reasoningLevel || 'none'),
+          tools: wantsTools ? TOOL_SCHEMAS : null,
         },
         send,
       );
@@ -460,6 +472,45 @@ export function aiRoutes(pool, authenticate) {
       await send({ type: 'error', message: err.message });
     } finally {
       res.end();
+    }
+  });
+
+  // --- agent tool execution ---------------------------------------------------
+
+  // POST /ai/tools {repoPath, tool, args} — runs one assistant tool against
+  // the repo on disk. Read-only tools are available to everyone; run_command
+  // is gated by the caller's per-repo access profile (sync prefs).
+  api.post('/ai/tools', auth, async (req, res) => {
+    const uid = req.auth.user.uid;
+    const repoPath = String(req.body?.repoPath || '');
+    const tool = String(req.body?.tool || '');
+    const args = req.body?.args && typeof req.body.args === 'object' ? req.body.args : {};
+
+    const slash = repoPath.indexOf('/');
+    if (slash <= 0 || slash === repoPath.length - 1) {
+      res.status(400).json({ message: 'repoPath must be space/repo' });
+      return;
+    }
+    const space = repoPath.slice(0, slash);
+    const repo = repoPath.slice(slash + 1);
+
+    let permissions = {};
+    try {
+      const { rows } = await pool.query(
+        "SELECT value FROM prefs WHERE user_id = $1 AND key = 'assistant_profiles' LIMIT 1",
+        [uid],
+      );
+      const profiles = rows[0]?.value?.repoProfiles;
+      if (profiles && typeof profiles === 'object') permissions = profiles[repoPath] ?? {};
+    } catch {
+      // prefs unavailable → read-only defaults
+    }
+
+    try {
+      const result = await executeTool(tool, space, repo, args, permissions);
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ message: err.message });
     }
   });
 

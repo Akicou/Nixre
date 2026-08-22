@@ -53,13 +53,19 @@ export interface AiProfile {
 }
 
 export interface ChatTurn {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  // Present on assistant messages that request agent tools.
+  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
+  // Present on tool-result messages.
+  tool_call_id?: string;
 }
 
 export type ChatStreamEvent =
   | { type: 'reasoning'; text: string }
   | { type: 'text'; text: string }
+  | { type: 'tool_delta'; index: number; id?: string; name?: string; argsDelta?: string }
+  | { type: 'finish'; reason: string }
   | { type: 'error'; message: string }
   | { type: 'done' };
 
@@ -146,16 +152,41 @@ export function listAiModels(): Promise<{ models: string[]; cached: boolean; sta
   return request('/ai/models');
 }
 
+// Executes one assistant tool server-side (permission-checked there).
+export async function executeAssistantTool(
+  repoPath: string,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  const res = await fetch('/api/v1/ai/tools', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ repoPath, tool, args }),
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.message) msg = body.message;
+    } catch {}
+    throw new Error(msg);
+  }
+  const body = await res.json();
+  return String(body.output ?? '');
+}
+
 // Streams a chat completion; `onEvent` receives unified events.
+// `tools` asks the provider for agent tool-calls (see assistantEngine).
 export async function streamAiChat(
   messages: ChatTurn[],
-  opts: { model?: string; reasoningLevel?: string },
+  opts: { model?: string; reasoningLevel?: string; tools?: boolean; signal?: AbortSignal },
   onEvent: (evt: ChatStreamEvent) => void,
 ): Promise<void> {
   const res = await fetch('/api/v1/ai/chat', {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify({ messages, ...opts }),
+    signal: opts.signal,
   });
   if (!res.ok || !res.body) {
     let msg = `HTTP ${res.status}`;

@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Copy,
   Loader2,
+  Pencil,
   User,
   XCircle,
 } from 'lucide-react';
@@ -26,16 +27,20 @@ interface ChatMessageViewProps {
   message: ChatMessage;
   /** True while this message is still receiving streamed events. */
   streaming?: boolean;
+  /** When set on a user message, offers inline edit-and-resend. */
+  onEdit?: (messageId: string, newText: string) => void;
 }
 
-export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, streaming = false }) => {
+export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, streaming = false, onEdit }) => {
   const isUser = message.role === 'user';
   const hasReasoning = !isUser && (message.reasoning?.length ?? 0) > 0;
   const thinking =
     streaming && !message.content && ((message.reasoning?.length ?? 0) > 0 || !hasReasoning);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
 
   return (
-    <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
+    <div className={`group flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
       {/* Avatar */}
       <div
         className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center mt-0.5 ${
@@ -51,9 +56,54 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
         {!isUser && hasReasoning && <ReasoningPanel message={message} thinking={thinking} />}
 
         {isUser ? (
-          <div className="inline-block max-w-[85%] rounded-lg rounded-tr-sm px-3 py-2 bg-brand text-white text-xs leading-relaxed">
-            <span className="whitespace-pre-line break-words">{message.content}</span>
-          </div>
+          editing ? (
+            <div className="w-full max-w-[85%] flex flex-col gap-1.5">
+              <textarea
+                autoFocus
+                value={draft}
+                onChange={e => setDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    setEditing(false);
+                    onEdit?.(message.id, draft);
+                  } else if (e.key === 'Escape') {
+                    setEditing(false);
+                    setDraft(message.content);
+                  }
+                }}
+                rows={Math.min(6, draft.split('\n').length + 1)}
+                className="resize-none w-full rounded-lg px-3 py-2 bg-surface-base border border-brand text-txt-primary text-xs font-mono outline-none"
+              />
+              <div className="flex justify-end gap-2 text-[11px]">
+                <button onClick={() => { setEditing(false); setDraft(message.content); }} className="px-2 py-1 rounded text-txt-secondary hover:text-txt-primary transition">
+                  Cancel
+                </button>
+                <button
+                  onClick={() => { setEditing(false); onEdit?.(message.id, draft); }}
+                  disabled={!draft.trim()}
+                  className="px-2 py-1 rounded bg-brand text-white hover:bg-brand-hover disabled:opacity-40 transition"
+                >
+                  Resend
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="inline-block max-w-[85%] rounded-lg rounded-tr-sm px-3 py-2 bg-brand text-white text-xs leading-relaxed">
+                <span className="whitespace-pre-line break-words">{message.content}</span>
+              </div>
+              {onEdit && !streaming && (
+                <button
+                  onClick={() => { setDraft(message.content); setEditing(true); }}
+                  title="Edit & resend"
+                  className="mt-0.5 opacity-0 group-hover:opacity-100 transition text-[10px] text-txt-tertiary hover:text-txt-primary flex items-center gap-1"
+                >
+                  <Pencil className="w-3 h-3" /> edit &amp; resend
+                </button>
+              )}
+            </>
+          )
         ) : (
           <div className="min-w-0">
             {message.toolCalls && message.toolCalls.length > 0 && (
@@ -189,6 +239,9 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
             <XCircle className="w-3.5 h-3.5 text-feedback-error-text" />
           )}
           <span className="text-txt-primary">{tool.name}</span>
+          {tool.argsText && tool.argsText !== '{}' && (
+            <span className="text-txt-tertiary truncate max-w-[16rem]">{tool.argsText}</span>
+          )}
         </span>
         {open ? (
           <ChevronDown className="w-3.5 h-3.5 text-txt-tertiary shrink-0" />

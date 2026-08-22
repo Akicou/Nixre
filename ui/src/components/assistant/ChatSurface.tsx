@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Send,
@@ -8,14 +8,18 @@ import {
   X,
   ChevronsUpDown,
   ChevronDown,
+  Download,
+  Gauge,
   Loader2,
+  RefreshCw,
   Sparkles,
+  Square,
   Settings2
 } from 'lucide-react';
 import { getPlugin } from '../../lib/plugins';
 import { isRealAi, type AssistantProviderProfile } from '../../lib/assistantProfiles';
 import { ASSISTANT_MODES, MODE_ACCENT_CLASSES, getMode, type ModeId } from '../../lib/assistantModes';
-import { modelLabel } from '../../lib/aiApi';
+import { modelLabel, executeAssistantTool } from '../../lib/aiApi';
 import {
   listConversations,
   createConversation,
@@ -42,6 +46,8 @@ interface ChatSurfaceProps {
   onClose?: () => void;
   // Suggest prompt chips shown on the empty state.
   suggestions?: string[];
+  // Attached working context (e.g. the PR diff) injected above history.
+  extraContext?: { label: string; text: string } | null;
 }
 
 const EMPTY_STATE_SUGGESTIONS = [
@@ -57,6 +63,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   title,
   onClose,
   suggestions = EMPTY_STATE_SUGGESTIONS,
+  extraContext = null,
 }) => {
   const assistant = getPlugin('nixre-assistant');
   const reasoningField = assistant?.providerFields?.find(f => f.key === 'reasoningLevel');
@@ -80,13 +87,40 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   const [mode, setMode] = useState<ModeId>('ask');
   const [modelOpen, setModelOpen] = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
   const reasoningRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const current = conversations.find(c => c.id === currentId);
+
+  // Mode sticks to the conversation (or the surface before one exists) so a
+  // Plan → Agent handoff survives reloads and panel closes.
+  const modeKey = `nixre_mode_${currentId ?? repoPath}`;
+  useEffect(() => {
+    const saved = localStorage.getItem(modeKey);
+    if (saved && ASSISTANT_MODES.some(m => m.id === saved)) setMode(saved as ModeId);
+  }, [modeKey]);
+  const changeMode = (id: ModeId) => {
+    setMode(id);
+    try { localStorage.setItem(modeKey, id); } catch {}
+  };
+
+  // Rough context-window meter: ~4 chars/token against a nominal budget.
+  const contextInfo = useMemo(() => {
+    const { summary, history } = buildModelContext(messages);
+    const chars = history.reduce((n, t) => n + t.content.length, 0) + (summary?.length ?? 0);
+    const tokens = Math.ceil(chars / 4);
+    const budget = 16_384; // nominal provider window for the meter
+    return {
+      pct: Math.min(100, Math.round((tokens / budget) * 100)),
+      compactions: messages.filter(m => (m as any).kind === 'compaction').length,
+      near: tokens / budget > 0.7,
+    };
+  }, [messages]);
 
   const refreshConversations = () => {
     listConversations(repoPath).then(setConversations).catch(() => {});
@@ -126,20 +160,19 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     setInput('');
   };
 
-  const send = async (text?: string) => {
-    const prompt = (text ?? input).trim();
-    if (!prompt || streaming || !realAi) return;
-    setInput('');
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
-
+  /** Core turn runner — `base` is the transcript the turn appends to. */
+  const runTurn = async (prompt: string, base: ChatMessage[], modelPromptPrefix?: string) => {
+    if (!realAi) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setStreaming(true);
     let convId = currentId;
-    let title = current?.title ?? prompt.slice(0, 48);
+    let turnTitle = current?.title ?? prompt.slice(0, 48);
     try {
       if (!convId) {
         const conv = await createConversation(repoPath, prompt.slice(0, 48));
         convId = conv.id;
-        title = conv.title;
+        turnTitle = conv.title;
         setCurrentId(conv.id);
         refreshConversations();
       }
@@ -150,11 +183,11 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         content: prompt,
         createdAt: Date.now(),
       };
-      // Accumulate locally: `messages` from the closure would go stale across
+      // Accumulate locally: state from the closure would go stale across
       // awaits inside the streaming loop below.
-      let local: ChatMessage[] = [...messages, userMessage];
+      let local: ChatMessage[] = [...base, userMessage];
       setMessages(local);
-      await updateConversation({ id: convId, repoPath, title, messages: local, updatedAt: Date.now() });
+      await updateConversation({ id: convId, repoPath, title: turnTitle, messages: local, updatedAt: Date.now() });
 
       const workingProfile: AssistantProviderProfile = {
         ...profile,
@@ -162,29 +195,50 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         reasoningLevel: workingReasoning,
       };
 
-      // Stream the actual model through nixre-core's proxy. History comes
-      // from the pre-turn transcript; auto-compaction replaces everything
-      // before the last compaction entry with its summary.
-      const priorMessages = local.slice(0, -1); // exclude the just-added user message
-      const { summary, history } = buildModelContext(priorMessages);
+      // @-mentions: files referenced as @path/to/file are fetched via the
+      // tools endpoint and attached as context (up to 3).
+      let modelPrompt = prompt;
+      const mentions = [...prompt.matchAll(/(?:^|\s)@([\w./-]+)/g)].map(m => m[1]).slice(0, 3);
+      if (mentions.length > 0) {
+        const snippets: string[] = [];
+        for (const p of mentions) {
+          try {
+            const content = await executeAssistantTool(repoPath, 'read_file', { path: p });
+            snippets.push(`--- ${p} ---\n${content}`);
+          } catch {
+            snippets.push(`--- ${p} --- (could not read: not found or unreadable)`);
+          }
+        }
+        modelPrompt = `<referenced_files>\n${snippets.join('\n\n')}\n</referenced_files>\n\n${prompt}`;
+      }
+
+      // History comes from the pre-turn transcript; auto-compaction replaces
+      // everything before the last compaction entry with its summary.
+      const { summary, history } = buildModelContext(base);
       try {
-        for await (const ev of runRealTurn(prompt, workingProfile, history, {
+        for await (const ev of runRealTurn(modelPrompt, workingProfile, history, {
           model: workingModel,
           reasoningLevel: workingReasoning,
           mode,
           compactionSummary: summary ?? undefined,
+          repoPath,
+          agent: mode === 'agent' || mode === 'debug',
+          signal: controller.signal,
+          extraContext: extraContext ? `${extraContext.label}\n\n${extraContext.text}` : undefined,
         })) {
           local = applyEvent(local, ev);
           setMessages(local);
         }
       } catch (err: any) {
-        local = applyEvent(local, {
-          type: 'message_text',
-          text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}`,
-        });
-        setMessages(local);
+        if (err?.name !== 'AbortError') {
+          local = applyEvent(local, {
+            type: 'message_text',
+            text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}`,
+          });
+          setMessages(local);
+        }
       }
-      await updateConversation({ id: convId, repoPath, title, messages: local, updatedAt: Date.now() });
+      await updateConversation({ id: convId, repoPath, title: turnTitle, messages: local, updatedAt: Date.now() });
 
       // Auto-compaction: once enough turns pile up, have the model distill
       // them into a handoff summary so later turns stay inside the context
@@ -194,7 +248,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           const compactSummary = await runCompaction(local, workingProfile, { model: workingModel });
           local = withCompaction(local, compactSummary);
           setMessages(local);
-          await updateConversation({ id: convId, repoPath, title, messages: local, updatedAt: Date.now() });
+          await updateConversation({ id: convId, repoPath, title: turnTitle, messages: local, updatedAt: Date.now() });
         } catch {
           // Compaction is best-effort — never fail a turn over it.
         }
@@ -203,10 +257,86 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
       // Backend unreachable — the turn still rendered locally; surface nothing
       // extra here, the sidebar refresh below will reflect the true state.
     } finally {
+      abortRef.current = null;
       setStreaming(false);
       refreshConversations();
     }
   };
+
+  const send = (text?: string) => {
+    const prompt = (text ?? input).trim();
+    if (!prompt || streaming || !realAi) return;
+    setInput('');
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    void runTurn(prompt, messages);
+  };
+
+  const stop = () => abortRef.current?.abort();
+
+  /** Drop everything after the last user message and run it again. */
+  const regenerate = () => {
+    if (streaming) return;
+    let idx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') { idx = i; break; }
+    }
+    if (idx === -1) return;
+    const prompt = messages[idx].content;
+    const base = messages.slice(0, idx);
+    setMessages(base);
+    void runTurn(prompt, base);
+  };
+
+  /** Edit a sent user message: truncate the transcript there and resend. */
+  const editMessage = (id: string, newText: string) => {
+    if (streaming || !newText.trim()) return;
+    const idx = messages.findIndex(m => m.id === id);
+    if (idx === -1 || messages[idx].role !== 'user') return;
+    setEditingId(null);
+    const base = messages.slice(0, idx);
+    setMessages(base);
+    void runTurn(newText.trim(), base);
+  };
+
+  /** Download the transcript as Markdown (reasoning folded into details). */
+  const exportMarkdown = () => {
+    const lines: string[] = [`# ${title || repoPath} — assistant transcript`, ''];
+    for (const m of messages) {
+      if ((m as any).kind === 'compaction') {
+        lines.push('> 🗜️ _Context compacted — earlier messages summarized_', '');
+        continue;
+      }
+      if (m.role === 'user') {
+        lines.push(`**You:**\n\n${m.content}`, '');
+      } else {
+        if (m.reasoning?.length) {
+          lines.push('<details><summary>Thought process</summary>', '', m.reasoning.map(r => r.text).join('\n'), '', '</details>', '');
+        }
+        lines.push(`**Assistant:**\n\n${m.content || '_(stopped before answering)_'}`, '');
+      }
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(title || repoPath).replace(/[^\w.-]+/g, '-')}-chat.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Global shortcuts: ⌘/Ctrl+K focuses the composer, Esc stops a turn.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        textareaRef.current?.focus();
+      } else if (e.key === 'Escape' && streaming) {
+        stop();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [streaming]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -350,6 +480,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
                     key={msg.id}
                     message={msg}
                     streaming={streaming && i === messages.length - 1 && msg.role === 'assistant'}
+                    onEdit={msg.role === 'user' && !streaming ? editMessage : undefined}
                   />
                 ),
               )}
@@ -367,7 +498,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
               return (
                 <button
                   key={m.id}
-                  onClick={() => setMode(m.id)}
+                  onClick={() => changeMode(m.id)}
                   title={m.description}
                   className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full border transition ${
                     active
@@ -457,6 +588,47 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
                 New chat
               </button>
             )}
+
+            {/* Regenerate: rerun the last user prompt (disabled mid-stream). */}
+            {messages.some(m => m.role === 'user') && (
+              <button
+                onClick={regenerate}
+                disabled={streaming}
+                title="Regenerate the last reply"
+                className="text-xs px-2.5 py-1 rounded-md text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Retry</span>
+              </button>
+            )}
+
+            {messages.length > 0 && (
+              <button
+                onClick={exportMarkdown}
+                title="Export transcript as Markdown"
+                className="text-xs px-2.5 py-1 rounded-md text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {/* Context meter — rough token estimate + compaction count. */}
+            {messages.length > 0 && (
+              <span
+                title={`Roughly ${contextInfo.pct}% of a ~16k-token context used${
+                  contextInfo.compactions > 0 ? ` · auto-compacted ×${contextInfo.compactions}` : ''
+                }`}
+                className={`ml-auto flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                  contextInfo.near
+                    ? 'border-amber-400/30 bg-amber-400/10 text-amber-400'
+                    : 'border-border-subtle text-txt-tertiary'
+                }`}
+              >
+                <Gauge className="w-3 h-3" />
+                ctx {contextInfo.pct}%
+                {contextInfo.compactions > 0 && ` · 🗜️×${contextInfo.compactions}`}
+              </span>
+            )}
           </div>
 
           <div className="flex items-end gap-2 max-w-3xl mx-auto">
@@ -471,18 +643,34 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
                 el.style.height = Math.min(el.scrollHeight, 160) + 'px';
               }}
               onKeyDown={handleKeyDown}
-              placeholder={realAi ? 'Ask the assistant anything…' : 'Configure a provider to start chatting…'}
+              placeholder={
+                realAi
+                  ? mode === 'agent'
+                    ? 'Agent mode — I can read, search and run commands in this repo (@file to attach)…'
+                    : 'Ask the assistant anything… (@file to attach)'
+                  : 'Configure a provider to start chatting…'
+              }
               className="flex-1 resize-none px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono placeholder:text-txt-tertiary focus:border-brand outline-none transition max-h-40 disabled:opacity-50"
               disabled={streaming || !realAi}
             />
-            <button
-              onClick={() => send()}
-              disabled={streaming || !input.trim() || !realAi}
-              className="p-2.5 rounded-md bg-brand text-white hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm shrink-0"
-              title="Send"
-            >
-              {streaming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-            </button>
+            {streaming ? (
+              <button
+                onClick={stop}
+                className="p-2.5 rounded-md bg-feedback-error-bg text-feedback-error-text hover:bg-feedback-error-bg/70 border border-feedback-error-text/30 transition shrink-0"
+                title="Stop (Esc)"
+              >
+                <Square className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                onClick={() => send()}
+                disabled={!input.trim() || !realAi}
+                className="p-2.5 rounded-md bg-brand text-white hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm shrink-0"
+                title="Send"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>
