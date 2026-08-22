@@ -16,6 +16,9 @@ import {
   updateAiProvider,
   deleteAiProvider,
   fetchProviderModels,
+  isLocalKind,
+  LOCAL_MODEL,
+  modelLabel,
   type AiProvider,
 } from '../../lib/aiApi';
 import { PluginConfigForm } from '../PluginConfigForm';
@@ -287,38 +290,63 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
                   {p.enabledModels.length}/{p.models.length} enabled
                 </span>
               </div>
-              {p.models.length === 0 ? (
-                <p className="text-[11px] text-txt-tertiary italic">
-                  No models yet — hit the refresh button to fetch them from the provider.
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-44 overflow-y-auto">
-                  {p.models.map(m => {
-                    const on = p.enabledModels.includes(m);
-                    return (
-                      <button
-                        key={m}
-                        onClick={() => toggleModel(p, m)}
-                        className={`flex items-center gap-2 text-left text-[11px] font-mono px-2.5 py-1.5 rounded border transition ${
-                          on
-                            ? 'bg-brand/10 border-brand/40 text-txt-primary'
-                            : 'border-border-subtle text-txt-tertiary hover:text-txt-secondary hover:border-border-mid'
-                        }`}
-                      >
-                        <span
-                          className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
-                            on ? 'bg-brand border-brand' : 'border-border-mid'
-                          }`}
+              {(() => {
+                // Local inference servers (llama.cpp, Unsloth, LM Studio…)
+                // can serve "whatever is loaded right now" via the sentinel.
+                const list = isLocalKind(p.provider)
+                  ? [LOCAL_MODEL, ...p.models.filter(m => m !== LOCAL_MODEL)]
+                  : p.models;
+                if (list.length === 0) {
+                  return (
+                    <p className="text-[11px] text-txt-tertiary italic">
+                      No models yet — hit the refresh button to fetch them from the provider.
+                    </p>
+                  );
+                }
+                return (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-44 overflow-y-auto">
+                    {list.map(m => {
+                      const on = p.enabledModels.includes(m);
+                      const isSentinel = m === LOCAL_MODEL;
+                      return (
+                        <button
+                          key={m}
+                          onClick={() => toggleModel(p, m)}
+                          title={
+                            isSentinel
+                              ? 'Always answers with the model the server currently has loaded — no need to re-pick when you switch models server-side'
+                              : m
+                          }
+                          className={`flex items-center gap-2 text-left text-[11px] font-mono px-2.5 py-1.5 rounded border transition ${
+                            on
+                              ? 'bg-brand/10 border-brand/40 text-txt-primary'
+                              : 'border-border-subtle text-txt-tertiary hover:text-txt-secondary hover:border-border-mid'
+                          } ${isSentinel ? 'border-dashed' : ''}`}
                         >
-                          {on && <Check className="w-2.5 h-2.5 text-white" />}
-                        </span>
-                        <span className="truncate">{m}</span>
-                        {p.defaultModel === m && <span className="ml-auto text-[9px] uppercase text-brand shrink-0">default</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                          <span
+                            className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
+                              on ? 'bg-brand border-brand' : 'border-border-mid'
+                            }`}
+                          >
+                            {on && <Check className="w-2.5 h-2.5 text-white" />}
+                          </span>
+                          <span className="truncate">
+                            {isSentinel ? (
+                              <>
+                                <span className="not-italic font-semibold">{modelLabel(m)}</span>
+                                <span className="text-txt-tertiary"> — follow the server</span>
+                              </>
+                            ) : (
+                              m
+                            )}
+                          </span>
+                          {p.defaultModel === m && <span className="ml-auto text-[9px] uppercase text-brand shrink-0">default</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         ))}

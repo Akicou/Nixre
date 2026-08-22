@@ -18,6 +18,7 @@ import {
 import { getPlugin } from '../../lib/plugins';
 import { isRealAi, type AssistantProviderProfile } from '../../lib/assistantProfiles';
 import { ASSISTANT_MODES, MODE_ACCENT_CLASSES, getMode, type ModeId } from '../../lib/assistantModes';
+import { modelLabel } from '../../lib/aiApi';
 import {
   listConversations,
   getConversation,
@@ -372,7 +373,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
                   className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border border-border-subtle bg-surface-base text-txt-primary hover:border-brand transition"
                 >
                   <span className="hidden sm:inline">Model:</span>
-                  <span className="font-mono">{activeModelLabel}</span>
+                  <span className="font-mono">{modelLabel(activeModelLabel)}</span>
                   <ChevronDown className="w-3.5 h-3.5 text-txt-tertiary" />
                 </button>
               ) : (
@@ -398,7 +399,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
                         m === workingModel ? 'bg-surface-subtle text-txt-primary font-semibold' : 'text-txt-secondary hover:bg-surface-subtle/60'
                       }`}
                     >
-                      {m}
+                      {modelLabel(m)}
                     </button>
                   ))}
                 </div>

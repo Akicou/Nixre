@@ -1,6 +1,25 @@
 // AI API client — multi-provider management and streaming chat against
 // nixre-core. API keys live server-side; this client only sees a mask.
 
+/**
+ * Sentinel model id meaning "whatever model the server currently has
+ * loaded". Verified live against Unsloth Studio (any unrecognized model
+ * string routes to the loaded model) and matches llama.cpp behavior
+ * (model field ignored, serves the launched model). LM Studio honors it
+ * when Just-in-Time model loading is enabled.
+ */
+export const LOCAL_MODEL = 'local-model';
+
+/** True for provider kinds that serve a local, user-run inference server. */
+export function isLocalKind(provider: string): boolean {
+  return provider === 'custom' || provider === 'ollama';
+}
+
+/** Display label for a model id (sentinels get a friendly name). */
+export function modelLabel(m: string): string {
+  return m === LOCAL_MODEL ? 'loaded model ⟳' : m;
+}
+
 export interface AiProvider {
   id: number;
   label: string;

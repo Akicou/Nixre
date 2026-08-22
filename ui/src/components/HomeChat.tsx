@@ -26,6 +26,7 @@ import {
   type Conversation,
 } from '../lib/assistantEngine';
 import { ASSISTANT_MODES, MODE_ACCENT_CLASSES, type ModeId } from '../lib/assistantModes';
+import { modelLabel } from '../lib/aiApi';
 import { Markdown } from './Markdown';
 
 // The dashboard conversation bucket — not tied to a repo. Repo-bound chats
@@ -326,7 +327,7 @@ export const HomeChat: React.FC = () => {
                       className="flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-md border border-border-subtle bg-surface-canvas text-txt-secondary hover:border-brand/50 transition font-mono"
                     >
                       <span className="text-txt-tertiary">Model:</span>
-                      {workingModel || modelOptions[0]}
+                      {modelLabel(workingModel || modelOptions[0])}
                       <ChevronDown className="w-3 h-3 text-txt-tertiary" />
                     </button>
                     {modelOpen && (
@@ -344,7 +345,7 @@ export const HomeChat: React.FC = () => {
                                 : 'text-txt-secondary hover:bg-surface-subtle/60'
                             }`}
                           >
-                            {m}
+                            {modelLabel(m)}
                           </button>
                         ))}
                       </div>
