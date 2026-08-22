@@ -10,7 +10,6 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { api, Repository, Space, User } from '../lib/api';
-import { HomeChat } from '../components/HomeChat';
 
 interface DashboardProps {
   user: User | null;
@@ -75,11 +74,9 @@ export const Dashboard: React.FC<DashboardProps> = () => {
         </div>
       </div>
 
-      {/* Three zones: repos (left) · assistant (center) · sidebar (right).
-          Mobile stacks naturally: repos, assistant, sidebar. */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 xl:gap-8">
         {/* Main Repositories List */}
-        <div className="lg:col-span-5 space-y-6">
+        <div className="lg:col-span-8 space-y-6">
           {/* Search Bar */}
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-txt-tertiary" />
@@ -157,15 +154,8 @@ export const Dashboard: React.FC<DashboardProps> = () => {
           )}
         </div>
 
-        {/* Center: the assistant */}
-        <div className="lg:col-span-4">
-          <div className="lg:sticky lg:top-20">
-            <HomeChat />
-          </div>
-        </div>
-
         {/* Sidebar: Spaces & Quick Info */}
-        <div className="lg:col-span-3 space-y-6">
+        <div className="lg:col-span-4 space-y-6">
           {/* Spaces Sidebar Section */}
           <div className="border border-border-subtle rounded-lg bg-surface-canvas p-4 space-y-3">
             <div className="flex items-center justify-between">
