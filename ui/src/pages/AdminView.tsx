@@ -25,7 +25,7 @@ export const AdminView: React.FC = () => {
     setAuthBlocked(nextState);
     setRegistrationHidden(nextState);
     setMsg(nextState
-      ? 'Registration page is now hidden in this browser. This does NOT stop the API — set GITNESS_USER_SIGNUP_ENABLED=false on the server for real enforcement.'
+      ? 'Registration page is now hidden in this browser. This does NOT stop the API — block POST /api/v1/register at your reverse proxy for real enforcement.'
       : 'Registration page is visible again in this browser.');
     setTimeout(() => setMsg(''), 6000);
   };
