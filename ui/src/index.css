@@ -19,6 +19,12 @@
   }
 }
 
+/* Agent workspace — immersive full-viewport canvas under the sticky navbar. */
+.agent-shell {
+  height: calc(100dvh - 3.5rem);
+  min-height: 28rem;
+}
+
 /* HomeChat — animated open/close of the session body.
    The wrapper animates grid-template-rows (0fr -> 1fr) which drives a
    smooth height transition without magic max-height numbers; the inner

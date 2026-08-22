@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Navbar } from './components/Navbar';
 import { Dashboard } from './pages/Dashboard';
 import { SpaceView } from './pages/SpaceView';
@@ -50,33 +50,49 @@ export const App: React.FC = () => {
 
   return (
     <Router>
-      <div className="min-h-screen bg-surface-base flex flex-col font-sans">
-        <Navbar currentUser={currentUser} onLogout={handleLogout} />
+      <AppShell currentUser={currentUser} onLogout={handleLogout} setCurrentUser={setCurrentUser} />
+    </Router>
+  );
+};
 
-        <main className="flex-1">
-          <Routes>
-            <Route path="/" element={currentUser ? <Dashboard user={currentUser} /> : <Navigate to="/login" />} />
-            <Route path="/new-repo" element={currentUser ? <NewRepo /> : <Navigate to="/login" />} />
-            <Route path="/new-space" element={currentUser ? <NewSpace /> : <Navigate to="/login" />} />
-            <Route path="/settings" element={currentUser ? <Settings user={currentUser} /> : <Navigate to="/login" />} />
-            <Route path="/admin" element={currentUser && currentUser.admin ? <AdminView /> : <Navigate to="/" />} />
-            <Route path="/plugins" element={currentUser ? <Plugins /> : <Navigate to="/login" />} />
-            <Route path="/agent" element={currentUser ? <AgentWorkspace /> : <Navigate to="/login" />} />
-            <Route path="/:space/:repo/assistant" element={currentUser ? <AssistantPage /> : <Navigate to="/login" />} />
-            
-            <Route path="/login" element={currentUser ? <Navigate to="/" /> : <Login onLoginSuccess={setCurrentUser} />} />
-            <Route path="/register" element={currentUser ? <Navigate to="/" /> : <Register onRegisterSuccess={setCurrentUser} />} />
+const AppShell: React.FC<{
+  currentUser: User | null;
+  onLogout: () => void;
+  setCurrentUser: (u: User | null) => void;
+}> = ({ currentUser, onLogout, setCurrentUser }) => {
+  const location = useLocation();
+  // Agent workspace is an immersive surface — no site footer, main fills the viewport.
+  const immersive = location.pathname === '/agent';
 
-            <Route path="/:space" element={<SpaceView />} />
-            <Route path="/:space/:repo" element={<RepoView />} />
-            <Route path="*" element={<Navigate to="/" />} />
-          </Routes>
-        </main>
+  return (
+    <div className="min-h-screen bg-surface-base flex flex-col font-sans">
+      <Navbar currentUser={currentUser} onLogout={onLogout} />
 
+      <main className={immersive ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1'}>
+        <Routes>
+          <Route path="/" element={currentUser ? <Dashboard user={currentUser} /> : <Navigate to="/login" />} />
+          <Route path="/new-repo" element={currentUser ? <NewRepo /> : <Navigate to="/login" />} />
+          <Route path="/new-space" element={currentUser ? <NewSpace /> : <Navigate to="/login" />} />
+          <Route path="/settings" element={currentUser ? <Settings user={currentUser} /> : <Navigate to="/login" />} />
+          <Route path="/admin" element={currentUser && currentUser.admin ? <AdminView /> : <Navigate to="/" />} />
+          <Route path="/plugins" element={currentUser ? <Plugins /> : <Navigate to="/login" />} />
+          <Route path="/agent" element={currentUser ? <AgentWorkspace /> : <Navigate to="/login" />} />
+          <Route path="/:space/:repo/assistant" element={currentUser ? <AssistantPage /> : <Navigate to="/login" />} />
+
+          <Route path="/login" element={currentUser ? <Navigate to="/" /> : <Login onLoginSuccess={setCurrentUser} />} />
+          <Route path="/register" element={currentUser ? <Navigate to="/" /> : <Register onRegisterSuccess={setCurrentUser} />} />
+
+          <Route path="/:space" element={<SpaceView />} />
+          <Route path="/:space/:repo" element={<RepoView />} />
+          <Route path="*" element={<Navigate to="/" />} />
+        </Routes>
+      </main>
+
+      {!immersive && (
         <footer className="border-t border-border-subtle py-4 px-6 text-center font-mono text-[11px] text-txt-tertiary">
           <span>Nixre • Sovereign Code Collaboration • <a href="https://nixre.dev" target="_blank" rel="noreferrer" className="hover:text-txt-brand underline">nixre.dev</a></span>
         </footer>
-      </div>
-    </Router>
+      )}
+    </div>
   );
 };
