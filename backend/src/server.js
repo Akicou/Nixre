@@ -11,8 +11,8 @@
 //   /git/{space}/{repo}.git                                           (Smart HTTP)
 
 import express from 'express';
-import pg from 'pg';
 import { migrate } from './db/migrate.js';
+import { pool as sharedPool } from './db/pool.js';
 import { resolveBearer } from './lib/auth.js';
 import { authRoutes, adminRoutes } from './routes/auth.js';
 import { syncRoutes } from './routes/sync.js';
@@ -28,9 +28,8 @@ import { initSandbox } from './lib/agentSandbox.js';
 import { mkdir, access, constants } from 'node:fs/promises';
 
 const PORT = Number(process.env.PORT || 3002);
-const DATABASE_URL = process.env.DATABASE_URL || 'postgres://nixre:nixre@localhost:5432/nixre';
 
-const pool = new pg.Pool({ connectionString: DATABASE_URL });
+const pool = sharedPool;
 
 // ---------------------------------------------------------------------------
 // Auth middleware — first-party bearer resolution (session or PAT).

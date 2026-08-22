@@ -16,6 +16,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { repoDir } from '../git/repo.js';
@@ -57,7 +58,7 @@ export const TOOL_SCHEMAS = [
   {
     name: 'run_command',
     description:
-      'Run a shell command in the agent sandbox (persistent workspace per conversation) or a fresh clone when no sandbox is available. Use for tests, builds and inspection. cd, env and installs persist between calls in the sandbox. Do not use cat > or interactive redirects — use write_file to create or overwrite files. Output is truncated.',
+      'Run a shell command in the agent sandbox (persistent workspace per conversation) or a fresh clone when no sandbox is available. Use for tests, builds and inspection. cd, env and installs persist between calls in the sandbox. The workspace is a git clone of the repository with the user\'s identity configured — commit and `git push` to publish changes to the hosted repository. Do not use cat > or interactive redirects — use write_file to create or overwrite files. Output is truncated.',
     parameters: {
       type: 'object',
       properties: { command: { type: 'string', description: 'Shell command to run inside the repo workspace' } },
@@ -258,6 +259,54 @@ const BLOCKED = /\brm\s+-rf\s+[/~]|\bmkfs\b|:\(\)\{.*\};:|dd\s+if=\/dev\/[\w]+\s
 /** cat > with no heredoc/pipe waits for stdin and hangs across separate tool calls. */
 const INTERACTIVE_CAT = /^\s*cat\s+>\s*(\S+)?\s*$/;
 
+// --- no-sandbox fallback workspace ------------------------------------------
+//
+// Without Docker there is no persistent sandbox volume — but a fresh temp
+// clone per call loses every write and commit between tool calls. Keep one
+// clone per (user, conversation, repo) instead, reaped after a day idle.
+
+const FALLBACK_WS_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** @type {Map<string, {dir: string, expires: number}>} */
+const fallbackWorkspaces = new Map();
+
+function sweepFallbackWorkspaces() {
+  const now = Date.now();
+  for (const [key, ws] of fallbackWorkspaces) {
+    if (ws.expires > now) continue;
+    fallbackWorkspaces.delete(key);
+    fs.rm(ws.dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function ensureFallbackWorkspace(context, space, repo) {
+  const { userId, conversationId } = context;
+  if (!userId || !conversationId) return null;
+  sweepFallbackWorkspaces();
+  const key = `${userId}:${conversationId}:${space}/${repo}`;
+  let ws = fallbackWorkspaces.get(key);
+  if (ws) {
+    ws.expires = Date.now() + FALLBACK_WS_TTL_MS;
+    return ws.dir;
+  }
+  const parent = path.join(os.tmpdir(), 'nixre-agent-ws', crypto.createHash('sha256').update(key).digest('hex').slice(0, 20));
+  const workdir = path.join(parent, 'repo');
+  await fs.mkdir(parent, { recursive: true });
+  const src = repoDir(space, repo);
+  try {
+    await exec('git', ['clone', '--depth', '1', '--quiet', src, workdir], { timeout: 60_000 });
+  } catch {
+    await exec('git', ['clone', '--quiet', src, workdir], { timeout: 60_000 });
+  }
+  const name = context.user?.name || 'Nixre Agent';
+  const email = context.user?.email || 'agent@nixre.local';
+  await exec('git', ['-C', workdir, 'config', 'user.name', name]).catch(() => {});
+  await exec('git', ['-C', workdir, 'config', 'user.email', email]).catch(() => {});
+  ws = { dir: workdir, expires: Date.now() + FALLBACK_WS_TTL_MS };
+  fallbackWorkspaces.set(key, ws);
+  return ws.dir;
+}
+
 export async function writeFile(space, repo, args, permissions = {}, context = {}) {
   assertRepo(space, repo);
   const p = assertSafePath(args?.path);
@@ -277,29 +326,41 @@ export async function writeFile(space, repo, args, permissions = {}, context = {
         userId,
         conversationId,
         repoPath,
+        user: context.user,
         space,
         repo,
         filePath: p,
         content,
       });
     } catch (err) {
-      console.warn('sandbox write_file failed, falling back to temp clone:', err.message);
+      console.warn('sandbox write_file failed, falling back to fallback workspace:', err.message);
     }
   }
 
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
-  const workdir = path.join(parent, 'repo');
-  try {
-    const src = repoDir(space, repo);
-    try {
-      await exec('git', ['clone', '--depth', '1', '--quiet', src, workdir], { timeout: 60_000 });
-    } catch {
-      await exec('git', ['clone', '--quiet', src, workdir], { timeout: 60_000 });
-    }
+  // Persistent per-conversation workspace when possible; without conversation
+  // context there is nothing to key persistence on, so a throwaway clone is
+  // the best available (the write will not survive).
+  const workdir = await ensureFallbackWorkspace(context, space, repo);
+  if (workdir) {
     const dest = path.join(workdir, p.split('/').join(path.sep));
     await fs.mkdir(path.dirname(dest), { recursive: true });
     await fs.writeFile(dest, content, 'utf8');
     return { output: `Wrote ${content.length} bytes to ${p}` };
+  }
+
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
+  const throwaway = path.join(parent, 'repo');
+  try {
+    const src = repoDir(space, repo);
+    try {
+      await exec('git', ['clone', '--depth', '1', '--quiet', src, throwaway], { timeout: 60_000 });
+    } catch {
+      await exec('git', ['clone', '--quiet', src, throwaway], { timeout: 60_000 });
+    }
+    const dest = path.join(throwaway, p.split('/').join(path.sep));
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.writeFile(dest, content, 'utf8');
+    return { output: `Wrote ${content.length} bytes to ${p} (no conversation workspace — file is temporary)` };
   } finally {
     await fs.rm(parent, { recursive: true, force: true }).catch(() => {});
   }
@@ -323,58 +384,70 @@ export async function runCommand(space, repo, args, _permissions = {}, context =
         userId,
         conversationId,
         repoPath,
+        user: context.user,
         space,
         repo,
         command,
       });
     } catch (err) {
-      console.warn('sandbox run_command failed, falling back to ephemeral clone:', err.message);
+      console.warn('sandbox run_command failed, falling back to fallback workspace:', err.message);
     }
+  }
+
+  // Persistent per-conversation workspace when possible; otherwise the old
+  // ephemeral clone (state does not survive the call).
+  const workdir = await ensureFallbackWorkspace(context, space, repo);
+  if (workdir) {
+    return runShellCommand(command, workdir);
   }
 
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
   // Clone into a path that does not exist yet. `git clone <src> <existing-dir>`
   // fails on some git builds with "destination path already exists" even when
   // mkdtemp left an empty folder — that is the sandbox the agent then cannot find.
-  const workdir = path.join(parent, 'repo');
+  const throwaway = path.join(parent, 'repo');
   try {
     const src = repoDir(space, repo);
     try {
-      await exec('git', ['clone', '--depth', '1', '--quiet', src, workdir], { timeout: 60_000 });
+      await exec('git', ['clone', '--depth', '1', '--quiet', src, throwaway], { timeout: 60_000 });
     } catch {
       // Empty bare repos have no HEAD; shallow clone fails. Full clone still works.
-      await exec('git', ['clone', '--quiet', src, workdir], { timeout: 60_000 });
+      await exec('git', ['clone', '--quiet', src, throwaway], { timeout: 60_000 });
     }
-    const output = await new Promise((resolve, reject) => {
-      const child = spawn('sh', ['-c', command], { cwd: workdir, env: { ...process.env, CI: '1' } });
-      let out = '';
-      let truncated = false;
-      const timer = setTimeout(() => {
-        child.kill('SIGKILL');
-        reject(new Error(`Command timed out after ${MAX_CMD_MS / 1000}s`));
-      }, MAX_CMD_MS);
-      child.stdout.on('data', d => {
-        if (out.length < MAX_CMD_BYTES) out += d.toString();
-        else truncated = true;
-      });
-      child.stderr.on('data', d => {
-        if (out.length < MAX_CMD_BYTES) out += d.toString();
-        else truncated = true;
-      });
-      child.on('error', err => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      child.on('close', code => {
-        clearTimeout(timer);
-        if (truncated) out += `\n… (output truncated at ${MAX_CMD_BYTES} bytes)`;
-        resolve({ output: `exit code: ${code}\n${out.slice(0, MAX_CMD_BYTES)}` });
-      });
-    });
-    return output;
+    return await runShellCommand(command, throwaway);
   } finally {
     await fs.rm(parent, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** Run `command` in `cwd` with a hard timeout and output cap. */
+function runShellCommand(command, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('sh', ['-c', command], { cwd, env: { ...process.env, CI: '1' } });
+    let out = '';
+    let truncated = false;
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`Command timed out after ${MAX_CMD_MS / 1000}s`));
+    }, MAX_CMD_MS);
+    child.stdout.on('data', d => {
+      if (out.length < MAX_CMD_BYTES) out += d.toString();
+      else truncated = true;
+    });
+    child.stderr.on('data', d => {
+      if (out.length < MAX_CMD_BYTES) out += d.toString();
+      else truncated = true;
+    });
+    child.on('error', err => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (truncated) out += `\n… (output truncated at ${MAX_CMD_BYTES} bytes)`;
+      resolve({ output: `exit code: ${code}\n${out.slice(0, MAX_CMD_BYTES)}` });
+    });
+  });
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;

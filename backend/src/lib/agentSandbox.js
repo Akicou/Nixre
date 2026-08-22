@@ -10,8 +10,11 @@
 // git resync, new shell.
 
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { access, constants } from 'node:fs/promises';
 import { repoDir, REPOS_ROOT } from '../git/repo.js';
+import { pool } from '../db/pool.js';
+import { newPatSecret, sha256 } from './auth.js';
 
 const DOCKER_SOCKET = process.env.DOCKER_HOST?.replace(/^unix:\/\//, '') || '/var/run/docker.sock';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'nixre-agent-sandbox:latest';
@@ -21,11 +24,16 @@ const VOLUME_TTL_MS = Number(process.env.SANDBOX_VOLUME_TTL_MS || 7 * 24 * 60 * 
 const MAX_CMD_MS = Number(process.env.SANDBOX_CMD_MS || 120_000);
 const MAX_CMD_BYTES = 32 * 1024;
 const WORK_DIR = '/workspace/repo';
+const CREDS_FILE = '/workspace/.agent-creds';
+// Where the sandbox reaches core's git smart-HTTP endpoint. The sandbox
+// container is attached to core's docker network so this name resolves.
+const CORE_GIT_URL = process.env.CORE_URL || 'http://nixre-core:3002';
 const MARKER = '__NIXRE_EXIT__';
 
 let docker = null;
 let dockerChecked = false;
 let dockerAvailable = false;
+let sweeperStarted = false;
 
 /** @type {Map<string, { stream: import('stream').Duplex, buf: string, waiters: Array<{ resolve: Function, reject: Function, timer: NodeJS.Timeout }>, busy: boolean }>} */
 const shells = new Map();
@@ -49,9 +57,11 @@ function volumeName(key) {
   return `nixre-sb-vol-${hashId(key)}`;
 }
 
+// Only success is cached: the docker socket can answer a beat after the
+// container starts (Docker Desktop proxies it), and a failed check at boot
+// must not disable the sandbox for the process lifetime.
 export async function isSandboxEnabled() {
-  if (dockerChecked) return dockerAvailable;
-  dockerChecked = true;
+  if (dockerAvailable) return true;
   try {
     await access(DOCKER_SOCKET, constants.R_OK | constants.W_OK);
     const mod = await import('dockerode');
@@ -59,9 +69,14 @@ export async function isSandboxEnabled() {
     docker = new Docker({ socketPath: DOCKER_SOCKET });
     await docker.ping();
     dockerAvailable = true;
+    dockerChecked = true;
   } catch {
     docker = null;
     dockerAvailable = false;
+  }
+  if (dockerAvailable && !sweeperStarted) {
+    sweeperStarted = true;
+    startSandboxSweeper();
   }
   return dockerAvailable;
 }
@@ -123,11 +138,46 @@ async function ensureVolume(name) {
   }
 }
 
-async function syncRepo(containerId, space, repo) {
+// The sandbox pushes back into the hosted repo over core's git smart-HTTP
+// endpoint (the ro mount is fetch-only). Auth is a short-lived PAT minted for
+// the conversation's user, rewritten on every sync; it expires with the volume.
+async function mintSandboxToken(key, uid) {
+  const id = `agent-sbx-${hashId(key)}`;
+  const token = `nxp_${id}_${newPatSecret()}`;
+  const now = Date.now();
+  await pool.query('DELETE FROM tokens WHERE id = $1', [id]);
+  await pool.query(
+    'INSERT INTO tokens (id, user_uid, secret_hash, issued_at, expires_at) VALUES ($1, $2, $3, $4, $5)',
+    [id, uid, sha256(token), now, now + VOLUME_TTL_MS + 24 * 60 * 60 * 1000],
+  );
+  return token;
+}
+
+async function syncRepo(containerId, space, repo, key, user) {
   const bare = repoDir(space, repo);
+  const uid = user?.uid || '';
+  const name = user?.name || 'Nixre Agent';
+  const email = user?.email || 'agent@nixre.local';
+  let credsSetup = '';
+  try {
+    const token = await mintSandboxToken(key, uid);
+    // Credential helper serves the PAT only to core's endpoint; the push URL
+    // and `git remote -v` stay clean (no token in .git/config or transcripts).
+    credsSetup = `
+printf 'username=%s\\npassword=%s\\n' ${JSON.stringify(uid)} ${JSON.stringify(token)} > ${CREDS_FILE}
+chmod 600 ${CREDS_FILE}
+git -C "$WORK" config credential.${CORE_GIT_URL}.helper "!f() { cat ${CREDS_FILE} 2>/dev/null; }; f"
+git -C "$WORK" remote set-url --push origin ${JSON.stringify(`${CORE_GIT_URL}/git/${space}/${repo}.git`)}
+`;
+  } catch (err) {
+    // DB unavailable — workspace still clones/fetches; push stays disabled.
+    console.warn('sandbox token mint failed, push disabled:', err.message);
+  }
   const script = `set -eu
 BARE=${JSON.stringify(bare)}
 WORK=${JSON.stringify(WORK_DIR)}
+# The ro-mounted bare repos are owned by a different uid than the sandbox user.
+git config --global --add safe.directory '*' >/dev/null 2>&1 || true
 mkdir -p "$(dirname "$WORK")"
 if [ ! -d "$WORK/.git" ]; then
   git clone --quiet "$BARE" "$WORK"
@@ -135,18 +185,57 @@ else
   git -C "$WORK" fetch --quiet "$BARE" '+HEAD:refs/remotes/nixre/upstream' 2>/dev/null || git clone --quiet "$BARE" "$WORK"
   git -C "$WORK" reset --hard refs/remotes/nixre/upstream 2>/dev/null || git -C "$WORK" reset --hard HEAD
 fi
-`;
+git -C "$WORK" config user.name ${JSON.stringify(name)}
+git -C "$WORK" config user.email ${JSON.stringify(email)}
+${credsSetup}`;
   const { output, code } = await dockerExec(containerId, ['bash', '-lc', script]);
   if (code !== 0) {
     throw new Error(`Git sync failed (exit ${code}): ${output.slice(0, 400)}`);
   }
 }
 
-async function createContainer(key, userId, conversationId, repoPath, space, repo) {
+// The sandbox needs to reach core (git push over smart HTTP). Attach it to the
+// same docker network core runs on; resolved once from core's own container.
+let coreNetworkName;
+async function coreNetwork() {
+  if (coreNetworkName !== undefined) return coreNetworkName;
+  coreNetworkName = '';
+  try {
+    const info = await docker.getContainer(os.hostname()).inspect();
+    const names = Object.keys(info.NetworkSettings?.Networks || {});
+    coreNetworkName = names[0] || '';
+  } catch {
+    /* not containerized or docker unreachable — sandbox stays on default bridge */
+  }
+  return coreNetworkName;
+}
+
+// The sandbox needs /data/repos mounted from the same place core gets it.
+// Bind sources are resolved by the docker daemon on the HOST — core's own
+// mount point (/data/repos) is usually not a valid host path (compose binds
+// ./data/repos, Docker Desktop maps a Windows path). Inspect core's own
+// container and use the mount's Source instead.
+let reposHostPath;
+async function reposBindSource() {
+  if (reposHostPath !== undefined) return reposHostPath;
+  reposHostPath = REPOS_ROOT;
+  try {
+    const info = await docker.getContainer(os.hostname()).inspect();
+    const mount = (info.Mounts || []).find(m => m.Destination === REPOS_ROOT);
+    if (mount?.Source) reposHostPath = mount.Source;
+  } catch {
+    /* not containerized — REPOS_ROOT is already a host path */
+  }
+  return reposHostPath;
+}
+
+async function createContainer(key, userId, conversationId, repoPath, space, repo, user) {
   const name = containerName(key);
   const vol = volumeName(key);
   await ensureVolume(vol);
   touch(key);
+  const net = await coreNetwork();
+  const reposSource = await reposBindSource();
   const container = await docker.createContainer({
     name,
     Image: SANDBOX_IMAGE,
@@ -159,19 +248,27 @@ async function createContainer(key, userId, conversationId, repoPath, space, rep
       'nixre.lastActivity': String(Date.now()),
     },
     HostConfig: {
-      Binds: [`${vol}:/workspace`, `${REPOS_ROOT}:/data/repos:ro`],
+      Binds: [`${vol}:/workspace`, `${reposSource}:/data/repos:ro`],
       Memory: Number(process.env.SANDBOX_MEMORY_BYTES || 2 * 1024 * 1024 * 1024),
       NanoCpus: Number(process.env.SANDBOX_NANO_CPUS || 2 * 1e9),
       Init: true,
     },
+    ...(net ? { NetworkingConfig: { EndpointsConfig: { [net]: {} } } } : {}),
     Cmd: ['sleep', 'infinity'],
   });
   await container.start();
-  await syncRepo(container.id, space, repo);
+  try {
+    await syncRepo(container.id, space, repo, key, user);
+  } catch (err) {
+    // A half-provisioned container (clone failed) would be reused without a
+    // resync — remove it so the next attempt provisions cleanly.
+    await container.remove({ force: true }).catch(() => {});
+    throw err;
+  }
   return container.id;
 }
 
-async function ensureRunningContainer(key, userId, conversationId, repoPath, space, repo) {
+async function ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user) {
   const name = containerName(key);
   let container;
   let created = false;
@@ -186,7 +283,7 @@ async function ensureRunningContainer(key, userId, conversationId, repoPath, spa
 
   if (!container) {
     try {
-      const id = await createContainer(key, userId, conversationId, repoPath, space, repo);
+      const id = await createContainer(key, userId, conversationId, repoPath, space, repo, user);
       container = docker.getContainer(id);
       created = true;
     } catch (err) {
@@ -207,7 +304,7 @@ async function ensureRunningContainer(key, userId, conversationId, repoPath, spa
   }
 
   if (created || resumed) {
-    await syncRepo(info.Id, space, repo);
+    await syncRepo(info.Id, space, repo, key, user);
     closeShell(key);
   }
 
@@ -326,7 +423,7 @@ async function execInShell(key, containerId, command) {
 }
 
 /** Keep the sandbox awake while the user is chatting (even before tools run). */
-export async function touchSandbox({ userId, conversationId, repoPath, space, repo }) {
+export async function touchSandbox({ userId, conversationId, repoPath, space, repo, user }) {
   if (!(await isSandboxEnabled())) return;
   if (!userId || !conversationId || !repoPath) return;
   const key = sessionKey(userId, conversationId, repoPath);
@@ -335,20 +432,20 @@ export async function touchSandbox({ userId, conversationId, repoPath, space, re
     const container = docker.getContainer(containerName(key));
     const info = await container.inspect();
     if (info.State.Status !== 'running') {
-      await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo);
+      await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user);
     }
   } catch {
     /* no container yet — created on first run_command */
   }
 }
 
-export async function runCommandInSandbox({ userId, conversationId, repoPath, space, repo, command }) {
+export async function runCommandInSandbox({ userId, conversationId, repoPath, space, repo, user, command }) {
   if (!(await isSandboxEnabled())) {
     throw new Error('Agent sandbox unavailable (Docker socket not accessible)');
   }
   const key = sessionKey(userId, conversationId, repoPath);
   touch(key);
-  const containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo);
+  const containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user);
   return execInShell(key, containerId, command);
 }
 
@@ -358,6 +455,7 @@ export async function writeFileInSandbox({
   repoPath,
   space,
   repo,
+  user,
   filePath,
   content,
 }) {
@@ -366,7 +464,7 @@ export async function writeFileInSandbox({
   }
   const key = sessionKey(userId, conversationId, repoPath);
   touch(key);
-  const containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo);
+  const containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user);
   const rel = String(filePath || '').replace(/\\/g, '/');
   const target = `${WORK_DIR}/${rel}`;
   const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : WORK_DIR;
@@ -442,9 +540,8 @@ export async function initSandbox() {
   const ok = await isSandboxEnabled();
   if (ok) {
     console.log(`Agent sandbox enabled (image=${SANDBOX_IMAGE}, idle=${IDLE_MS / 1000}s)`);
-    startSandboxSweeper();
   } else {
-    console.log('Agent sandbox disabled — run_command uses ephemeral clones (no Docker socket)');
+    console.log('Agent sandbox not reachable yet — run_command falls back until Docker responds');
   }
   return ok;
 }

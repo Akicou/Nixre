@@ -72,7 +72,7 @@ export async function resolveBearer(pool, token) {
   if (pat.rows.length > 0) {
     const row = pat.rows[0];
     if (row.blocked) return null;
-    if (Number(row.expires) < Date.now()) return null;
+    if (Number(row.expires_at) < Date.now()) return null;
     return { kind: 'pat', user: rowToUser(row) };
   }
 

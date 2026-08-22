@@ -532,6 +532,11 @@ export function aiRoutes(pool, authenticate) {
     try {
       const result = await executeTool(tool, space, repo, args, permissions, {
         userId: uid,
+        user: {
+          uid,
+          name: req.auth.user.display_name,
+          email: req.auth.user.email,
+        },
         conversationId: conversationId || undefined,
         repoPath,
       });
@@ -554,7 +559,14 @@ export function aiRoutes(pool, authenticate) {
     const space = repoPath.slice(0, slash);
     const repo = repoPath.slice(slash + 1);
     try {
-      await touchSandbox({ userId: uid, conversationId, repoPath, space, repo });
+      await touchSandbox({
+        userId: uid,
+        user: { uid, name: req.auth.user.display_name, email: req.auth.user.email },
+        conversationId,
+        repoPath,
+        space,
+        repo,
+      });
       res.json({ ok: true });
     } catch (err) {
       res.status(400).json({ message: err.message });
