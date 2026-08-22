@@ -11,19 +11,11 @@
 //   2. User toggle           - an individual user turns the plugin on. Every
 //      plugin is disabled by default (enabledByDefault = false).
 //
-// This mirrors the existing authLock.ts pattern: the UI holds preferences in
-// localStorage, while real enforcement lives on the server. There is deliberately
-// no REST endpoint here - Gitness (the backend) exposes none of this, so state
-// stays local until a backend is added. See the `backendHooks` note per plugin.
+// A plugin is only listed here if it ships a real backend path: its UI writes
+// to nixre-core and the server enforces it. There are no prefs-only stubs.
 
 import {
   Bot,
-  Workflow,
-  ShieldAlert,
-  Bug,
-  MessageSquare,
-  Webhook,
-  Puzzle,
   LucideIcon,
 } from 'lucide-react';
 
@@ -90,17 +82,21 @@ export interface Plugin {
 
 // ---------------------------------------------------------------------------
 // Nixre Assistant - AI copilot for agentic engineering work.
-// Runs inside an isolated Docker environment and is given a tool set. The active
-// profile selects the AI provider; per-repo profiles control what it may do.
+//
+// The tool set below is exactly what nixre-core's /ai/tools endpoint
+// implements (backend/src/lib/agentTools.js). Read tools work against the
+// bare repo on disk; run_command execs a shell command in a fresh clone of
+// the repo; web_search queries the web. The active profile selects the AI
+// provider; per-repo profiles control what it may do.
 // ---------------------------------------------------------------------------
 
 const assistantTools: PluginTool[] = [
-  { name: 'file_read', description: 'Read a file. Paths pointing to images are read analytically (multimodal).' },
-  { name: 'file_write', description: 'Write or modify files in the repository.' },
-  { name: 'bash', description: 'Run shell commands inside the isolated Docker agentic sandbox.' },
-  { name: 'run_tests', description: 'Run the repo build, tests and lint inside the Docker sandbox.' },
+  { name: 'list_files', description: 'List all file paths in the repository (default branch).' },
+  { name: 'read_file', description: 'Read a file from the repository. Paths pointing to images are read analytically (multimodal).' },
+  { name: 'search_code', description: 'Regex search across all tracked files. Returns matching lines as path:line: text.' },
+  { name: 'run_command', description: 'Run a shell command in a fresh clone of the repository (tests, builds, inspection).' },
+  { name: 'show_images', description: 'Display one or more images from the repository inline in the chat.' },
   { name: 'web_search', description: 'Search the web for up-to-date docs, APIs and fixes.' },
-  { name: 'git', description: 'Create branches, commit, push and open pull requests.' },
 ];
 
 const providerFields: ProfileField[] = [
@@ -136,25 +132,6 @@ const providerFields: ProfileField[] = [
     default: 'deepseek-chat',
   },
   {
-    key: 'temperature',
-    label: 'Temperature',
-    description: 'Lower = focused, higher = more creative.',
-    type: 'range',
-    min: 0,
-    max: 2,
-    step: 0.1,
-    default: 0.2,
-  },
-  {
-    key: 'maxTokens',
-    label: 'Max Output Tokens',
-    type: 'number',
-    min: 256,
-    max: 128000,
-    step: 256,
-    default: 8192,
-  },
-  {
     key: 'reasoningLevel',
     label: 'Reasoning Level',
     description: 'How much the model thinks before answering. Higher = deeper reasoning, slower.',
@@ -172,30 +149,9 @@ const providerFields: ProfileField[] = [
 ];
 
 const accessFields: ProfileField[] = [
-  {
-    key: 'accessLevel',
-    label: 'Access Level',
-    description: 'How much the assistant may do in this repository.',
-    type: 'select',
-    options: ['read-only', 'read-write', 'full-agent'],
-    default: 'read-only',
-  },
-  { key: 'canEditFiles', label: 'Edit files', type: 'toggle', default: false },
-  { key: 'canRunBash', label: 'Run bash (Docker sandbox)', type: 'toggle', default: false },
+  { key: 'canRunBash', label: 'Run shell commands', description: 'Run shell commands in a fresh clone of the repo.', type: 'toggle', default: false },
   { key: 'canRunTests', label: 'Run tests / build', type: 'toggle', default: false },
   { key: 'canSearchWeb', label: 'Search the web', type: 'toggle', default: false },
-  { key: 'canPush', label: 'Push commits / open PRs', type: 'toggle', default: false },
-  { key: 'canMerge', label: 'Merge pull requests', type: 'toggle', default: false },
-  {
-    key: 'autoMergeBranch',
-    label: 'Auto-merge target branch',
-    description: 'Leave blank to disable the merge gate. The assistant will test a PR into this branch and only merge when everything passes.',
-    type: 'text',
-    placeholder: 'main',
-    default: '',
-  },
-  { key: 'autoMergeOnGreen', label: 'Auto-merge when checks pass', type: 'toggle', default: false },
-  { key: 'autoFixBugs', label: 'Auto-fix bugs it finds', type: 'toggle', default: false },
   {
     key: 'allowedPaths',
     label: 'Allowed paths',
@@ -211,106 +167,15 @@ const accessFields: ProfileField[] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// The 6 additional invented plugins.
-// ---------------------------------------------------------------------------
-
-const ciFormFields: ProfileField[] = [
-  {
-    key: 'triggerBranches',
-    label: 'Trigger branches',
-    description: 'One glob per line. Blank = every branch.',
-    type: 'textarea',
-    default: '',
-  },
-  {
-    key: 'pipeline',
-    label: 'Default pipeline',
-    type: 'textarea',
-    placeholder: '# build\nnpm install && npm run build\n# test\nnpm test',
-    default: '',
-  },
-  { key: 'failOnWarnings', label: 'Fail on warnings', type: 'toggle', default: false },
-];
-
-const securityFormFields: ProfileField[] = [
-  {
-    key: 'severity',
-    label: 'Minimum severity',
-    type: 'select',
-    options: ['info', 'low', 'medium', 'high', 'critical'],
-    default: 'medium',
-  },
-  { key: 'scanSecrets', label: 'Scan for exposed secrets', type: 'toggle', default: true },
-  { key: 'scanDeps', label: 'Scan dependencies for CVEs', type: 'toggle', default: true },
-  { key: 'scanSast', label: 'Static analysis (SAST)', type: 'toggle', default: true },
-  {
-    key: 'failOnCritical',
-    label: 'Block merge on critical/high findings',
-    type: 'toggle',
-    default: true,
-  },
-];
-
-const issuesFormFields: ProfileField[] = [
-  {
-    key: 'defaultTemplate',
-    label: 'Default issue template',
-    type: 'textarea',
-    placeholder: '## What\n\n## Expected\n## Actual',
-    default: '',
-  },
-  { key: 'requireTemplate', label: 'Require a template', type: 'toggle', default: false },
-  { key: 'publicIssues', label: 'Allow public issue comments', type: 'toggle', default: false },
-];
-
-const reviewFormFields: ProfileField[] = [
-  { key: 'autoAssign', label: 'Auto-assign reviewers', type: 'toggle', default: false },
-  { key: 'requiredReviewers', label: 'Required reviewers before merge', type: 'number', min: 0, max: 10, step: 1, default: 1 },
-  { key: 'wipAllowed', label: 'Allow WIP pull requests', type: 'toggle', default: true },
-];
-
-const membersFormFields: ProfileField[] = [
-  {
-    key: 'defaultRole',
-    label: 'New member default role',
-    type: 'select',
-    options: ['reader', 'reporter', 'developer', 'maintainer', 'owner'],
-    default: 'reader',
-  },
-  { key: 'allowExternal', label: 'Allow members outside the space owner', type: 'toggle', default: false },
-];
-
-const webhookFormFields: ProfileField[] = [
-  {
-    key: 'url',
-    label: 'Callback URL',
-    type: 'text',
-    placeholder: 'https://example.com/hooks/nixre',
-    default: '',
-  },
-  { key: 'onPush', label: 'on push', type: 'toggle', default: true },
-  { key: 'onPullRequest', label: 'on pull request', type: 'toggle', default: true },
-  { key: 'onIssue', label: 'on issue', type: 'toggle', default: false },
-  {
-    key: 'secret',
-    label: 'Signing secret',
-    description: 'Used to sign the payload so receivers can verify it.',
-    type: 'secret',
-    placeholder: 'shared-secret',
-    default: '',
-  },
-];
-
 export const PLUGINS: Plugin[] = [
   {
     id: 'nixre-assistant',
     name: 'Nixre Assistant',
     description:
-      'AI copilot for agentic engineering. Runs in an isolated Docker environment with file, shell, test, web and git tools. Per-repo access profiles decide what it may do, including PR merge gates and auto-fixes.',
+      'AI copilot for agentic engineering. Reads files, searches code, shows images, runs shell commands in a fresh clone of the repo, and searches the web. Per-repo access profiles decide what it may do.',
     icon: Bot,
     category: 'AI',
-    tags: ['copilot', 'agentic', 'docker', 'automation'],
+    tags: ['copilot', 'agentic', 'automation'],
     enabledByDefault: false,
     availableByDefault: false,
     hasForm: false,
@@ -319,90 +184,6 @@ export const PLUGINS: Plugin[] = [
     tools: assistantTools,
     providerFields,
     accessFields,
-  },
-  {
-    id: 'ci-cd-pipelines',
-    name: 'CI/CD Pipelines',
-    description:
-      'Surface Gitness CI runs in the UI: trigger and re-run pipelines, watch status and read live logs without leaving Nixre.',
-    icon: Workflow,
-    category: 'CI/CD',
-    tags: ['continuous-integration', 'gitness', 'build'],
-    enabledByDefault: false,
-    availableByDefault: false,
-    hasForm: true,
-    hasProfile: false,
-    profileFields: ciFormFields,
-  },
-  {
-    id: 'security-scanner',
-    name: 'Security Scanner',
-    description:
-      'Scan repositories and pull requests for exposed secrets, vulnerable dependencies and static-analysis issues.',
-    icon: ShieldAlert,
-    category: 'Security',
-    tags: ['sast', 'secrets', 'cve', 'vulnerability'],
-    enabledByDefault: false,
-    availableByDefault: false,
-    hasForm: true,
-    hasProfile: false,
-    profileFields: securityFormFields,
-  },
-  {
-    id: 'issues-tracker',
-    name: 'Issues Tracker',
-    description:
-      'Create, list, assign, label and close issues directly from a repository.',
-    icon: Bug,
-    category: 'Project Management',
-    tags: ['issues', 'tracking', 'projects'],
-    enabledByDefault: false,
-    availableByDefault: false,
-    hasForm: true,
-    hasProfile: false,
-    profileFields: issuesFormFields,
-  },
-  {
-    id: 'code-review',
-    name: 'Code Review',
-    description:
-      'Inline, line-level review threads on pull requests with auto-assignment and required reviewers.',
-    icon: MessageSquare,
-    category: 'Review',
-    tags: ['review', 'pull-requests', 'inline'],
-    enabledByDefault: false,
-    availableByDefault: false,
-    hasForm: true,
-    hasProfile: false,
-    profileFields: reviewFormFields,
-  },
-  {
-    id: 'members-access',
-    name: 'Members & Access',
-    description:
-      'Manage space members, roles and per-repository permissions with reusable role profiles.',
-    icon: Webhook,
-    category: 'Administration',
-    tags: ['members', 'roles', 'permissions', 'teams'],
-    enabledByDefault: false,
-    availableByDefault: false,
-    hasForm: true,
-    hasProfile: false,
-    profileFields: membersFormFields,
-  },
-  {
-    id: 'webhooks-integrations',
-    name: 'Webhooks & Integrations',
-    description:
-      'Subscribe repository events to external URLs with signed payloads for Slack, Discord and more.',
-    icon: Puzzle,
-    category: 'Integrations',
-    tags: ['webhooks', 'slack', 'discord', 'notifications'],
-    enabledByDefault: false,
-    availableByDefault: false,
-    hasForm: true,
-    hasProfile: false,
-    profileFields: webhookFormFields,
   },
 ];
 

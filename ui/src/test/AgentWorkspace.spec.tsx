@@ -46,8 +46,6 @@ vi.mock('../lib/assistantProfiles', async importOriginal => {
       provider: 'deepseek',
       baseUrl: '',
       model: 'deepseek-chat',
-      temperature: 0.2,
-      maxTokens: 8192,
       reasoningLevel: 'medium',
       interleavedReasoning: true,
       keyConfigured: true,

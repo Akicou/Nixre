@@ -17,7 +17,7 @@ Nixre is a modern open-source Git forge that is **100% sovereign end to end**: i
 - **📡 Signed Webhooks**: subscribe `push` and `pull_request` events to external URLs; deliveries are HMAC-SHA256 signed (`X-Nixre-Signature`) with automatic retries and a delivery log.
 - **📁 Spaces & Organizations**: multi-tenant workspaces with membership-based access control.
 - **🔐 Personal Access Tokens & SSH Keys**: mint PATs (returned once, stored hashed) and manage SSH public keys with fingerprints.
-- **🧩 Plugin System**: bundled plugins that stay inert until enabled — AI engineering copilot (Nixre Assistant), security scanning, issues, code review, and more. All plugin state is account-scoped and server-persisted.
+- **🧩 Plugin System**: bundled plugins that stay inert until enabled — the Nixre Assistant, an AI engineering copilot. All plugin state is account-scoped and server-persisted.
 
 Plugins are activated behind a two-layer gate: (1) the operator enables a plugin for the instance, and (2) each user toggles it on from **Plugins** (`/plugins`). Every plugin is disabled by default.
 
@@ -138,18 +138,16 @@ A plugin is only *live* when **both** allow it. All activation state, plugin con
 ### Bundled plugins
 | Plugin | What it does | Configuration |
 | --- | --- | --- |
-| **Nixre Assistant** | AI copilot for agentic engineering work. Add **multiple providers** — DeepSeek, OpenAI, Anthropic, Ollama, or any OpenAI-compatible endpoint — each validated against the live provider with its model list fetched automatically; you pick which models are enabled for chat and which provider is active. API keys are stored **encrypted server-side** (never sent to the browser). Streaming chat in four modes (Ask, Plan, Agent, Debug) with configurable reasoning levels and interleaved thinking, available on the dashboard and per-repo; chat requests route to the provider that owns the selected model. Per-repo profiles choose what the assistant may do. A validated provider is required — there is no offline fallback. | per-repo profile (`/plugins` + repo **Settings**) |
-| **CI/CD Pipelines** | Webhook-based pipeline status surface — point your CI at a Nixre webhook and surface runs in the UI. | settings form |
-| **Security Scanner** | Scan repos/PRs for secrets, dependency CVEs, and static-analysis issues. | settings form |
-| **Issues Tracker** | Create, list, assign, label and close issues. | settings form |
-| **Code Review** | Inline, line-level review threads with auto-assignment and required reviewers. | settings form |
-| **Members & Access** | Manage space members, roles, and per-repo permissions. | settings form |
-| **Webhooks & Integrations** | Subscribe repo events to signed external URLs (Slack, Discord, …). | settings form |
+| **Nixre Assistant** | AI copilot for agentic engineering work. Add **multiple providers** — DeepSeek, OpenAI, Anthropic, Ollama, or any OpenAI-compatible endpoint — each validated against the live provider with its model list fetched automatically; you pick which models are enabled for chat and which provider is active. API keys are stored **encrypted server-side** (never sent to the browser). Streaming chat in four modes (Ask, Plan, Agent, Debug) with configurable reasoning levels and interleaved thinking, available on the dashboard and per-repo; chat requests route to the provider that owns the selected model. The agent can read files, search code, show images, run shell commands in a fresh clone of the repo, and search the web — each gated by a per-repo access profile. A validated provider is required — there is no offline fallback. | per-repo profile (`/plugins` + repo **Settings**) |
+
+Everything else a forge needs is a first-class feature, not a plugin: **webhooks** (signed, with retries and a delivery log), **spaces & members**, **pull requests**, and **SSH keys / PATs** all live in nixre-core directly.
 
 ### Adding a plugin
-1. Describe it in `ui/src/lib/plugins.ts` (id, name, icon, category, tools, `profileFields`/`accessFields`, and whether it is repo-scoped).
+1. Describe it in `ui/src/lib/plugins.ts` (id, name, icon, category, tools, `providerFields`/`accessFields`, and whether it is repo-scoped).
 2. It appears on `/plugins` once the operator flips the server gate on.
 3. Render its surface with `PluginConfigForm` (generic key/value) or `AssistantProfileForm` (provider + per-repo access).
+
+A plugin is only listed in the registry when it ships a real backend path — its UI writes to nixre-core and the server enforces it. There are no prefs-only stubs.
 
 ---
 

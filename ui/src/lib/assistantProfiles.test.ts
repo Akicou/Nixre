@@ -54,10 +54,10 @@ describe('assistantProfiles (server-backed)', () => {
   it('stores per-repo access profiles keyed by repo path', async () => {
     expect(await getRepoProfile('acme/website')).toBeUndefined();
 
-    await setRepoProfile('acme/website', { ...defaultRepoProfile(), accessLevel: 'full-agent', canMerge: true });
+    await setRepoProfile('acme/website', { ...defaultRepoProfile(), canRunBash: true, canSearchWeb: true });
     const repo = await getRepoProfile('acme/website');
-    expect(repo?.accessLevel).toBe('full-agent');
-    expect(repo?.canMerge).toBe(true);
+    expect(repo?.canRunBash).toBe(true);
+    expect(repo?.canSearchWeb).toBe(true);
 
     await clearRepoProfile('acme/website');
     expect(await getRepoProfile('acme/website')).toBeUndefined();

@@ -1,10 +1,13 @@
-// Agent tools — sandboxed repo operations the assistant can invoke.
+// Agent tools — repo operations the assistant can invoke.
 //
-// Read-only tools (list_files, read_file, search_code) work against the bare
-// repo on disk via git plumbing and are safe to expose to any authenticated
-// user with repo access. run_command clones the repo to a temp dir and execs
-// a shell command there — gated behind the caller's per-repo access profile
-// (canRunBash / canRunTests), with hard timeouts and output caps.
+// Read-only tools (list_files, read_file, search_code, show_images) work
+// against the bare repo on disk via git plumbing and are safe to expose to
+// any authenticated user with repo access. run_command clones the repo to a
+// temp dir and execs a shell command there — gated behind the caller's
+// per-repo access profile (canRunBash / canRunTests), with hard timeouts and
+// output caps. web_search queries the web and is gated behind canSearchWeb.
+// allowedPaths / blockedPaths restrict which repo files the read tools may
+// touch.
 //
 // Every tool returns { output } or throws; the route maps errors to text.
 
@@ -14,6 +17,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { repoDir } from '../git/repo.js';
+import { webSearch } from './webSearch.js';
 
 const exec = promisify(execFile);
 
@@ -73,6 +77,19 @@ export const TOOL_SCHEMAS = [
       required: ['paths'],
     },
   },
+  {
+    name: 'web_search',
+    description:
+      'Search the web for up-to-date documentation, APIs and fixes. Returns a list of results with title, url and a short snippet. Use when the answer is not in the repository.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query' },
+        max_results: { type: 'number', description: 'Maximum results (default 8, max 20)' },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // --- safety -----------------------------------------------------------------
@@ -106,20 +123,66 @@ async function git(dir, args, opts = {}) {
   return stdout;
 }
 
+// --- path allow/block rules ---------------------------------------------------
+
+// One glob per line (from the repo access profile). `*` matches within a
+// segment, `**` crosses `/`, `?` matches a single non-slash char.
+function globToRegex(glob) {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        re += '.*';
+        i++;
+        if (glob[i + 1] === '/') i++; // '**/' matches zero or more dirs
+      } else {
+        re += '[^/]*';
+      }
+    } else if (c === '?') {
+      re += '[^/]';
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${re}$`);
+}
+
+function pathRules(permissions) {
+  const lines = key =>
+    String(permissions?.[key] || '')
+      .split('\n')
+      .map(s => s.trim())
+      .filter(Boolean);
+  return {
+    allowed: lines('allowedPaths').map(globToRegex),
+    blocked: lines('blockedPaths').map(globToRegex),
+  };
+}
+
+function pathAllowed(p, rules) {
+  if (rules.blocked.some(re => re.test(p))) return false;
+  if (rules.allowed.length > 0 && !rules.allowed.some(re => re.test(p))) return false;
+  return true;
+}
+
 // --- read-only tools ----------------------------------------------------------
 
-export async function listFiles(space, repo) {
+export async function listFiles(space, repo, args, permissions = {}) {
   assertRepo(space, repo);
   const out = await git(repoDir(space, repo), ['ls-tree', '-r', '--name-only', 'HEAD']);
-  const files = out.split('\n').filter(Boolean);
+  const rules = pathRules(permissions);
+  const files = out.split('\n').filter(Boolean).filter(p => pathAllowed(p, rules));
   const head = files.slice(0, MAX_LIST);
   const suffix = files.length > MAX_LIST ? `\n… ${files.length - MAX_LIST} more (truncated)` : '';
   return { output: `${files.length} files\n${head.join('\n')}${suffix}` };
 }
 
-export async function readFile(space, repo, args) {
+export async function readFile(space, repo, args, permissions = {}) {
   assertRepo(space, repo);
   const p = assertSafePath(args?.path);
+  const rules = pathRules(permissions);
+  if (!pathAllowed(p, rules)) throw new Error(`Path '${p}' is outside the allowed paths for this repo`);
   const dir = repoDir(space, repo);
   // Reject symlinks / submodules cheaply by checking the tracked mode.
   const ls = await git(dir, ['ls-tree', 'HEAD', '--', p]);
@@ -135,7 +198,7 @@ export async function readFile(space, repo, args) {
   return { output: text };
 }
 
-export async function searchCode(space, repo, args) {
+export async function searchCode(space, repo, args, permissions = {}) {
   assertRepo(space, repo);
   const query = String(args?.query || '');
   if (!query || query.length > 256) throw new Error('Invalid search query');
@@ -157,7 +220,11 @@ export async function searchCode(space, repo, args) {
       throw err;
     }
   }
-  const lines = out.split('\n').filter(Boolean);
+  const rules = pathRules(permissions);
+  const lines = out
+    .split('\n')
+    .filter(Boolean)
+    .filter(line => pathAllowed(line.slice(0, line.indexOf(':')), rules));
   const head = lines.slice(0, MAX_GREP_MATCHES);
   const suffix = lines.length > MAX_GREP_MATCHES ? `\n… ${lines.length - MAX_GREP_MATCHES} more matches (truncated)` : '';
   return { output: `${lines.length} matches\n${head.join('\n')}${suffix}` };
@@ -213,10 +280,15 @@ const MAX_SHOW_IMAGES = 4;
 const MAX_SHOW_BYTES = 2 * 1024 * 1024;
 const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
 
-export async function showImages(space, repo, args) {
+export async function showImages(space, repo, args, permissions = {}) {
   assertRepo(space, repo);
   const raw = Array.isArray(args?.paths) ? args.paths : [];
-  const paths = raw.map(p => String(p || '')).filter(Boolean).slice(0, MAX_SHOW_IMAGES);
+  const rules = pathRules(permissions);
+  const paths = raw
+    .map(p => String(p || ''))
+    .filter(Boolean)
+    .filter(p => pathAllowed(p, rules))
+    .slice(0, MAX_SHOW_IMAGES);
   if (paths.length === 0) throw new Error('paths required');
   const dir = repoDir(space, repo);
   const images = [];
@@ -258,17 +330,32 @@ export async function showImages(space, repo, args) {
 }
 
 const EXECUTORS = {
-  list_files: (space, repo, args) => listFiles(space, repo, args),
-  read_file: (space, repo, args) => readFile(space, repo, args),
-  search_code: (space, repo, args) => searchCode(space, repo, args),
+  list_files: (space, repo, args, permissions) => listFiles(space, repo, args, permissions),
+  read_file: (space, repo, args, permissions) => readFile(space, repo, args, permissions),
+  search_code: (space, repo, args, permissions) => searchCode(space, repo, args, permissions),
   run_command: (space, repo, args) => runCommand(space, repo, args),
-  show_images: (space, repo, args) => showImages(space, repo, args),
+  show_images: (space, repo, args, permissions) => showImages(space, repo, args, permissions),
+  web_search: (space, repo, args) => webSearchTool(args),
 };
+
+// --- web_search (permission-gated) ---------------------------------------------
+
+async function webSearchTool(args) {
+  const query = String(args?.query || '').trim();
+  if (!query || query.length > 500) throw new Error('Invalid search query');
+  const { results } = await webSearch(query, { maxResults: Number(args?.max_results) || undefined });
+  if (results.length === 0) return { output: 'No results.' };
+  const lines = results.map((r, i) => {
+    const snippet = r.content ? `\n   ${r.content.slice(0, 300)}` : '';
+    return `${i + 1}. ${r.title}\n   ${r.url}${snippet}`;
+  });
+  return { output: `${results.length} results\n\n${lines.join('\n\n')}` };
+}
 
 /**
  * Execute a tool for a user. `permissions` comes from the caller's repo
- * access profile: { canEditFiles, canRunBash, canRunTests, ... } — absent
- * profile means read-only tools only.
+ * access profile: { canRunBash, canRunTests, canSearchWeb, allowedPaths,
+ * blockedPaths } — absent profile means read-only tools only.
  */
 export async function executeTool(tool, space, repo, args, permissions = {}) {
   const fn = EXECUTORS[tool];
@@ -277,9 +364,16 @@ export async function executeTool(tool, space, repo, args, permissions = {}) {
     const allowed = permissions.canRunBash === true || permissions.canRunTests === true;
     if (!allowed) {
       throw new Error(
-        "run_command requires the 'Run bash' or 'Run tests' permission for this repo (Assistant → repo settings).",
+        "run_command requires the 'Run shell commands' or 'Run tests' permission for this repo (Assistant → repo settings).",
       );
     }
   }
-  return fn(space, repo, args);
+  if (tool === 'web_search') {
+    if (permissions.canSearchWeb !== true) {
+      throw new Error(
+        "web_search requires the 'Search the web' permission for this repo (Assistant → repo settings).",
+      );
+    }
+  }
+  return fn(space, repo, args, permissions);
 }

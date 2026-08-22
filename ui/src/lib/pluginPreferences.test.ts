@@ -26,16 +26,16 @@ describe('pluginPreferences (server-backed)', () => {
   });
 
   it('toggles server availability', async () => {
-    expect(await isPluginAvailable('ci-cd-pipelines')).toBe(false);
-    await setServerAvailablePlugin('ci-cd-pipelines', true);
-    expect(await isPluginAvailable('ci-cd-pipelines')).toBe(true);
-    expect(await getServerAvailableIds()).toContain('ci-cd-pipelines');
+    expect(await isPluginAvailable('nixre-assistant')).toBe(false);
+    await setServerAvailablePlugin('nixre-assistant', true);
+    expect(await isPluginAvailable('nixre-assistant')).toBe(true);
+    expect(await getServerAvailableIds()).toContain('nixre-assistant');
   });
 
   it('toggles server availability off again', async () => {
-    await setServerAvailablePlugin('issues-tracker', true);
-    await setServerAvailablePlugin('issues-tracker', false);
-    expect(await isPluginAvailable('issues-tracker')).toBe(false);
+    await setServerAvailablePlugin('nixre-assistant', true);
+    await setServerAvailablePlugin('nixre-assistant', false);
+    expect(await isPluginAvailable('nixre-assistant')).toBe(false);
   });
 
   it('toggles user enablement', async () => {
@@ -46,22 +46,22 @@ describe('pluginPreferences (server-backed)', () => {
   });
 
   it('requires both layers for a plugin to be live', async () => {
-    await setServerAvailablePlugin('issues-tracker', true);
-    expect(await isPluginLive('issues-tracker')).toBe(false); // available, not enabled
+    await setServerAvailablePlugin('nixre-assistant', true);
+    expect(await isPluginLive('nixre-assistant')).toBe(false); // available, not enabled
 
-    await setUserEnabledPlugin('issues-tracker', true);
-    expect(await isPluginLive('issues-tracker')).toBe(true);
+    await setUserEnabledPlugin('nixre-assistant', true);
+    expect(await isPluginLive('nixre-assistant')).toBe(true);
 
-    await setUserEnabledPlugin('issues-tracker', false);
-    expect(await isPluginLive('issues-tracker')).toBe(false);
+    await setUserEnabledPlugin('nixre-assistant', false);
+    expect(await isPluginLive('nixre-assistant')).toBe(false);
   });
 
   it('stores plugin configs under their own key', async () => {
-    await setPluginConfig('ci-cd-pipelines', { failOnWarnings: true, triggerBranches: 'main' });
-    const config = await getPluginConfig('ci-cd-pipelines');
-    expect(config.failOnWarnings).toBe(true);
-    expect(config.triggerBranches).toBe('main');
+    await setPluginConfig('nixre-assistant', { canRunBash: true, allowedPaths: 'src/**' });
+    const config = await getPluginConfig('nixre-assistant');
+    expect(config.canRunBash).toBe(true);
+    expect(config.allowedPaths).toBe('src/**');
     // Other plugins are untouched.
-    expect(await getPluginConfig('issues-tracker')).toEqual({});
+    expect(await getPluginConfig('example-plugin')).toEqual({});
   });
 });

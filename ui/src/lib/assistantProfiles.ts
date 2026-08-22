@@ -21,8 +21,6 @@ export interface AssistantProviderProfile {
   provider: string;
   baseUrl: string;
   model: string;
-  temperature: number;
-  maxTokens: number;
   // Reasoning controls (see plugins.ts providerFields).
   reasoningLevel: string; // none | low | medium | high
   interleavedReasoning: boolean; // stream the model's thinking inline
@@ -35,16 +33,9 @@ export interface AssistantProviderProfile {
 }
 
 export interface AssistantRepoProfile {
-  accessLevel: string;
-  canEditFiles: boolean;
   canRunBash: boolean;
   canRunTests: boolean;
   canSearchWeb: boolean;
-  canPush: boolean;
-  canMerge: boolean;
-  autoMergeBranch: string;
-  autoMergeOnGreen: boolean;
-  autoFixBugs: boolean;
   allowedPaths: string;
   blockedPaths: string;
 }
@@ -65,8 +56,6 @@ export function defaultProviderProfile(): AssistantProviderProfile {
     provider: String(d.provider ?? 'deepseek'),
     baseUrl: String(d.baseUrl ?? ''),
     model: String(d.model ?? ''),
-    temperature: Number(d.temperature ?? 0.2),
-    maxTokens: Number(d.maxTokens ?? 8192),
     reasoningLevel: String(d.reasoningLevel ?? 'none'),
     interleavedReasoning: Boolean(d.interleavedReasoning ?? false),
     keyConfigured: false,
@@ -83,15 +72,12 @@ export function defaultRepoProfile(): AssistantRepoProfile {
 // --- provider profile (server-side via /ai) ---------------------------------
 
 function fromAiProfile(p: AiProfile): AssistantProviderProfile {
-  const def = defaultProviderProfile();
   return {
     provider: p.provider,
     baseUrl: p.baseUrl,
     // Model = the active provider's default; models = the enabled subset
     // the user picked for chat (falls back to the provider's full list).
     model: p.model || '',
-    temperature: def.temperature,
-    maxTokens: def.maxTokens,
     reasoningLevel: p.reasoningLevel,
     interleavedReasoning: p.interleavedReasoning,
     keyConfigured: p.keyConfigured,

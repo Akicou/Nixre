@@ -120,9 +120,15 @@ describe('assistantEngine agent loop', () => {
     mockedExec.mockResolvedValue('export const x = 1;');
 
     const profile = {
-      provider: 'deepseek', baseUrl: '', model: 'm', temperature: 0.2, maxTokens: 1024,
-      reasoningLevel: 'none', interleavedReasoning: false,
-      keyConfigured: true, keyMask: null, validatedAt: 1, models: [],
+      provider: 'deepseek',
+      baseUrl: '',
+      model: 'm',
+      reasoningLevel: 'none',
+      interleavedReasoning: false,
+      keyConfigured: true,
+      keyMask: null,
+      validatedAt: 1,
+      models: [],
     };
     const events = [];
     for await (const ev of runRealTurn('check src/index.ts', profile as any, [], {

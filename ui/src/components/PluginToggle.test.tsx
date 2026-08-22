@@ -12,39 +12,39 @@ function mount(
 
 describe('PluginToggle', () => {
   it('renders the plugin name and description', () => {
-    mount('ci-cd-pipelines');
-    expect(screen.getByText('CI/CD Pipelines')).toBeInTheDocument();
-    expect(screen.getByText(/surface Gitness CI runs/i)).toBeInTheDocument();
+    mount('nixre-assistant');
+    expect(screen.getByText('Nixre Assistant')).toBeInTheDocument();
+    expect(screen.getByText(/AI copilot for agentic engineering/i)).toBeInTheDocument();
   });
 
   it('shows the tool chips for the assistant', () => {
     mount('nixre-assistant');
-    expect(screen.getByText('file_read')).toBeInTheDocument();
-    expect(screen.getByText('git')).toBeInTheDocument();
+    expect(screen.getByText('list_files')).toBeInTheDocument();
+    expect(screen.getByText('web_search')).toBeInTheDocument();
   });
 
   it('calls onToggle(true) when the switch is clicked', () => {
     const onToggle = vi.fn();
-    mount('ci-cd-pipelines', { available: true, enabled: false, onToggle });
+    mount('nixre-assistant', { available: true, enabled: false, onToggle });
     fireEvent.click(screen.getByRole('switch'));
     expect(onToggle).toHaveBeenCalledWith(true);
   });
 
-  it('shows Configure for form plugins when available', () => {
+  it('shows Configure for the assistant when available', () => {
     const onConfigure = vi.fn();
-    mount('ci-cd-pipelines', { available: true, enabled: true, onConfigure });
+    mount('nixre-assistant', { available: true, enabled: true, onConfigure });
     fireEvent.click(screen.getByText('Configure'));
     expect(onConfigure).toHaveBeenCalled();
   });
 
   it('marks an active plugin as ACTIVE', () => {
-    mount('ci-cd-pipelines', { available: true, enabled: true });
+    mount('nixre-assistant', { available: true, enabled: true });
     expect(screen.getByText('ACTIVE')).toBeInTheDocument();
   });
 
   it('disables the switch and hides Configure when the server gate is off', () => {
     const onToggle = vi.fn();
-    mount('ci-cd-pipelines', { available: false, enabled: false, onToggle });
+    mount('nixre-assistant', { available: false, enabled: false, onToggle });
     expect(screen.getByRole('switch')).toBeDisabled();
     expect(screen.getByText(/DISABLED/)).toBeInTheDocument();
     expect(screen.queryByText('Configure')).toBeNull();

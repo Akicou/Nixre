@@ -40,17 +40,17 @@ describe('Plugins page', () => {
   it('ships every plugin disabled (DISABLED) before the operator enables anything', async () => {
     mount();
     // Wait for activation layers to load from the (mock) backend.
-    await waitFor(() => expect(screen.getAllByText(/DISABLED/).length).toBe(7));
+    await waitFor(() => expect(screen.getAllByText(/DISABLED/).length).toBe(1));
   });
 
   it('lets the operator enable a plugin at the instance level', async () => {
     mount();
     fireEvent.click(
-      screen.getByRole('switch', { name: /Server availability: CI\/CD Pipelines/ }),
+      screen.getByRole('switch', { name: /Server availability: Nixre Assistant/ }),
     );
     // The PUT is fire-and-forget in the UI, so poll until it lands.
     await waitFor(async () => {
-      expect(await isPluginAvailable('ci-cd-pipelines')).toBe(true);
+      expect(await isPluginAvailable('nixre-assistant')).toBe(true);
     });
     // The plugin card flips from DISABLED to OFF (available, not yet enabled).
     expect(await screen.findByText('OFF')).toBeInTheDocument();
@@ -59,22 +59,22 @@ describe('Plugins page', () => {
   it('activates a plugin once the user toggles it on', async () => {
     mount();
     fireEvent.click(
-      screen.getByRole('switch', { name: /Server availability: Issues Tracker/ }),
+      screen.getByRole('switch', { name: /Server availability: Nixre Assistant/ }),
     );
-    fireEvent.click(pluginSwitch('Create, list, assign, label and close issues'));
+    fireEvent.click(pluginSwitch('AI copilot for agentic engineering'));
     expect(await screen.findByText('ACTIVE')).toBeInTheDocument();
     await waitFor(async () => {
-      expect(await isPluginLive('issues-tracker')).toBe(true);
+      expect(await isPluginLive('nixre-assistant')).toBe(true);
     });
   });
 
-  it('opens the configure drawer for a form plugin', async () => {
+  it('opens the configure drawer for the assistant', async () => {
     mount();
     fireEvent.click(
-      screen.getByRole('switch', { name: /Server availability: CI\/CD Pipelines/ }),
+      screen.getByRole('switch', { name: /Server availability: Nixre Assistant/ }),
     );
     fireEvent.click(screen.getByText('Configure'));
-    // The drawer waits for the config to load from the backend.
-    expect(await screen.findByText('CI/CD Pipelines settings')).toBeInTheDocument();
+    // The drawer renders the provider manager.
+    expect(await screen.findByText(/Add providers, fetch their models/)).toBeInTheDocument();
   });
 });

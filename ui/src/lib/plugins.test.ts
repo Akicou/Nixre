@@ -8,21 +8,22 @@ import {
 } from './plugins';
 
 describe('plugin registry', () => {
-  it('bundles 7 plugins: the assistant plus 6 invented ones', () => {
-    expect(PLUGINS.length).toBe(7);
-    expect(PLUGIN_COUNT).toBe(7);
+  it('bundles exactly the plugins that ship a real backend', () => {
+    expect(PLUGINS.length).toBe(1);
+    expect(PLUGIN_COUNT).toBe(1);
+    expect(PLUGINS[0].id).toBe('nixre-assistant');
   });
 
-  it('gives the Nixre Assistant exactly the documented tool set', () => {
+  it('gives the Nixre Assistant exactly the tool set the backend implements', () => {
     const assistant = getPlugin('nixre-assistant');
     expect(assistant).toBeDefined();
     expect(assistant?.tools?.map(t => t.name)).toEqual([
-      'file_read',
-      'file_write',
-      'bash',
-      'run_tests',
+      'list_files',
+      'read_file',
+      'search_code',
+      'run_command',
+      'show_images',
       'web_search',
-      'git',
     ]);
     expect(isAssistantPlugin(assistant!)).toBe(true);
   });
@@ -62,11 +63,14 @@ describe('plugin registry', () => {
     expect(interleaved?.type).toBe('toggle');
   });
 
-  it('gives form plugins a profile-fields schema', () => {
-    const ci = getPlugin('ci-cd-pipelines');
-    expect(ci?.hasForm).toBe(true);
-    expect(ci?.profileFields?.length).toBeGreaterThan(0);
-    expect(fieldsFor(ci!)).toEqual(ci?.profileFields);
+  it('exposes only access toggles the backend enforces', () => {
+    const assistant = getPlugin('nixre-assistant')!;
+    const keys = (assistant.accessFields ?? []).map(f => f.key);
+    expect(keys).toEqual(['canRunBash', 'canRunTests', 'canSearchWeb', 'allowedPaths', 'blockedPaths']);
+    // No dead toggles: nothing that claims edits, pushes, merges or auto-fixes.
+    for (const dead of ['accessLevel', 'canEditFiles', 'canPush', 'canMerge', 'autoMergeBranch', 'autoMergeOnGreen', 'autoFixBugs']) {
+      expect(keys).not.toContain(dead);
+    }
   });
 
   it('keeps the assistant as the only repo-scoped profile plugin', () => {
