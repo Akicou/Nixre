@@ -41,11 +41,23 @@ Git objects live as bare repositories on the `./data/repos` volume. Postgres hol
 
 ### Cloning
 
-```bash
-# HTTPS: username is your uid, password is a session token or PAT (Settings → Tokens)
-git clone http://<host>/git/<space>/<repo>.git
+Git over HTTPS uses HTTP Basic auth where the **password must be a token** — account passwords are never accepted for git transport. Clone URLs and credentials:
 
-# SSH: register a public key in Settings → Passkeys/SSH, then:
+1. Create a token in the web UI: **Settings → Access Tokens** → name it → Generate. It starts with `nxp_` and is shown only once.
+2. Clone. When git (or your credential manager) prompts: **username** = your Nixre username (any value works; it is ignored), **password** = the token.
+
+```bash
+git clone https://<host>/git/<space>/<repo>.git
+# or embed it directly:
+git clone https://<username>:<token>@<host>/git/<space>/<repo>.git
+```
+
+Your credential manager stores it after the first successful auth, so pulls/pushes won't prompt again. Tokens have a lifetime (default 30 days) — when it expires you get `Authentication failed` and simply mint a new one. If git keeps failing after you fixed credentials, remove the stale cached entry (Windows: Credential Manager → Windows Credentials → `git:https://<host>`; macOS: `git credential-osxkeychain erase`).
+
+Alternatively, clone over SSH with a registered key — no prompts, no expiry:
+
+```bash
+# register a public key in Settings → SSH Keys first
 git clone ssh://git@<host>:3022/<space>/<repo>.git
 ```
 

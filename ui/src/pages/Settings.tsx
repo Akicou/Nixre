@@ -310,6 +310,12 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
                 <span>SSH Public Keys</span>
               </h2>
 
+              <div className="p-3 rounded bg-surface-base border border-border-subtle text-[11px] leading-relaxed text-txt-secondary">
+                <p className="font-semibold text-txt-primary mb-1">Clone over SSH (no password prompts)</p>
+                <p>Register a key below, then use the SSH remote URL — port 3022 must be reachable:</p>
+                <pre className="mt-2 p-2 rounded bg-surface-canvas border border-border-subtle font-mono text-txt-primary overflow-x-auto">git clone ssh://git@&lt;host&gt;:3022/&lt;space&gt;/&lt;repo&gt;.git</pre>
+              </div>
+
               {sshError && <div className="p-3 rounded bg-feedback-error-bg text-feedback-error-text text-xs">{sshError}</div>}
               {sshSuccess && <div className="p-3 rounded bg-feedback-success-bg text-feedback-success-text text-xs">{sshSuccess}</div>}
 
@@ -378,12 +384,25 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
                 <span>Personal Access Tokens</span>
               </h2>
 
+              <div className="p-3 rounded bg-surface-base border border-border-subtle text-[11px] leading-relaxed text-txt-secondary">
+                <p className="font-semibold text-txt-primary mb-1">Tokens are the password for git over HTTPS</p>
+                <p>
+                  <code className="font-mono text-txt-primary">git clone</code> and <code className="font-mono text-txt-primary">git push</code> never
+                  accept your account password. When git prompts for credentials, enter your username and an access
+                  token as the password:
+                </p>
+                <pre className="mt-2 p-2 rounded bg-surface-canvas border border-border-subtle font-mono text-txt-primary overflow-x-auto">git clone https://&lt;username&gt;:&lt;token&gt;@git.example.com/git/&lt;space&gt;/&lt;repo&gt;.git</pre>
+              </div>
+
               {generatedToken && (
                 <div className="p-4 rounded bg-feedback-success-bg border border-feedback-success-border text-feedback-success-text text-xs space-y-2">
                   <p className="font-bold">Token generated successfully! Copy it now (it won't be shown again):</p>
                   <div className="p-2 rounded bg-surface-canvas border border-border-subtle font-mono text-txt-primary select-all break-all">
                     {generatedToken}
                   </div>
+                  <p className="text-feedback-success-text/80">
+                    Use this token as the password when git asks for credentials over HTTPS.
+                  </p>
                 </div>
               )}
 

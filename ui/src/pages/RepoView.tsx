@@ -214,6 +214,21 @@ export const RepoView: React.FC = () => {
                   {copied ? <Check className="w-3.5 h-3.5 text-txt-open" /> : <Copy className="w-3.5 h-3.5" />}
                 </button>
               </div>
+
+              {cloneProtocol === 'http' ? (
+                <p className="text-[11px] leading-relaxed text-txt-tertiary mt-2">
+                  When prompted, log in with your username and an{' '}
+                  <span className="text-txt-secondary font-medium">access token</span> as the password — account
+                  passwords are not accepted for git. Create one in{' '}
+                  <a href="/settings" className="text-brand hover:underline">Settings → Access Tokens</a>.
+                </p>
+              ) : (
+                <p className="text-[11px] leading-relaxed text-txt-tertiary mt-2">
+                  Requires an SSH public key registered in{' '}
+                  <a href="/settings" className="text-brand hover:underline">Settings → SSH Keys</a>.
+                  Port 3022 must be reachable.
+                </p>
+              )}
             </div>
           )}
         </div>

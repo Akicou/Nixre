@@ -137,6 +137,15 @@ Instruct the user to open `http://192.168.1.1` in their browser and add:
 
 ## 5. Auth Details
 
+### Git over HTTPS (clone/push)
+- Git transport uses HTTP Basic auth where the **password must be a token** — account passwords are never accepted for git. When a user reports `Authentication failed` after entering their login password, this is why.
+- Fix: web UI → **Settings → Access Tokens** → Generate. The token (`nxp_…`) is shown once. Use it as the password when git prompts; the username field is ignored (any value works).
+  ```
+  git clone https://<username>:<token>@<host>/git/<space>/<repo>.git
+  ```
+- Tokens expire (default 30 days) — expiry looks identical to a wrong password; mint a new token. If auth still fails after correcting credentials, a stale entry is cached in the OS credential manager (Windows: Credential Manager → `git:https://<host>` → Remove).
+- Alternative without prompts or expiry: **Settings → SSH Keys** → add a public key, then `git clone ssh://git@<host>:3022/<space>/<repo>.git` (port 3022 must be forwarded).
+
 ### Passkeys
 - Users register device credentials (Touch ID, Face ID, Windows Hello, YubiKey) in **Settings → Passkeys**.
 - Passkeys can **start a fresh login session**: the sign-in page performs a WebAuthn ceremony against Nixre's own vault (`/api/v1/webauthn/login-challenge` → `/webauthn/login`) and receives a normal session token. Passwords remain a fully supported fallback.
