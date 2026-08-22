@@ -837,8 +837,14 @@ export const AgentWorkspace: React.FC = () => {
     </>
   );
 
-  const repoPickerDropdown = repoOpen && (
-    <div className="absolute left-0 top-[calc(100%+6px)] w-[min(16rem,calc(100vw-2rem))] max-h-64 overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop">
+  // Drop direction depends on where the pickers sit: mid-screen in the empty
+  // state (down), docked above the bottom composer in a session (up).
+  const menuPos = (dropUp: boolean) =>
+    dropUp ? 'bottom-[calc(100%+6px)]' : 'top-[calc(100%+6px)]';
+
+  const repoPickerDropdown = (dropUp: boolean) =>
+    repoOpen && (
+    <div className={`absolute left-0 ${menuPos(dropUp)} w-[min(16rem,calc(100vw-2rem))] max-h-64 overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop`}>
       {repos.length === 0 ? (
         <p className="px-3 py-2 text-[12px] text-txt-tertiary">No repos yet.</p>
       ) : (
@@ -863,8 +869,9 @@ export const AgentWorkspace: React.FC = () => {
     </div>
   );
 
-  const modePickerDropdown = modeOpen && (
-    <div className="absolute left-0 top-[calc(100%+6px)] w-[min(18rem,calc(100vw-2rem))] rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop">
+  const modePickerDropdown = (dropUp: boolean) =>
+    modeOpen && (
+    <div className={`absolute left-0 ${menuPos(dropUp)} w-[min(18rem,calc(100vw-2rem))] rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop`}>
       {ASSISTANT_MODES.map(m => (
         <button
           key={m.id}
@@ -887,7 +894,7 @@ export const AgentWorkspace: React.FC = () => {
     </div>
   );
 
-  const contextPickers = (
+  const contextPickers = (dropUp: boolean) => (
     <div className="flex items-center gap-1 flex-wrap justify-center text-[12px] text-txt-tertiary">
       <div ref={repoMenuRef} className="relative">
         <button
@@ -904,7 +911,7 @@ export const AgentWorkspace: React.FC = () => {
           </span>
           <ChevronDown className="w-3 h-3 shrink-0" />
         </button>
-        {repoPickerDropdown}
+        {repoPickerDropdown(dropUp)}
       </div>
       <span className="opacity-30 hidden sm:inline">·</span>
       <div ref={modeMenuRef} className="relative">
@@ -920,7 +927,7 @@ export const AgentWorkspace: React.FC = () => {
           <span className="text-txt-secondary">{getMode(mode).label}</span>
           <ChevronDown className="w-3 h-3 shrink-0" />
         </button>
-        {modePickerDropdown}
+        {modePickerDropdown(dropUp)}
       </div>
     </div>
   );
@@ -1020,7 +1027,7 @@ export const AgentWorkspace: React.FC = () => {
             >
               <PanelLeft className="w-5 h-5" />
             </button>
-            {contextPickers}
+            {contextPickers(false)}
             <div className="h-2" />
 
             {composer}
@@ -1082,7 +1089,7 @@ export const AgentWorkspace: React.FC = () => {
 
             {/* Docked floating composer */}
             <div className="px-3 sm:px-5 pb-5 pt-2 flex flex-col items-center">
-              <div className="w-full max-w-3xl mb-2">{contextPickers}</div>
+              <div className="w-full max-w-3xl mb-2">{contextPickers(true)}</div>
               {composer}
             </div>
           </>
