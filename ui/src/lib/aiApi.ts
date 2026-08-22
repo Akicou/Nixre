@@ -1,5 +1,22 @@
-// AI API client — provider profile, model list, and streaming chat against
+// AI API client — multi-provider management and streaming chat against
 // nixre-core. API keys live server-side; this client only sees a mask.
+
+export interface AiProvider {
+  id: number;
+  label: string;
+  provider: string;
+  providerLabel: string;
+  baseUrl: string;
+  keyConfigured: boolean;
+  keyMask: string | null;
+  validatedAt: number | null;
+  defaultModel: string;
+  models: string[];          // full cached list from the provider
+  enabledModels: string[];   // user-picked subset used in chat
+  isDefault: boolean;
+  created: number;
+  updated: number;
+}
 
 export interface AiProfile {
   provider: string;
@@ -12,6 +29,7 @@ export interface AiProfile {
   reasoningLevel: string;
   interleavedReasoning: boolean;
   models: string[];
+  providers?: AiProvider[];
   updatedAt: number;
 }
 
@@ -51,6 +69,45 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export function getAiProfile(): Promise<AiProfile> {
   return request<AiProfile>('/ai/profile');
+}
+
+// --- multi-provider CRUD --------------------------------------------------------
+
+export function listAiProviders(): Promise<AiProvider[]> {
+  return request<AiProvider[]>('/ai/providers');
+}
+
+export interface CreateProviderInput {
+  label: string;
+  provider: string;
+  baseUrl?: string;
+  apiKey: string;
+  defaultModel?: string;
+}
+
+export function createAiProvider(input: CreateProviderInput): Promise<AiProvider> {
+  return request<AiProvider>('/ai/providers', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export interface UpdateProviderInput {
+  label?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  defaultModel?: string;
+  enabledModels?: string[];
+  isDefault?: boolean;
+}
+
+export function updateAiProvider(id: number, input: UpdateProviderInput): Promise<AiProvider> {
+  return request<AiProvider>(`/ai/providers/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
+}
+
+export function deleteAiProvider(id: number): Promise<void> {
+  return request(`/ai/providers/${id}`, { method: 'DELETE' });
+}
+
+export function fetchProviderModels(id: number, refresh = false): Promise<{ models: string[]; cached: boolean }> {
+  return request(`/ai/providers/${id}/models${refresh ? '?refresh=1' : ''}`);
 }
 
 export interface SaveProfileInput {

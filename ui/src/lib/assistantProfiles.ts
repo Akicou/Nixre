@@ -87,8 +87,8 @@ function fromAiProfile(p: AiProfile): AssistantProviderProfile {
   return {
     provider: p.provider,
     baseUrl: p.baseUrl,
-    // No invented default: the model is whatever the server has — empty
-    // until a provider is validated and models are fetched.
+    // Model = the active provider's default; models = the enabled subset
+    // the user picked for chat (falls back to the provider's full list).
     model: p.model || '',
     temperature: def.temperature,
     maxTokens: def.maxTokens,

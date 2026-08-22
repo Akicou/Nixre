@@ -1,147 +1,183 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Bot, Loader2, RefreshCw, AlertTriangle, Zap } from 'lucide-react';
-import { getPlugin } from '../../lib/plugins';
 import {
-  defaultRepoProfile,
-  getActiveProviderProfile,
-  getRepoProfile,
-  setActiveProviderProfile,
-  setRepoProfile,
-  type AssistantProviderProfile,
-  type AssistantRepoProfile,
-} from '../../lib/assistantProfiles';
-import { listAiModels } from '../../lib/aiApi';
+  Check,
+  Bot,
+  Loader2,
+  RefreshCw,
+  AlertTriangle,
+  Zap,
+  Plus,
+  Trash2,
+  Star,
+} from 'lucide-react';
+import {
+  listAiProviders,
+  createAiProvider,
+  updateAiProvider,
+  deleteAiProvider,
+  fetchProviderModels,
+  type AiProvider,
+} from '../../lib/aiApi';
 import { PluginConfigForm } from '../PluginConfigForm';
+import { getPlugin } from '../../lib/plugins';
+import { defaultRepoProfile, getRepoProfile, setRepoProfile, type AssistantRepoProfile } from '../../lib/assistantProfiles';
 
 interface AssistantProfileFormProps {
-  // 'full' manages both the provider profile and the per-repo access profile.
-  // 'provider' manages only the active AI-provider profile.
   mode?: 'full' | 'provider';
   repoPath?: string;
   onClose?: () => void;
-  onSaved?: (profile: AssistantProviderProfile) => void;
 }
 
-const REASONING_OPTIONS = ['none', 'low', 'medium', 'high'];
+const PROVIDER_KINDS: { id: string; label: string; hint?: string }[] = [
+  { id: 'deepseek', label: 'DeepSeek' },
+  { id: 'openai', label: 'OpenAI' },
+  { id: 'anthropic', label: 'Anthropic' },
+  { id: 'ollama', label: 'Ollama (local)', hint: 'no key needed on localhost' },
+  { id: 'custom', label: 'Custom (OpenAI-compatible)', hint: 'base URL required' },
+];
 
+const inputCls =
+  'w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition outline-none';
+
+/**
+ * Multi-provider manager: add several AI providers (each validated + model-
+ * fetched server-side), pick which models are enabled for chat, and choose
+ * the active provider. Keys are encrypted at rest and never returned.
+ */
 export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
   mode = 'full',
   repoPath,
   onClose,
-  onSaved,
 }) => {
-  const provider = getPlugin('nixre-assistant');
-  const providerField = provider?.providerFields?.find(f => f.key === 'provider');
-  const providerOptions = providerField?.options ?? ['deepseek', 'openai', 'anthropic', 'ollama', 'custom'];
-
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const [prov, setProv] = useState('deepseek');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [model, setModel] = useState('');
-  const [models, setModels] = useState<string[]>([]);
-  const [reasoning, setReasoning] = useState('none');
-  const [interleaved, setInterleaved] = useState(false);
-
-  const [keyMask, setKeyMask] = useState<string | null>(null);
-  const [validatedAt, setValidatedAt] = useState<number | null>(null);
+  const [providers, setProviders] = useState<AiProvider[]>([]);
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  // Add-provider draft
+  const [adding, setAdding] = useState(false);
+  const [draftKind, setDraftKind] = useState('deepseek');
+  const [draftLabel, setDraftLabel] = useState('');
+  const [draftUrl, setDraftUrl] = useState('');
+  const [draftKey, setDraftKey] = useState('');
+  const [creating, setCreating] = useState(false);
 
   const [repoProfile, setRepoProfileState] = useState<AssistantRepoProfile>(() => defaultRepoProfile());
 
+  const reload = async () => {
+    try {
+      setProviders(await listAiProviders());
+    } catch (err: any) {
+      setFeedback({ kind: 'error', text: err.message || 'Could not load providers.' });
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getActiveProviderProfile(), repoPath ? getRepoProfile(repoPath) : undefined])
-      .then(([profile, repo]) => {
-        if (cancelled) return;
-        setProv(profile.provider);
-        setBaseUrl(profile.baseUrl);
-        setModel(profile.model);
-        setModels(profile.models);
-        setReasoning(profile.reasoningLevel);
-        setInterleaved(profile.interleavedReasoning);
-        setKeyMask(profile.keyMask);
-        setValidatedAt(profile.validatedAt);
-        if (repo) setRepoProfileState(repo);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    (async () => {
+      await reload();
+      if (repoPath) {
+        const repo = await getRepoProfile(repoPath).catch(() => undefined);
+        if (repo && !cancelled) setRepoProfileState(repo);
+      }
+    })().finally(() => {
+      if (!cancelled) setLoading(false);
+    });
     return () => {
       cancelled = true;
     };
   }, [repoPath]);
 
-  const refreshModels = async () => {
-    setRefreshing(true);
+  const handleAdd = async () => {
+    setCreating(true);
+    setFeedback(null);
     try {
-      const { models: list } = await listAiModels();
-      setModels(list);
-      if (list.length > 0 && !list.includes(model)) {
-        setModel(list[0]);
-      }
-      setFeedback({ kind: 'ok', text: `${list.length} models fetched from the provider.` });
+      const kind = PROVIDER_KINDS.find(p => p.id === draftKind)!;
+      const created = await createAiProvider({
+        label: draftLabel.trim() || kind.label,
+        provider: draftKind,
+        baseUrl: draftUrl.trim() || undefined,
+        apiKey: draftKey.trim(),
+      });
+      setProviders(prev => [...prev, created]);
+      setFeedback({
+        kind: 'ok',
+        text: `${created.label} validated — ${created.models.length} models fetched, first ${created.enabledModels.length} enabled for chat.`,
+      });
+      setAdding(false);
+      setDraftLabel('');
+      setDraftUrl('');
+      setDraftKey('');
     } catch (err: any) {
-      setFeedback({ kind: 'error', text: err.message || 'Could not fetch models.' });
+      setFeedback({ kind: 'error', text: err.message || 'Adding the provider failed.' });
     } finally {
-      setRefreshing(false);
+      setCreating(false);
     }
   };
 
-  const handleSave = async () => {
-    setSaving(true);
-    setFeedback(null);
+  const refreshModels = async (p: AiProvider) => {
+    setBusyId(p.id);
     try {
-      const saved = await setActiveProviderProfile(
-        {
-          provider: prov,
-          baseUrl,
-          model,
-          temperature: 0.2,
-          maxTokens: 8192,
-          reasoningLevel: reasoning,
-          interleavedReasoning: interleaved,
-          keyConfigured: false,
-          keyMask: null,
-          validatedAt: null,
-          models,
-        },
-        apiKey || undefined,
+      const { models } = await fetchProviderModels(p.id, true);
+      setProviders(prev =>
+        prev.map(x => (x.id === p.id ? { ...x, models, enabledModels: x.enabledModels.filter(m => models.includes(m)) } : x)),
       );
-      setModels(saved.models);
-      setModel(saved.model);
-      setKeyMask(saved.keyMask);
-      setValidatedAt(saved.validatedAt);
-      setApiKey('');
-      if (repoPath) await setRepoProfile(repoPath, repoProfile);
-      if (saved.validated) {
-        setFeedback({ kind: 'ok', text: `Credentials validated — ${saved.models.length} models available.` });
-      } else {
-        setFeedback({ kind: 'error', text: 'Saved, but the provider is not validated yet. Enter an API key and save again.' });
-      }
-      onSaved?.(saved);
+      setFeedback({ kind: 'ok', text: `${p.label}: ${models.length} models fetched.` });
     } catch (err: any) {
-      setFeedback({ kind: 'error', text: err.message || 'Saving failed.' });
+      setFeedback({ kind: 'error', text: err.message || 'Fetching models failed.' });
     } finally {
-      setSaving(false);
+      setBusyId(null);
     }
+  };
+
+  const toggleModel = async (p: AiProvider, model: string) => {
+    const enabled = p.enabledModels.includes(model)
+      ? p.enabledModels.filter(m => m !== model)
+      : [...p.enabledModels, model];
+    // Keep a default model whenever possible.
+    const defaultModel = enabled.includes(p.defaultModel) ? p.defaultModel : enabled[0] ?? '';
+    setProviders(prev => prev.map(x => (x.id === p.id ? { ...x, enabledModels: enabled, defaultModel } : x)));
+    try {
+      await updateAiProvider(p.id, { enabledModels: enabled, defaultModel });
+    } catch (err: any) {
+      setFeedback({ kind: 'error', text: err.message || 'Saving the model selection failed.' });
+    }
+  };
+
+  const makeDefault = async (p: AiProvider) => {
+    setProviders(prev => prev.map(x => ({ ...x, isDefault: x.id === p.id })));
+    try {
+      await updateAiProvider(p.id, { isDefault: true });
+    } catch (err: any) {
+      setFeedback({ kind: 'error', text: err.message || 'Could not set the active provider.' });
+    }
+  };
+
+  const removeProvider = async (p: AiProvider) => {
+    setBusyId(p.id);
+    try {
+      await deleteAiProvider(p.id);
+      await reload();
+      setFeedback({ kind: 'ok', text: `${p.label} removed.` });
+    } catch (err: any) {
+      setFeedback({ kind: 'error', text: err.message || 'Removing the provider failed.' });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const saveRepoProfile = async () => {
+    if (repoPath) await setRepoProfile(repoPath, repoProfile).catch(() => {});
   };
 
   if (loading) {
     return (
       <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 flex items-center justify-center gap-2 text-xs text-txt-tertiary">
         <Loader2 className="w-4 h-4 animate-spin" />
-        Loading assistant profile…
+        Loading assistant configuration…
       </div>
     );
   }
-
-  const inputCls =
-    'w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition outline-none';
 
   return (
     <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-6">
@@ -153,7 +189,7 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
           <div>
             <h2 className="text-sm font-semibold text-txt-primary uppercase tracking-wider">Nixre Assistant</h2>
             <p className="text-xs text-txt-secondary mt-0.5">
-              Credentials are stored encrypted server-side and validated against the live provider.
+              Add providers, fetch their models, and enable the ones you want to chat with. Keys are stored encrypted server-side.
             </p>
           </div>
         </div>
@@ -163,7 +199,7 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
             onClick={onClose}
             className="px-3 py-1.5 rounded text-xs font-medium text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
           >
-            Cancel
+            Close
           </button>
         )}
       </div>
@@ -181,125 +217,190 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
         </div>
       )}
 
-      {/* Provider profile */}
-      <div className="space-y-4 p-4 rounded bg-surface-base border border-border-subtle">
-        <div className="text-[10px] font-semibold text-txt-tertiary uppercase tracking-wider">AI Provider Profile</div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <label className="block space-y-1.5">
-            <span className="text-xs text-txt-secondary">Provider</span>
-            <select value={prov} onChange={e => setProv(e.target.value)} className={inputCls}>
-              {providerOptions.map(p => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-          </label>
-
-          <label className="block space-y-1.5">
-            <span className="text-xs text-txt-secondary">
-              API Key {keyMask && <span className="text-txt-tertiary font-mono">(saved {keyMask})</span>}
-            </span>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={e => setApiKey(e.target.value)}
-              placeholder={keyMask ? 'leave blank to keep the saved key' : 'sk-…'}
-              className={inputCls}
-              autoComplete="off"
-            />
-          </label>
-        </div>
-
-        <label className="block space-y-1.5">
-          <span className="text-xs text-txt-secondary">
-            Base URL <span className="text-txt-tertiary">(required for “custom”, optional otherwise)</span>
-          </span>
-          <input
-            type="text"
-            value={baseUrl}
-            onChange={e => setBaseUrl(e.target.value)}
-            placeholder="https://api.example.com"
-            className={inputCls}
-          />
-        </label>
-
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-txt-secondary">Model</span>
+      {/* Provider list */}
+      <div className="space-y-3">
+        {providers.length === 0 && !adding && (
+          <div className="border border-dashed border-border-subtle rounded-lg p-8 text-center">
+            <p className="text-xs text-txt-secondary">
+              No AI providers yet. Add one — it gets validated against the live provider and its model list is fetched automatically.
+            </p>
             <button
-              type="button"
-              onClick={refreshModels}
-              disabled={refreshing}
-              className="flex items-center gap-1 text-[11px] text-txt-secondary hover:text-txt-primary transition disabled:opacity-50"
+              onClick={() => setAdding(true)}
+              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-brand text-white text-xs font-medium hover:bg-brand-hover transition shadow-sm"
             >
-              <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
-              Fetch models
+              <Plus className="w-3.5 h-3.5" />
+              Add provider
             </button>
           </div>
-          {models.length > 0 ? (
-            <select value={model} onChange={e => setModel(e.target.value)} className={inputCls}>
-              {models.map(m => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          ) : (
-            <p className="text-[11px] text-txt-tertiary italic px-1 py-2 border border-dashed border-border-subtle rounded-md">
-              No models yet — save a valid API key (or point Ollama/custom at a reachable base URL) and models will be fetched from the provider.
-            </p>
-          )}
-          {validatedAt && (
-            <p className="text-[11px] text-txt-open flex items-center gap-1">
-              <Zap className="w-3 h-3" /> credentials validated {new Date(validatedAt).toLocaleString()}
-            </p>
-          )}
-        </div>
+        )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <label className="block space-y-1.5">
-            <span className="text-xs text-txt-secondary">Reasoning Level</span>
-            <select value={reasoning} onChange={e => setReasoning(e.target.value)} className={inputCls}>
-              {REASONING_OPTIONS.map(r => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-2 pt-5 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={interleaved}
-              onChange={e => setInterleaved(e.target.checked)}
-              className="accent-brand w-3.5 h-3.5"
-            />
-            <span className="text-xs text-txt-secondary">Interleaved reasoning (stream thinking inline)</span>
-          </label>
-        </div>
+        {providers.map(p => (
+          <div key={p.id} className={`rounded-lg border bg-surface-base transition ${p.isDefault ? 'border-brand/40' : 'border-border-subtle'}`}>
+            {/* Provider header */}
+            <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border-subtle">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  onClick={() => makeDefault(p)}
+                  title={p.isDefault ? 'Active provider' : 'Make active'}
+                  className={`shrink-0 transition ${p.isDefault ? 'text-brand' : 'text-txt-tertiary hover:text-txt-secondary'}`}
+                >
+                  <Star className={`w-4 h-4 ${p.isDefault ? 'fill-current' : ''}`} />
+                </button>
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-txt-primary truncate">
+                    {p.label}
+                    <span className="ml-2 text-[10px] font-mono uppercase text-txt-tertiary">{p.provider}</span>
+                    {p.isDefault && <span className="ml-2 text-[10px] font-mono text-brand">ACTIVE</span>}
+                  </div>
+                  <div className="text-[10px] text-txt-tertiary font-mono truncate">
+                    {p.keyMask ? `key ${p.keyMask}` : 'no key'}
+                    {p.validatedAt ? ` · validated ${new Date(p.validatedAt).toLocaleDateString()}` : ' · not validated'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => refreshModels(p)}
+                  disabled={busyId === p.id}
+                  title="Fetch the live model list"
+                  className="p-1.5 rounded hover:bg-surface-subtle text-txt-secondary transition disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${busyId === p.id ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  onClick={() => removeProvider(p)}
+                  title="Remove provider"
+                  className="p-1.5 rounded hover:bg-feedback-error-bg text-txt-tertiary hover:text-feedback-error-text transition"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Model picker */}
+            <div className="px-4 py-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-semibold text-txt-tertiary uppercase tracking-wider">
+                  Models — enable the ones you want to chat with
+                </span>
+                <span className="text-[10px] text-txt-tertiary font-mono">
+                  {p.enabledModels.length}/{p.models.length} enabled
+                </span>
+              </div>
+              {p.models.length === 0 ? (
+                <p className="text-[11px] text-txt-tertiary italic">
+                  No models yet — hit the refresh button to fetch them from the provider.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-44 overflow-y-auto">
+                  {p.models.map(m => {
+                    const on = p.enabledModels.includes(m);
+                    return (
+                      <button
+                        key={m}
+                        onClick={() => toggleModel(p, m)}
+                        className={`flex items-center gap-2 text-left text-[11px] font-mono px-2.5 py-1.5 rounded border transition ${
+                          on
+                            ? 'bg-brand/10 border-brand/40 text-txt-primary'
+                            : 'border-border-subtle text-txt-tertiary hover:text-txt-secondary hover:border-border-mid'
+                        }`}
+                      >
+                        <span
+                          className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
+                            on ? 'bg-brand border-brand' : 'border-border-mid'
+                          }`}
+                        >
+                          {on && <Check className="w-2.5 h-2.5 text-white" />}
+                        </span>
+                        <span className="truncate">{m}</span>
+                        {p.defaultModel === m && <span className="ml-auto text-[9px] uppercase text-brand shrink-0">default</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {/* Add form */}
+        {adding ? (
+          <div className="rounded-lg border border-brand/40 bg-surface-base p-4 space-y-3">
+            <div className="text-[10px] font-semibold text-txt-tertiary uppercase tracking-wider">Add a provider</div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <label className="space-y-1.5">
+                <span className="text-[11px] text-txt-secondary">Kind</span>
+                <select value={draftKind} onChange={e => setDraftKind(e.target.value)} className={inputCls}>
+                  {PROVIDER_KINDS.map(k => (
+                    <option key={k.id} value={k.id}>
+                      {k.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-[11px] text-txt-secondary">Name (optional)</span>
+                <input value={draftLabel} onChange={e => setDraftLabel(e.target.value)} placeholder="e.g. My DeepSeek" className={inputCls} />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-[11px] text-txt-secondary">Base URL (custom only)</span>
+                <input value={draftUrl} onChange={e => setDraftUrl(e.target.value)} placeholder="https://api.example.com" className={inputCls} />
+              </label>
+            </div>
+            <label className="block space-y-1.5">
+              <span className="text-[11px] text-txt-secondary">
+                API Key <span className="text-txt-tertiary">(validated against the provider before saving)</span>
+              </span>
+              <input
+                type="password"
+                value={draftKey}
+                onChange={e => setDraftKey(e.target.value)}
+                placeholder={draftKind === 'ollama' ? 'not needed for local Ollama' : 'sk-…'}
+                className={inputCls}
+                autoComplete="off"
+              />
+            </label>
+            <div className="flex items-center gap-2 justify-end">
+              <button onClick={() => setAdding(false)} className="px-3 py-1.5 rounded text-xs text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition">
+                Cancel
+              </button>
+              <button
+                onClick={handleAdd}
+                disabled={creating || (draftKind !== 'ollama' && !draftKey.trim()) || (draftKind === 'custom' && !draftUrl.trim())}
+                className="px-4 py-1.5 rounded bg-brand text-white text-xs font-medium hover:bg-brand-hover disabled:opacity-50 transition shadow-sm flex items-center gap-1.5"
+              >
+                {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                {creating ? 'Validating…' : 'Validate & add'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          providers.length > 0 && (
+            <button
+              onClick={() => setAdding(true)}
+              className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg border border-dashed border-border-subtle text-xs text-txt-secondary hover:border-brand/50 hover:text-txt-primary transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add another provider
+            </button>
+          )
+        )}
       </div>
 
       {/* Per-repo access profile (full mode only) */}
-      {mode === 'full' && (
+      {mode === 'full' && repoPath && (
         <PluginConfigForm
           title="Repository Access Profile"
-          description={`What the assistant may do in ${repoPath ?? 'this repository'}.`}
-          fields={provider?.accessFields ?? []}
+          description={`What the assistant may do in ${repoPath}.`}
+          fields={getPlugin('nixre-assistant')?.accessFields ?? []}
           initial={repoProfile as unknown as Record<string, string | number | boolean>}
-          onSubmit={values => setRepoProfileState(values as unknown as AssistantRepoProfile)}
-          onSubmitLabel="Stage access profile"
+          onSubmit={values => {
+            setRepoProfileState(values as unknown as AssistantRepoProfile);
+            saveRepoProfile();
+          }}
+          onSubmitLabel="Save access profile"
         />
       )}
-
-      <div className="flex justify-end pt-2">
-        <button
-          type="button"
-          disabled={saving || models.length === 0}
-          title={models.length === 0 ? 'No provider-validated models — save a valid API key first' : undefined}
-          onClick={handleSave}
-          className="px-4 py-2 rounded bg-brand text-white text-xs font-medium hover:bg-brand-hover disabled:opacity-50 transition shadow-sm flex items-center gap-1.5"
-        >
-          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-          <span>{saving ? 'Validating & saving…' : 'Validate & save'}</span>
-        </button>
-      </div>
-
     </div>
   );
 };

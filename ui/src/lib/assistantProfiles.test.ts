@@ -25,11 +25,13 @@ describe('assistantProfiles (server-backed)', () => {
     expect(def.provider).toBe(providerField.default);
   });
 
-  it('stores and reads the active provider profile', async () => {
-    await setActiveProviderProfile({ ...defaultProviderProfile(), provider: 'anthropic', model: 'claude-sonnet' });
+  it('stores and reads the active provider profile (model + enabled set)', async () => {
+    // Provider kind is fixed per provider row now; the profile save routes
+    // model selection + enabled models to the active provider.
+    await setActiveProviderProfile({ ...defaultProviderProfile(), model: 'deepseek-reasoner' });
     const active = await getActiveProviderProfile();
-    expect(active.provider).toBe('anthropic');
-    expect(active.model).toBe('claude-sonnet');
+    expect(active.model).toBe('deepseek-reasoner');
+    expect(active.models).toContain('deepseek-reasoner');
   });
 
   it('defaults reasoning off with no reasoning effort', () => {

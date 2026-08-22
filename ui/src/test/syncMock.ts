@@ -43,6 +43,24 @@ export function syncMockReset(seed?: Partial<SyncMockDb>): void {
   syncMockDb.prefs = { ...(seed?.prefs ?? {}) };
   syncMockDb.conversations = [...(seed?.conversations ?? [])];
   syncMockDb.passkeys = [...(seed?.passkeys ?? [])];
+  // Reset the AI provider store to a single validated DeepSeek.
+  aiMockProviders.length = 0;
+  aiMockProviders.push({
+    id: 1,
+    label: 'DeepSeek',
+    provider: 'deepseek',
+    providerLabel: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    keyConfigured: true,
+    keyMask: '…test',
+    validatedAt: 1700000000000,
+    defaultModel: 'deepseek-chat',
+    models: ['deepseek-chat', 'deepseek-reasoner'],
+    enabledModels: ['deepseek-chat', 'deepseek-reasoner'],
+    isDefault: true,
+    created: 1700000000000,
+    updated: 1700000000000,
+  });
 }
 
 const json = (status: number, body: unknown): Response =>
@@ -142,42 +160,131 @@ async function handleSync(url: URL, method: string, body: any): Promise<Response
 }
 
 // --- AI endpoints (used by assistantProfiles via lib/aiApi) --------------------
-// Minimal in-memory provider profile so provider-backed code paths work in
-// tests without a live backend.
+// In-memory multi-provider store so provider-backed code paths work in tests
+// without a live backend.
 
-export const aiMockProfile = {
-  provider: 'deepseek',
-  providerLabel: 'DeepSeek',
-  baseUrl: 'https://api.deepseek.com',
-  keyConfigured: true,
-  keyMask: '…test',
-  validatedAt: 1700000000000,
-  model: 'deepseek-chat',
-  reasoningLevel: 'none',
-  interleavedReasoning: false,
-  models: ['deepseek-chat', 'deepseek-reasoner'] as string[],
-  updatedAt: 1700000000000,
+export const aiMockProviders: Array<{
+  id: number;
+  label: string;
+  provider: string;
+  providerLabel: string;
+  baseUrl: string;
+  keyConfigured: boolean;
+  keyMask: string | null;
+  validatedAt: number | null;
+  defaultModel: string;
+  models: string[];
+  enabledModels: string[];
+  isDefault: boolean;
+  created: number;
+  updated: number;
+}> = [
+  {
+    id: 1,
+    label: 'DeepSeek',
+    provider: 'deepseek',
+    providerLabel: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    keyConfigured: true,
+    keyMask: '…test',
+    validatedAt: 1700000000000,
+    defaultModel: 'deepseek-chat',
+    models: ['deepseek-chat', 'deepseek-reasoner'],
+    enabledModels: ['deepseek-chat', 'deepseek-reasoner'],
+    isDefault: true,
+    created: 1700000000000,
+    updated: 1700000000000,
+  },
+];
+let aiNextId = 2;
+
+const aiMockProfile = () => {
+  const active = aiMockProviders.find(p => p.isDefault) ?? aiMockProviders[0];
+  if (!active) {
+    return {
+      provider: '', providerLabel: '', baseUrl: '',
+      keyConfigured: false, keyMask: null, validatedAt: null,
+      model: '', reasoningLevel: 'none', interleavedReasoning: false,
+      models: [], providers: [], updatedAt: 0,
+    };
+  }
+  return {
+    ...active,
+    model: active.defaultModel,
+    models: active.enabledModels.length > 0 ? active.enabledModels : active.models,
+    providers: aiMockProviders,
+    reasoningLevel: (active as any).reasoningLevel ?? 'none',
+    interleavedReasoning: (active as any).interleavedReasoning ?? false,
+  };
 };
 
 function handleAi(path: string, method: string, body: any): Response | null {
-  if (path !== '/ai/profile' && path !== '/ai/models' && path !== '/ai/chat') return null;
-  if (path === '/ai/profile' && method === 'GET') {
-    return json(200, aiMockProfile);
-  }
+  if (!/^\/ai\//.test(path)) return null;
+
+  if (path === '/ai/profile' && method === 'GET') return json(200, aiMockProfile());
   if (path === '/ai/profile' && method === 'PUT') {
-    Object.assign(aiMockProfile, {
-      provider: body?.provider ?? aiMockProfile.provider,
-      baseUrl: body?.baseUrl ?? aiMockProfile.baseUrl,
-      model: body?.model ?? aiMockProfile.model,
-      reasoningLevel: body?.reasoningLevel ?? aiMockProfile.reasoningLevel,
-      interleavedReasoning: body?.interleavedReasoning ?? aiMockProfile.interleavedReasoning,
-      validatedAt: body?.apiKey ? Date.now() : aiMockProfile.validatedAt,
-    });
-    return json(200, { ...aiMockProfile, validated: true });
+    // Legacy single-profile shape: routes into the active provider.
+    if (aiMockProviders.length === 0) return json(200, { ...aiMockProfile(), validated: false });
+    const target = aiMockProviders.find(p => p.isDefault) ?? aiMockProviders[0];
+    if (body?.model) target.defaultModel = String(body.model);
+    if (Array.isArray(body?.models) && body.models.length > 0) target.enabledModels = body.models;
+    if (body?.reasoningLevel !== undefined || body?.interleavedReasoning !== undefined) {
+      // reasoning prefs ride on the derived profile; mirror them on the row
+      (target as any).reasoningLevel = body?.reasoningLevel ?? (target as any).reasoningLevel ?? 'none';
+      (target as any).interleavedReasoning = body?.interleavedReasoning ?? (target as any).interleavedReasoning ?? false;
+    }
+    return json(200, { ...aiMockProfile(), validated: target.validatedAt != null });
   }
-  if (path === '/ai/models' && method === 'GET') {
-    return json(200, { models: aiMockProfile.models, cached: true });
+  if (path === '/ai/providers' && method === 'GET') return json(200, aiMockProviders);
+
+  if (path === '/ai/providers' && method === 'POST') {
+    const row = {
+      id: aiNextId++,
+      label: body?.label || 'Provider',
+      provider: body?.provider || 'deepseek',
+      providerLabel: body?.provider || 'Provider',
+      baseUrl: body?.baseUrl || '',
+      keyConfigured: Boolean(body?.apiKey),
+      keyMask: body?.apiKey ? `…${String(body.apiKey).slice(-4)}` : null,
+      validatedAt: Date.now(),
+      defaultModel: 'mock-a',
+      models: ['mock-a', 'mock-b'],
+      enabledModels: ['mock-a'],
+      isDefault: aiMockProviders.length === 0,
+      created: Date.now(),
+      updated: Date.now(),
+    };
+    aiMockProviders.push(row);
+    return json(201, row);
   }
+
+  const pm = path.match(/^\/ai\/providers\/(\d+)(\/models)?$/);
+  if (pm) {
+    const id = Number(pm[1]);
+    const row = aiMockProviders.find(p => p.id === id);
+    if (!row) return json(404, { message: 'Provider not found' });
+    if (pm[2] === '/models' && method === 'GET') {
+      return json(200, { models: row.models, cached: true });
+    }
+    if (method === 'PATCH') {
+      Object.assign(row, {
+        label: body?.label ?? row.label,
+        baseUrl: body?.baseUrl ?? row.baseUrl,
+        defaultModel: body?.defaultModel ?? row.defaultModel,
+        enabledModels: body?.enabledModels ?? row.enabledModels,
+      });
+      if (body?.isDefault) aiMockProviders.forEach(p => (p.isDefault = p.id === id));
+      row.updated = Date.now();
+      return json(200, row);
+    }
+    if (method === 'DELETE') {
+      const idx = aiMockProviders.findIndex(p => p.id === id);
+      aiMockProviders.splice(idx, 1);
+      if (row.isDefault && aiMockProviders.length > 0) aiMockProviders[0].isDefault = true;
+      return json(200, { ok: true });
+    }
+  }
+
   if (path === '/ai/chat' && method === 'POST') {
     // Minimal SSE stream: reasoning + text + done, like the real proxy.
     const frames = [
