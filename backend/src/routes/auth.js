@@ -56,6 +56,15 @@ export function authRoutes(pool, authenticate) {
 
   // POST /register {uid, email, display_name, password} -> {access_token}
   api.post('/register', async (req, res) => {
+    // Server-side signup kill switch: NIXRE_REGISTRATION_CLOSED=true in the
+    // environment returns 403 before any validation or DB work. Toggled by
+    // the deployment (see /opt/nixre/{no-more-register,allow-registering}.sh);
+    // read per request so a container restart is the only rollout needed.
+    if (String(process.env.NIXRE_REGISTRATION_CLOSED || '').toLowerCase() === 'true') {
+      res.status(403).json({ message: 'Registration is currently closed on this instance.' });
+      return;
+    }
+
     const uid = String(req.body?.uid || '').trim();
     const email = String(req.body?.email || '').trim();
     const displayName = String(req.body?.display_name || '').trim() || uid;

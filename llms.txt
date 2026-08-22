@@ -152,7 +152,7 @@ Instruct the user to open `http://192.168.1.1` in their browser and add:
 
 ### Closing Registrations
 - An admin can hide the registration page per browser (**Admin Console → Registration Page**). This is client-side only.
-- To close signups at the server today, block `POST /api/v1/register` at your reverse proxy (e.g. Caddy `respond @register 403`). There is no dedicated runtime flag yet.
+- Server-side kill switch: set `NIXRE_REGISTRATION_CLOSED=true` in `/opt/nixre/.env` and run `docker compose up -d nixre-core` — `POST /api/v1/register` then returns 403 before any validation. Set it to `false` (or remove it) and recreate core to reopen. Existing sessions, logins, git, and the assistant are unaffected; only new signups are blocked.
 
 ---
 

@@ -33,6 +33,9 @@ services:
       SANDBOX_IMAGE: nixre-agent-sandbox:latest
       SANDBOX_IDLE_MS: ${SANDBOX_IDLE_MS:-900000}
       DOCKER_GID: ${DOCKER_GID:-}
+      # Server-side signup kill switch: "true" makes POST /api/v1/register
+      # return 403. Toggle via .env + `docker compose up -d nixre-core`.
+      NIXRE_REGISTRATION_CLOSED: ${NIXRE_REGISTRATION_CLOSED:-false}
     group_add:
       - ${DOCKER_GID:-999}
     volumes:
