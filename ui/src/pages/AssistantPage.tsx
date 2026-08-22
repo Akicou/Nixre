@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Bot, Plug } from 'lucide-react';
 import { api, Repository } from '../lib/api';
 import { isPluginLive } from '../lib/pluginPreferences';
@@ -8,6 +8,7 @@ import { ChatSurface } from '../components/assistant/ChatSurface';
 
 export const AssistantPage: React.FC = () => {
   const { space, repo } = useParams<{ space: string; repo: string }>();
+  const navigate = useNavigate();
   const repoPath = `${space}/${repo}`;
   const [repoInfo, setRepoInfo] = useState<Repository | null>(null);
   const [profile, setProfile] = useState<AssistantProviderProfile | null>(null);
@@ -64,15 +65,26 @@ export const AssistantPage: React.FC = () => {
   // The app shell adds a 57px sticky navbar (h-14 + border) and ~48px footer;
   // the chat needs a bounded height so its internal flex/scroll layout works.
   return (
-    <div className="h-[calc(100dvh-105px)] min-h-[420px] overflow-hidden">
-      {profile && (
-        <ChatSurface
-          repoPath={repoPath}
-          profile={profile}
-          title={repoInfo?.description || repoPath}
-          suggestions={['Review this change for regressions', 'Run the tests and lint', 'Scan for exposed secrets', 'Explain what this repo does']}
-        />
-      )}
+    <div className="relative h-[calc(100dvh-105px)] min-h-[420px] overflow-hidden">
+      <div className="absolute top-3 right-4 z-10">
+        <button
+          onClick={() => navigate(`/agent?repo=${encodeURIComponent(repoPath)}`)}
+          title="Hand this task to the agentic engineering workspace"
+          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-border-subtle bg-surface-canvas text-txt-secondary hover:text-txt-primary hover:border-brand transition"
+        >
+          Open in Agent Workspace
+        </button>
+      </div>
+      <div className="h-full">
+        {profile && (
+          <ChatSurface
+            repoPath={repoPath}
+            profile={profile}
+            title={repoInfo?.description || repoPath}
+            suggestions={['Review this change for regressions', 'Run the tests and lint', 'Scan for exposed secrets', 'Explain what this repo does']}
+          />
+        )}
+      </div>
     </div>
   );
 };

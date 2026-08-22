@@ -160,14 +160,14 @@ const providerFields: ProfileField[] = [
     description: 'How much the model thinks before answering. Higher = deeper reasoning, slower.',
     type: 'select',
     options: ['none', 'low', 'medium', 'high'],
-    default: 'none',
+    default: 'medium',
   },
   {
     key: 'interleavedReasoning',
     label: 'Interleaved Reasoning',
     description: 'Stream the model step-by-step thinking inline, like Claude Code and Cursor.',
     type: 'toggle',
-    default: false,
+    default: true,
   },
 ];
 

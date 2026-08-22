@@ -7,13 +7,14 @@ This document is optimized for AI coding agents, autonomous DevOps assistants, a
 
 ## 1. What is Nixre?
 
-Nixre is a self-hosted Git forge UI (React/TypeScript) on top of a [Gitness](https://github.com/harness/harness) backend.
-- **Frontend Aesthetic:** Radicle-inspired design (Booton typography, JetBrains Mono code view, dark/light theme, flattened "decard" layout).
-- **Core Engine:** Gitness (Go) with Git Smart HTTP (`git clone`, `git push`) and SSH, embedded SQLite/Postgres.
-- **Passkeys:** local, browser-stored credentials that can re-confirm an *already active* session. Gitness has no WebAuthn API, so this cannot start a fresh login — sign in with a password/token first.
-- **Registration toggle:** the Admin Console can hide the sign-up page per-browser. This is UI-only; it does not block `/api/v1/register`. Real enforcement is the `GITNESS_USER_SIGNUP_ENABLED` env var on the backend.
-- **Pull Requests:** create, view unified diffs, and merge, backed by Gitness's `/pullreq` API.
-- **Architecture:** Zero commercial upsells, 100% sovereign open-source.
+Nixre is a fully self-hosted Git forge — its own Node.js backend ("nixre-core"), PostgreSQL, and bare Git repositories on disk. No third-party forge dependency.
+
+- **Architecture:** React/TypeScript SPA served by Caddy, in front of `nixre-core` (Node.js/Express) backed by Postgres 16. Repos are bare repositories under `REPOS_ROOT` (default `/data/repos`).
+- **Git transports:** Smart HTTP (`git clone` / `git push` over HTTPS) handled by nixre-core itself, plus SSH via a dedicated `nixre-ssh` container (port 3022).
+- **Forge features:** spaces with members and roles, repos, branches, pull requests (per-file unified diffs, merge), push webhooks.
+- **Auth:** email/uid + password sessions, personal access tokens (PATs), and WebAuthn passkeys. Passkeys are first-class: they can start a brand-new login session (challenge-exchange verified against Nixre's own passkey vault).
+- **AI Assistant:** embedded multi-provider assistant (DeepSeek, OpenAI, Anthropic, Ollama, or any OpenAI-compatible endpoint). API keys are AES-256-GCM encrypted server-side and never sent to the browser. Four modes: Ask, Plan, Agent, Debug. Agent mode runs a tool loop (list_files, read_file, search_code, run_command) with per-repo permission gates; `run_command` executes inside a disposable clone of the repo. Streaming replies with visible reasoning and automatic context compaction on long conversations.
+- **Account sync:** plugin configs, chat conversations, and passkeys sync across devices through the account-scoped sync service.
 
 ---
 
@@ -22,8 +23,8 @@ Nixre is a self-hosted Git forge UI (React/TypeScript) on top of a [Gitness](htt
 When a user asks to deploy Nixre or self-host a Git forge:
 
 1. **Verify Host Requirements:**
-   - Docker & Docker Compose or Go compiler + Node.js 24.
-   - Ports: `80` (HTTP/ACME), `443` (HTTPS), `3000` (Web UI/Caddy), `3001` (Backend).
+   - Docker & Docker Compose. Nothing else.
+   - Ports: `3000` (Web/Caddy), `3022` (Git SSH). nixre-core listens internally on `3002`; map it to any host port you want (e.g. `127.0.0.1:3001:3002`) if your reverse proxy already targets another port.
 
 2. **Deploy Container Stack:**
    ```bash
@@ -31,18 +32,30 @@ When a user asks to deploy Nixre or self-host a Git forge:
    cd Nixre
    docker compose up -d
    ```
+   This starts four services: `nixre-db` (Postgres 16), `nixre-core` (API + git HTTP), `nixre-ssh` (git SSH), `nixre-web` (Caddy serving the built UI). Database migrations apply automatically on boot.
 
-3. **Verify Service Health:**
-   ```bash
-   curl -I http://localhost:3000
-   curl -I http://localhost:3000/api/v1/spaces
+3. **Set Secrets (recommended):**
+   Create a `.env` next to `docker-compose.yml`:
    ```
+   NIXRE_INTERNAL_TOKEN=<random hex>
+   NIXRE_AI_SECRET=<random hex>
+   ```
+   `NIXRE_AI_SECRET` encrypts stored AI provider API keys at rest.
+
+4. **Verify Service Health:**
+   ```bash
+   curl http://localhost:3000            # UI
+   curl http://localhost:3000/api/v1/auth/login   # should be 400/401 JSON, not HTML
+   ```
+
+5. **First Account:**
+   Visit the UI and use **Register** to create the first account. First provider configured becomes the active AI provider.
 
 ---
 
 ## 3. Guiding Users Through Custom Domain Setup
 
-Agents should follow this exact sequence when configuring a custom domain (e.g. `git.example.com` or `nixre.dev`):
+Agents should follow this exact sequence when configuring a custom domain (e.g. `git.example.com`):
 
 ### Step 3.1: DNS Configuration
 Instruct the user to add an **A Record** at their DNS registrar (Cloudflare, Namecheap, GoDaddy, Porkbun):
@@ -55,7 +68,27 @@ Instruct the user to add an **A Record** at their DNS registrar (Cloudflare, Nam
 - **Type:** `CNAME` | **Name:** `git` | **Target:** `<tunnel-url>` | **Proxy:** `Proxied (Orange Cloud)`
 
 ### Step 3.2: Caddyfile Configuration
-Ensure the host's `/etc/caddy/Caddyfile` (or `Caddyfile` in repo) contains:
+Two supported patterns:
+
+**Pattern A — containerized Caddy (default compose):**
+```caddyfile
+:3000 {
+    handle /api/* {
+        reverse_proxy nixre-core:3002
+    }
+    handle /git/* {
+        reverse_proxy nixre-core:3002
+    }
+    handle {
+        root * /usr/share/caddy
+        try_files {path} /index.html
+        file_server
+    }
+}
+```
+Put TLS termination in front (host Caddy, Traefik, Cloudflare Tunnel, …).
+
+**Pattern B — host-level Caddy with automatic TLS:**
 ```caddyfile
 git.example.com {
     handle /api/* {
@@ -71,6 +104,7 @@ git.example.com {
     }
 }
 ```
+With compose mapping `"127.0.0.1:3001:3002"` for nixre-core. Certificates issue automatically via ACME.
 
 ---
 
@@ -87,6 +121,8 @@ Instruct the user to open `http://192.168.1.1` in their browser and add:
   - Protocol: `TCP` | Internal IP: `<LOCAL_IP>` | Internal Port: `80` | External Port: `80`
 - **Rule 2 (HTTPS / Web & Git Traffic):**
   - Protocol: `TCP` | Internal IP: `<LOCAL_IP>` | Internal Port: `443` | External Port: `443`
+- **Rule 3 (optional, Git over SSH):**
+  - Protocol: `TCP` | Internal IP: `<LOCAL_IP>` | Internal Port: `3022` | External Port: `3022`
 
 ### Step 4.3: ISP-Specific Troubleshooting (e.g. Sunrise Connect Box 3, Swisscom, UPC)
 - **DS-Lite / IPv6-Only Warning:** If the router's "Port Forwarding" menu is missing or blocked, the ISP line is running IPv6 DS-Lite.
@@ -99,15 +135,15 @@ Instruct the user to open `http://192.168.1.1` in their browser and add:
 
 ---
 
-## 5. Passkeys & Registration Toggle Guide
+## 5. Auth Details
 
-### Passkeys Setup
-- Users can register a device credential (Touch ID, Face ID, Windows Hello, YubiKey) in **Settings → Passkeys**.
-- The passkey button on the Sign-In page calls `navigator.credentials.get()`, but this only *re-confirms* a session that already exists in that browser (via `api.currentUser()`). Gitness has no WebAuthn backend to verify against, so a passkey cannot create a brand-new session — the user must have signed in with a password/token at some point already.
+### Passkeys
+- Users register device credentials (Touch ID, Face ID, Windows Hello, YubiKey) in **Settings → Passkeys**.
+- Passkeys can **start a fresh login session**: the sign-in page performs a WebAuthn ceremony against Nixre's own vault (`/api/v1/webauthn/login-challenge` → `/webauthn/login`) and receives a normal session token. Passwords remain a fully supported fallback.
 
-### Hiding the Registration Page (client-side only)
-- **Admin Console → Registration Page** toggles whether `/register` is shown in that browser. It does **not** block account creation via the API — anyone can still `POST /api/v1/register` directly.
-- To actually close an instance to new signups, set `GITNESS_USER_SIGNUP_ENABLED=false` in the Gitness backend's environment and restart the `nixre-backend` container. There is no runtime API for this in Gitness.
+### Closing Registrations
+- An admin can hide the registration page per browser (**Admin Console → Registration Page**). This is client-side only.
+- To close signups at the server today, block `POST /api/v1/register` at your reverse proxy (e.g. Caddy `respond @register 403`). There is no dedicated runtime flag yet.
 
 ---
 

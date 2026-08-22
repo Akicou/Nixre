@@ -178,8 +178,19 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
   }
   // Reasoning-effort knobs: OpenAI o-series/gpt-5 accept reasoning_effort;
   // DeepSeek's reasoner model enables thinking by itself (no param needed).
+  // OpenRouter-style gateways expose a `reasoning` object instead — request
+  // reasoning explicitly there so thinking models actually return it.
+  const isOpenRouter = provider === 'custom' || /openrouter\.ai/.test(base);
   if (provider === 'openai' && /^(o\d|gpt-5)/.test(model) && reasoningLevel !== 'none') {
     body.reasoning_effort = reasoningLevel; // low | medium | high
+  }
+  if (isOpenRouter && reasoningLevel !== 'none') {
+    // Maps to OpenRouter's `reasoning.effort` (Anthropic/Gemini translate it
+    // server-side); exclude:false keeps reasoning tokens in the response.
+    body.reasoning = {
+      effort: ['low', 'medium', 'high'].includes(reasoningLevel) ? reasoningLevel : 'medium',
+      exclude: false,
+    };
   }
 
   const r = await fetch(`${apiRoot(base)}/chat/completions`, {
@@ -222,8 +233,21 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
       await send({ type: 'finish', reason: finish === 'tool_calls' ? 'tool_calls' : 'stop' });
     }
     if (!delta) return;
-    if (delta.reasoning_content) {
-      await send({ type: 'reasoning', text: delta.reasoning_content });
+    // Reasoning arrives under different keys across OpenAI-compatible
+    // gateways: `reasoning_content` (DeepSeek), `reasoning` (OpenRouter /
+    // most gateways), or `reasoning_details` (OpenRouter structured form:
+    // [{type:'reasoning', text:'...'}] | string).
+    const reasoningTexts = [];
+    if (typeof delta.reasoning_content === 'string') reasoningTexts.push(delta.reasoning_content);
+    if (typeof delta.reasoning === 'string') reasoningTexts.push(delta.reasoning);
+    else if (Array.isArray(delta.reasoning_details)) {
+      for (const d of delta.reasoning_details) {
+        if (typeof d === 'string') reasoningTexts.push(d);
+        else if (typeof d?.text === 'string') reasoningTexts.push(d.text);
+      }
+    }
+    for (const text of reasoningTexts) {
+      if (text) await send({ type: 'reasoning', text });
     }
     if (delta.content) {
       await send({ type: 'text', text: delta.content });

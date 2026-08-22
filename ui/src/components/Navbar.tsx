@@ -10,7 +10,8 @@ import {
   Moon,
   KeyRound,
   Plus,
-  ChevronDown
+  ChevronDown,
+  Sparkles
 } from 'lucide-react';
 import { api, User, Space } from '../lib/api';
 import { currentSpaceFromPathname } from '../lib/repoPath';
@@ -130,6 +131,19 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
         <div className="flex items-center gap-3">
           {currentUser ? (
             <>
+              {/* Agentic engineering workspace — distinct from repo browsing */}
+              <Link
+                to="/agent"
+                title="Agentic engineering workspace"
+                className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border transition ${
+                  location.pathname === '/agent'
+                    ? 'border-brand bg-brand/10 text-brand'
+                    : 'border-border-subtle text-txt-secondary hover:text-txt-primary hover:border-border-mid'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Agent</span>
+              </Link>
               <Link
                 to="/new-repo"
                 className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm"

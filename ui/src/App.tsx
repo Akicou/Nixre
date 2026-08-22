@@ -10,6 +10,7 @@ import { Settings } from './pages/Settings';
 import { AdminView } from './pages/AdminView';
 import { Plugins } from './pages/Plugins';
 import { AssistantPage } from './pages/AssistantPage';
+import { AgentWorkspace } from './pages/AgentWorkspace';
 import { Login } from './pages/Login';
 import { Register } from './pages/Register';
 import { api, User } from './lib/api';
@@ -60,6 +61,7 @@ export const App: React.FC = () => {
             <Route path="/settings" element={currentUser ? <Settings user={currentUser} /> : <Navigate to="/login" />} />
             <Route path="/admin" element={currentUser && currentUser.admin ? <AdminView /> : <Navigate to="/" />} />
             <Route path="/plugins" element={currentUser ? <Plugins /> : <Navigate to="/login" />} />
+            <Route path="/agent" element={currentUser ? <AgentWorkspace /> : <Navigate to="/login" />} />
             <Route path="/:space/:repo/assistant" element={currentUser ? <AssistantPage /> : <Navigate to="/login" />} />
             
             <Route path="/login" element={currentUser ? <Navigate to="/" /> : <Login onLoginSuccess={setCurrentUser} />} />

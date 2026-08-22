@@ -34,10 +34,10 @@ describe('assistantProfiles (server-backed)', () => {
     expect(active.models).toContain('deepseek-reasoner');
   });
 
-  it('defaults reasoning off with no reasoning effort', () => {
+  it('defaults reasoning on with medium effort and inline display', () => {
     const def = defaultProviderProfile();
-    expect(def.reasoningLevel).toBe('none');
-    expect(def.interleavedReasoning).toBe(false);
+    expect(def.reasoningLevel).toBe('medium');
+    expect(def.interleavedReasoning).toBe(true);
   });
 
   it('round-trips reasoning controls', async () => {

@@ -28,10 +28,13 @@ describe('ChatSurface', () => {
     expect(screen.getByText(/Run the tests and lint/i)).toBeInTheDocument();
   });
 
-  it('renders the model and reasoning pickers', async () => {
+  it('renders the model card with effort badge', async () => {
     await mount();
-    expect(await screen.findByText(/deepseek-chat/)).toBeInTheDocument();
-    expect(screen.getByText(/Reasoning:/i)).toBeInTheDocument();
+    const modelBtn = await screen.findByText(/deepseek-chat/);
+    fireEvent.click(modelBtn.closest('button') ?? modelBtn);
+    // Reasoning effort now lives inside the Cursor-style model card footer.
+    expect(await screen.findByText(/Reasoning effort/i)).toBeInTheDocument();
+    expect(screen.getByText('medium')).toBeInTheDocument();
   });
 
   it('streams a real turn through the provider proxy', async () => {
