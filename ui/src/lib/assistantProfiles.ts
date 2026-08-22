@@ -87,7 +87,9 @@ function fromAiProfile(p: AiProfile): AssistantProviderProfile {
   return {
     provider: p.provider,
     baseUrl: p.baseUrl,
-    model: p.model || def.model,
+    // No invented default: the model is whatever the server has — empty
+    // until a provider is validated and models are fetched.
+    model: p.model || '',
     temperature: def.temperature,
     maxTokens: def.maxTokens,
     reasoningLevel: p.reasoningLevel,

@@ -243,15 +243,9 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
               ))}
             </select>
           ) : (
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={model}
-                onChange={e => setModel(e.target.value)}
-                placeholder="save a validated key first, or type a model id"
-                className={inputCls}
-              />
-            </div>
+            <p className="text-[11px] text-txt-tertiary italic px-1 py-2 border border-dashed border-border-subtle rounded-md">
+              No models yet — save a valid API key (or point Ollama/custom at a reachable base URL) and models will be fetched from the provider.
+            </p>
           )}
           {validatedAt && (
             <p className="text-[11px] text-txt-open flex items-center gap-1">
@@ -296,7 +290,8 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
       <div className="flex justify-end pt-2">
         <button
           type="button"
-          disabled={saving}
+          disabled={saving || models.length === 0}
+          title={models.length === 0 ? 'No provider-validated models — save a valid API key first' : undefined}
           onClick={handleSave}
           className="px-4 py-2 rounded bg-brand text-white text-xs font-medium hover:bg-brand-hover disabled:opacity-50 transition shadow-sm flex items-center gap-1.5"
         >

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Send,
   Plus,
@@ -102,7 +103,9 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   // and the UI says so.
   const realAi = isRealAi(profile);
   // Model options come from the live provider list (server-fetched cache).
-  const modelOptions = profile.models.length > 0 ? profile.models : [profile.model].filter(Boolean);
+  // No provider configured -> no models at all: the picker is disabled and
+  // shows why instead of offering a meaningless default.
+  const modelOptions = profile.models;
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -240,9 +243,11 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     }
   };
 
+  // Only meaningful when models exist; the no-provider branch renders its
+  // own label instead of reading this.
   const activeModelLabel = modelOptions.includes(workingModel)
     ? workingModel
-    : workingModel || profile.model;
+    : modelOptions[0] ?? '';
 
   return (
     <div className="flex h-full min-h-0 bg-surface-base">
@@ -363,15 +368,29 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           {/* Model + reasoning pickers */}
           <div className="flex items-center gap-2 max-w-3xl mx-auto mb-2 flex-wrap">
             <div ref={modelRef} className="relative">
-              <button
-                onClick={() => { setModelOpen(!modelOpen); setReasoningOpen(false); }}
-                className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border border-border-subtle bg-surface-base text-txt-primary hover:border-brand transition"
-              >
-                <span className="hidden sm:inline">Model:</span>
-                <span className="font-mono">{activeModelLabel}</span>
-                <ChevronDown className="w-3.5 h-3.5 text-txt-tertiary" />
-              </button>
-              {modelOpen && (
+              {modelOptions.length > 0 ? (
+                <button
+                  onClick={() => { setModelOpen(!modelOpen); setReasoningOpen(false); }}
+                  className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border border-border-subtle bg-surface-base text-txt-primary hover:border-brand transition"
+                >
+                  <span className="hidden sm:inline">Model:</span>
+                  <span className="font-mono">{activeModelLabel}</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-txt-tertiary" />
+                </button>
+              ) : (
+                <Link
+                  to="/plugins"
+                  title="Configure an AI provider to enable model selection"
+                  className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border border-border-subtle bg-surface-base text-txt-tertiary cursor-not-allowed"
+                  onClick={e => {
+                    if (realAi) e.preventDefault();
+                  }}
+                >
+                  <span className="hidden sm:inline">Model:</span>
+                  <span className="italic">no provider configured</span>
+                </Link>
+              )}
+              {modelOpen && modelOptions.length > 0 && (
                 <div className="absolute left-0 bottom-8 w-56 rounded-md border border-border-mid bg-surface-canvas shadow-xl py-1 z-30 animate-pop max-h-64 overflow-y-auto">
                   {modelOptions.map(m => (
                     <button

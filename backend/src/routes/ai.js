@@ -47,7 +47,8 @@ export function aiRoutes(pool, authenticate) {
   api.get('/ai/profile', auth, async (req, res) => {
     const row = await getRow(pool, req.auth.user.uid);
     if (!row) {
-      // Sensible defaults straight from the registry.
+      // Nothing configured: no model either — one only exists after a
+      // provider is validated and its models are fetched.
       const def = PROVIDERS.deepseek;
       res.json({
         provider: 'deepseek',
@@ -56,7 +57,7 @@ export function aiRoutes(pool, authenticate) {
         keyConfigured: false,
         keyMask: null,
         validatedAt: null,
-        model: def.defaultModel,
+        model: '',
         reasoningLevel: 'none',
         interleavedReasoning: false,
         models: [],
