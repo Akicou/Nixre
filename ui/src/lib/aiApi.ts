@@ -52,9 +52,15 @@ export interface AiProfile {
   updatedAt: number;
 }
 
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export interface ChatTurn {
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
+  // String for ordinary turns; multimodal user turns use OpenRouter/OpenAI
+  // content parts (text + image_url).
+  content: string | ChatContentPart[];
   // Present on assistant messages that request agent tools.
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
   // Present on tool-result messages.

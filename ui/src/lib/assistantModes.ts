@@ -35,6 +35,9 @@ You are embedded in Nixre, a self-hosted Git forge. Users work with spaces
 repository context is attached to the conversation, treat its file tree,
 recent commits and pull requests as your working context. If no repository
 context is attached, ask which repo the work targets before deep-diving.
+When a screenshot, diagram or asset would help the user see what you mean, call
+the show_images tool with repo-relative image paths (png/jpg/gif/webp). The UI
+renders them inline — never dump base64 into the reply.
 </about_nixre>`;
 
 // --- mode prompts -------------------------------------------------------------

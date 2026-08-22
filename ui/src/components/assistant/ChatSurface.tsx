@@ -38,6 +38,8 @@ import {
   type Conversation,
 } from '../../lib/assistantEngine';
 import { ChatMessageView } from './ChatMessageView';
+import { ComposerAttach } from './ComposerAttach';
+import { appendPastedImages, imageFilesFromClipboard, type ChatImage } from '../../lib/chatImages';
 
 interface RepoOption {
   path: string;
@@ -100,6 +102,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [workingModel, setWorkingModel] = useState(profile.model);
   const [workingReasoning, setWorkingReasoning] = useState(profile.reasoningLevel);
@@ -194,6 +197,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     setCurrentId(null);
     setMessages([]);
     setInput('');
+    setPendingImages([]);
   };
 
   const loadConversation = (conv: Conversation) => {
@@ -213,7 +217,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   };
 
   /** Core turn runner — `base` is the transcript the turn appends to. */
-  const runTurn = async (prompt: string, base: ChatMessage[], modelPromptPrefix?: string) => {
+  const runTurn = async (prompt: string, base: ChatMessage[], images: ChatImage[] = []) => {
     if (!realAi) return;
     const controller = new AbortController();
     abortRef.current = controller;
@@ -233,6 +237,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         id: uid('u'),
         role: 'user',
         content: prompt,
+        images: images.length ? images : undefined,
         createdAt: Date.now(),
       };
       // Accumulate locally: state from the closure would go stale across
@@ -277,6 +282,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           agent: mode === 'agent' || mode === 'debug',
           signal: controller.signal,
           extraContext: extraContext ? `${extraContext.label}\n\n${extraContext.text}` : undefined,
+          images: images.length ? images : undefined,
         })) {
           local = applyEvent(local, ev);
           setMessages(local);
@@ -317,10 +323,12 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
 
   const send = (text?: string) => {
     const prompt = (text ?? input).trim();
-    if (!prompt || streaming || !realAi) return;
+    if ((!prompt && pendingImages.length === 0) || streaming || !realAi) return;
+    const images = pendingImages;
     setInput('');
+    setPendingImages([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    void runTurn(prompt, messages);
+    void runTurn(prompt || '(image)', messages, images);
   };
 
   const stop = () => abortRef.current?.abort();
@@ -686,8 +694,18 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     </div>
   );
 
+  const onPasteImages = async (e: React.ClipboardEvent) => {
+    const files = imageFilesFromClipboard(e.clipboardData);
+    if (files.length === 0) return;
+    e.preventDefault();
+    const { next } = await appendPastedImages(pendingImages, files);
+    setPendingImages(next);
+  };
+
   const composerRow = (
-    <div className="flex items-end gap-2 max-w-3xl mx-auto">
+    <div className="flex-1 min-w-0">
+      <ComposerAttach images={pendingImages} onRemove={id => setPendingImages(imgs => imgs.filter(i => i.id !== id))} />
+      <div className="flex items-end gap-2 max-w-3xl mx-auto">
       <textarea
         ref={textareaRef}
         rows={1}
@@ -699,6 +717,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           el.style.height = Math.min(el.scrollHeight, 200) + 'px';
         }}
         onKeyDown={handleKeyDown}
+        onPaste={onPasteImages}
         placeholder={
           realAi
             ? mode === 'agent'
@@ -722,13 +741,14 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
       ) : (
         <button
           onClick={() => send()}
-          disabled={!input.trim() || !realAi}
+          disabled={(!input.trim() && pendingImages.length === 0) || !realAi}
           className="p-2.5 rounded-md bg-brand text-white hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm shrink-0"
           title="Send"
         >
           <Send className="w-4 h-4" />
         </button>
       )}
+      </div>
     </div>
   );
 

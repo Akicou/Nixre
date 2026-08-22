@@ -19,6 +19,37 @@ import {
 import { TOOL_SCHEMAS, executeTool } from '../lib/agentTools.js';
 
 const MODEL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const MAX_MSG = 64_000;
+const MAX_IMAGE_URL = 6 * 1024 * 1024; // ~4MB binary as a data URL
+const ALLOWED_ROLES = new Set(['user', 'assistant', 'system', 'tool']);
+
+function isAllowedImageUrl(url) {
+  if (typeof url !== 'string' || url.length > MAX_IMAGE_URL) return false;
+  return /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(url) || /^https?:\/\//i.test(url);
+}
+
+function isAllowedContent(content) {
+  if (typeof content === 'string') return content.length <= MAX_MSG;
+  if (!Array.isArray(content) || content.length === 0 || content.length > 8) return false;
+  let chars = 0;
+  for (const part of content) {
+    if (!part || typeof part !== 'object') return false;
+    if (part.type === 'text' && typeof part.text === 'string') {
+      chars += part.text.length;
+    } else if (part.type === 'image_url' && isAllowedImageUrl(part.image_url?.url)) {
+      chars += String(part.image_url.url).length;
+    } else {
+      return false;
+    }
+  }
+  return chars <= MAX_MSG + MAX_IMAGE_URL * 4;
+}
+
+function isAllowedChatMessage(m) {
+  if (!m || !ALLOWED_ROLES.has(m.role) || !isAllowedContent(m.content)) return false;
+  if (m.role === 'tool' && typeof m.tool_call_id !== 'string') return false;
+  return true;
+}
 
 function rowToProvider(row) {
   const def = PROVIDERS[row.provider] ?? PROVIDERS.custom;
@@ -425,18 +456,7 @@ export function aiRoutes(pool, authenticate) {
       return;
     }
     const messages = Array.isArray(req.body?.messages)
-      ? req.body.messages
-          .filter(
-            m =>
-              m &&
-              typeof m.content === 'string' &&
-              (['user', 'assistant', 'system'].includes(m.role) ||
-                // Tool results from the agent loop.
-                (m.role === 'tool' && typeof m.tool_call_id === 'string')) &&
-              // Bound tool payloads like everything else.
-              m.content.length <= 64_000,
-          )
-          .slice(-60)
+      ? req.body.messages.filter(isAllowedChatMessage).slice(-60)
       : [];
     if (messages.length === 0) {
       res.status(400).json({ message: 'messages required' });

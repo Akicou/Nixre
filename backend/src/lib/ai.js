@@ -276,6 +276,24 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, 
       }
       return { role: 'assistant', content };
     }
+    // OpenAI/OpenRouter image_url parts → Anthropic image blocks.
+    if (Array.isArray(m.content)) {
+      return {
+        role: m.role,
+        content: m.content.map(part => {
+          if (part?.type === 'text') return { type: 'text', text: String(part.text || '') };
+          if (part?.type === 'image_url') {
+            const url = String(part.image_url?.url || '');
+            const m64 = url.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+            if (m64) {
+              return { type: 'image', source: { type: 'base64', media_type: m64[1], data: m64[2] } };
+            }
+            return { type: 'image', source: { type: 'url', url } };
+          }
+          return { type: 'text', text: '' };
+        }),
+      };
+    }
     return m;
   });
 

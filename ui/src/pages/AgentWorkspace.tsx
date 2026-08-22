@@ -41,6 +41,8 @@ import {
   type Conversation,
 } from '../lib/assistantEngine';
 import { ChatMessageView } from '../components/assistant/ChatMessageView';
+import { ComposerAttach } from '../components/assistant/ComposerAttach';
+import { appendPastedImages, imageFilesFromClipboard, type ChatImage } from '../lib/chatImages';
 
 interface WorkspaceRepo {
   path: string;
@@ -81,6 +83,7 @@ export const AgentWorkspace: React.FC = () => {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [mode, setMode] = useState<ModeId>('agent');
   const [workingModel, setWorkingModel] = useState('');
@@ -210,7 +213,7 @@ export const AgentWorkspace: React.FC = () => {
   const empty = messages.length === 0 && !currentId;
 
   // --- turn loop -----------------------------------------------------------
-  const runTurn = async (prompt: string, base: ChatMessage[]) => {
+  const runTurn = async (prompt: string, base: ChatMessage[], images: ChatImage[] = []) => {
     if (!realAi || !profile || !activeRepo) return;
     const controller = new AbortController();
     abortRef.current = controller;
@@ -231,6 +234,7 @@ export const AgentWorkspace: React.FC = () => {
         id: uid('u'),
         role: 'user',
         content: prompt,
+        images: images.length ? images : undefined,
         createdAt: Date.now(),
       };
       let local: ChatMessage[] = [...base, userMessage];
@@ -275,6 +279,7 @@ export const AgentWorkspace: React.FC = () => {
           repoPath: activeRepo,
           agent: mode === 'agent' || mode === 'debug',
           signal: controller.signal,
+          images: images.length ? images : undefined,
         })) {
           local = applyEvent(local, ev);
           setMessages(local);
@@ -325,16 +330,19 @@ export const AgentWorkspace: React.FC = () => {
 
   const send = (text?: string) => {
     const prompt = (text ?? input).trim();
-    if (!prompt || streaming || !realAi) return;
+    if ((!prompt && pendingImages.length === 0) || streaming || !realAi) return;
+    const images = pendingImages;
     setInput('');
+    setPendingImages([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    void runTurn(prompt, messages);
+    void runTurn(prompt || '(image)', messages, images);
   };
 
   const startNew = () => {
     setCurrentId(null);
     setMessages([]);
     setInput('');
+    setPendingImages([]);
     setTimeout(() => textareaRef.current?.focus(), 50);
   };
 
@@ -480,6 +488,9 @@ export const AgentWorkspace: React.FC = () => {
         empty ? 'max-w-[40rem]' : 'max-w-3xl'
       }`}
     >
+      <div className="px-3 pt-3">
+        <ComposerAttach images={pendingImages} onRemove={id => setPendingImages(imgs => imgs.filter(i => i.id !== id))} />
+      </div>
       <textarea
         ref={textareaRef}
         rows={empty ? 3 : 1}
@@ -491,6 +502,13 @@ export const AgentWorkspace: React.FC = () => {
           el.style.height = Math.min(el.scrollHeight, empty ? 220 : 160) + 'px';
         }}
         onKeyDown={handleKeyDown}
+        onPaste={async e => {
+          const files = imageFilesFromClipboard(e.clipboardData);
+          if (files.length === 0) return;
+          e.preventDefault();
+          const { next } = await appendPastedImages(pendingImages, files);
+          setPendingImages(next);
+        }}
         placeholder={
           mode === 'agent'
             ? 'Plan, Build, / for tools, @ for context'
@@ -520,7 +538,7 @@ export const AgentWorkspace: React.FC = () => {
           <button
             type="button"
             onClick={() => send()}
-            disabled={!input.trim() || !activeRepo}
+            disabled={(!input.trim() && pendingImages.length === 0) || !activeRepo}
             title="Send"
             className="w-8 h-8 rounded-full flex items-center justify-center bg-txt-primary text-surface-base hover:opacity-90 disabled:opacity-25 disabled:cursor-not-allowed transition"
           >

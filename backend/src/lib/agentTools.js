@@ -57,6 +57,22 @@ export const TOOL_SCHEMAS = [
       required: ['command'],
     },
   },
+  {
+    name: 'show_images',
+    description:
+      'Display one or more images from the repository in the chat so the user can see them. Pass repo-relative paths (png/jpg/gif/webp). Use when a screenshot, diagram or asset would help the user.',
+    parameters: {
+      type: 'object',
+      properties: {
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Repo-relative image paths to display',
+        },
+      },
+      required: ['paths'],
+    },
+  },
 ];
 
 // --- safety -----------------------------------------------------------------
@@ -192,11 +208,61 @@ export async function runCommand(space, repo, args) {
   }
 }
 
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+const MAX_SHOW_IMAGES = 4;
+const MAX_SHOW_BYTES = 2 * 1024 * 1024;
+const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+
+export async function showImages(space, repo, args) {
+  assertRepo(space, repo);
+  const raw = Array.isArray(args?.paths) ? args.paths : [];
+  const paths = raw.map(p => String(p || '')).filter(Boolean).slice(0, MAX_SHOW_IMAGES);
+  if (paths.length === 0) throw new Error('paths required');
+  const dir = repoDir(space, repo);
+  const images = [];
+  const notes = [];
+  for (const p of paths) {
+    try {
+      const safe = assertSafePath(p);
+      if (!IMAGE_EXT.test(safe)) {
+        notes.push(`${safe}: not an image`);
+        continue;
+      }
+      const ext = safe.split('.').pop().toLowerCase();
+      const { stdout } = await exec('git', ['-C', dir, 'show', `HEAD:${safe}`], {
+        encoding: 'buffer',
+        maxBuffer: MAX_SHOW_BYTES + 1024,
+        timeout: 15_000,
+      });
+      const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '', 'binary');
+      if (buf.length > MAX_SHOW_BYTES) {
+        notes.push(`${safe}: too large (max ${MAX_SHOW_BYTES / 1024 / 1024}MB)`);
+        continue;
+      }
+      const mime = MIME[ext] || 'image/png';
+      images.push({
+        path: safe,
+        mime,
+        dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
+      });
+    } catch {
+      notes.push(`${p}: not found`);
+    }
+  }
+  return {
+    output: JSON.stringify({
+      images,
+      note: notes.length ? notes.join('; ') : undefined,
+    }),
+  };
+}
+
 const EXECUTORS = {
   list_files: (space, repo, args) => listFiles(space, repo, args),
   read_file: (space, repo, args) => readFile(space, repo, args),
   search_code: (space, repo, args) => searchCode(space, repo, args),
   run_command: (space, repo, args) => runCommand(space, repo, args),
+  show_images: (space, repo, args) => showImages(space, repo, args),
 };
 
 /**

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { ChatMessage, ToolCall } from '../../lib/assistantEngine';
 import { Markdown } from '../Markdown';
+import { parseShownImages, type ChatImage } from '../../lib/chatImages';
 
 /**
  * Shared renderer for a single chat turn — used by the repo ChatSurface and
@@ -90,8 +91,15 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
             </div>
           ) : (
             <>
-              <div className="inline-block max-w-[85%] rounded-lg rounded-tr-sm px-3 py-2 bg-brand text-white text-xs leading-relaxed">
-                <span className="whitespace-pre-line break-words">{message.content}</span>
+              <div className="inline-flex flex-col items-end gap-2 max-w-[85%]">
+                {message.images && message.images.length > 0 && (
+                  <ImageStrip images={message.images} />
+                )}
+                {message.content && (
+                  <div className="rounded-lg rounded-tr-sm px-3 py-2 bg-brand text-white text-xs leading-relaxed">
+                    <span className="whitespace-pre-line break-words">{message.content}</span>
+                  </div>
+                )}
               </div>
               {onEdit && !streaming && (
                 <button
@@ -223,7 +231,8 @@ interface ToolBlockProps {
 }
 
 const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
-  const [open, setOpen] = useState(false);
+  const shown = tool.name === 'show_images' && tool.output ? parseShownImages(tool.output) : [];
+  const [open, setOpen] = useState(shown.length > 0);
   return (
     <div className="rounded-md border border-border-subtle bg-surface-base overflow-hidden max-w-xl">
       <button
@@ -249,11 +258,55 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
           <ChevronRight className="w-3.5 h-3.5 text-txt-tertiary shrink-0" />
         )}
       </button>
-      {open && tool.output != null && (
+      {open && shown.length > 0 && (
+        <div className="px-3 pb-3 pt-1">
+          <ImageStrip images={shown} />
+        </div>
+      )}
+      {open && shown.length === 0 && tool.output != null && (
         <pre className="px-3 pb-2 text-[11px] font-mono text-txt-secondary overflow-x-auto whitespace-pre leading-relaxed">
           {tool.output}
         </pre>
       )}
     </div>
+  );
+};
+
+export const ImageStrip: React.FC<{ images: ChatImage[] }> = ({ images }) => {
+  const [lightbox, setLightbox] = useState<ChatImage | null>(null);
+  if (!images.length) return null;
+  return (
+    <>
+      <div className="flex flex-wrap gap-2">
+        {images.map(img => (
+          <button
+            key={img.id}
+            type="button"
+            onClick={() => setLightbox(img)}
+            className="group relative rounded-lg overflow-hidden border border-border-subtle bg-surface-base hover:border-border-mid transition"
+            title={img.name || 'Open image'}
+          >
+            <img src={img.dataUrl} alt={img.name || 'attached'} className="max-h-40 max-w-[14rem] object-contain block" />
+            {img.name && (
+              <span className="absolute bottom-0 inset-x-0 px-1.5 py-0.5 text-[10px] font-mono text-txt-secondary bg-surface-canvas/80 truncate">
+                {img.name}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6"
+          onClick={() => setLightbox(null)}
+        >
+          <img
+            src={lightbox.dataUrl}
+            alt={lightbox.name || 'preview'}
+            className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl"
+          />
+        </div>
+      )}
+    </>
   );
 };

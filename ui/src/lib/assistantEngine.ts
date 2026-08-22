@@ -10,6 +10,7 @@
 import type { AssistantProviderProfile } from './assistantProfiles';
 import type { ChatTurn } from './aiApi';
 import * as sync from './syncApi';
+import { toMultimodalParts, type ChatImage } from './chatImages';
 
 export type ToolStatus = 'running' | 'success' | 'error';
 
@@ -30,6 +31,7 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  images?: ChatImage[];
   toolCalls?: ToolCall[];
   reasoning?: ReasoningBlock[];
   createdAt: number;
@@ -93,14 +95,18 @@ export function shouldAutoCompact(messages: ChatMessage[]): boolean {
 /** Build what the model should see: the active summary (if any) + recent turns. */
 export function buildModelContext(messages: ChatMessage[]): {
   summary: string | null;
-  history: { role: 'user' | 'assistant'; content: string }[];
+  history: { role: 'user' | 'assistant'; content: string; images?: ChatImage[] }[];
 } {
   const start = lastCompactionIndex(messages);
   const entry = start >= 0 ? (messages[start] as unknown as CompactionEntry) : null;
   const rest = messages.slice(start + 1).filter(isTurnMessage);
   return {
     summary: entry?.summary ?? null,
-    history: rest.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    history: rest.map(m => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+      ...(m.images?.length ? { images: m.images } : {}),
+    })),
   };
 }
 
@@ -298,7 +304,7 @@ let reasonSeq = 0;
 export async function* runRealTurn(
   prompt: string,
   profile: AssistantProviderProfile,
-  history: { role: 'user' | 'assistant'; content: string }[],
+  history: { role: 'user' | 'assistant'; content: string | ChatTurn['content']; images?: ChatImage[] }[],
   overrides: {
     model?: string;
     reasoningLevel?: string;
@@ -308,6 +314,7 @@ export async function* runRealTurn(
     agent?: boolean;
     signal?: AbortSignal;
     extraContext?: string;
+    images?: ChatImage[];
   } = {},
 ): AsyncGenerator<EngineEvent> {
   const aiApi = await import('./aiApi');
@@ -330,8 +337,19 @@ export async function* runRealTurn(
     ...(overrides.compactionSummary
       ? [{ role: 'system' as const, content: formatCompactionForPrompt(overrides.compactionSummary) }]
       : []),
-    ...history.slice(-20),
-    { role: 'user', content: prompt },
+    ...history.slice(-20).map(m => {
+      if (m.role === 'user' && m.images && m.images.length > 0) {
+        return { role: 'user' as const, content: toMultimodalParts(typeof m.content === 'string' ? m.content : '', m.images) };
+      }
+      return { role: m.role as 'user' | 'assistant', content: typeof m.content === 'string' ? m.content : '' };
+    }),
+    {
+      role: 'user',
+      content:
+        overrides.images && overrides.images.length > 0
+          ? toMultimodalParts(prompt, overrides.images)
+          : prompt,
+    },
   ];
 
   let errored: string | null = null;
