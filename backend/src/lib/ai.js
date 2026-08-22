@@ -88,6 +88,14 @@ function resolveProvider(provider, baseUrl) {
   return { def, base };
 }
 
+// Build the API root from a user-supplied base URL. Many OpenAI-compatible
+// servers expose the API at `.../v1` (the user pastes the full root, e.g.
+// `http://host:8888/v1`), while canonical providers use the bare domain.
+// Normalize: append `/v1` only when the base doesn't already end with it.
+function apiRoot(base) {
+  return /\/v\d+$/.test(base) ? base : `${base}/v1`;
+}
+
 // --- model listing ----------------------------------------------------------------
 
 export async function listModels(provider, apiKey, baseUrl) {
@@ -95,12 +103,13 @@ export async function listModels(provider, apiKey, baseUrl) {
 
   let url;
   const headers = {};
+  const root = apiRoot(base);
   if (def.kind === 'anthropic') {
-    url = `${base}/v1/models`;
+    url = `${root}/models`;
     headers['x-api-key'] = apiKey;
     headers['anthropic-version'] = '2023-06-01';
   } else {
-    url = `${base}/v1/models`;
+    url = `${root}/models`;
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
@@ -113,10 +122,14 @@ export async function listModels(provider, apiKey, baseUrl) {
   }
   const body = await r.json();
   // OpenAI-compatible: {data: [{id}]}; Anthropic: {data: [{id}]} — same shape.
-  const models = (body.data || [])
-    .map(m => m.id)
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+  // Some servers (e.g. Unsloth Studio) add a `loaded` flag: only the loaded
+  // model(s) can actually serve requests unless server-side model switching
+  // is enabled. Prefer those when reported; otherwise return everything.
+  const entries = body.data || [];
+  const loaded = entries.filter(m => m?.loaded === true).map(m => m.id).filter(Boolean);
+  const models = (loaded.length > 0 ? loaded : entries.map(m => m.id).filter(Boolean)).sort((a, b) =>
+    a.localeCompare(b),
+  );
   return models;
 }
 
@@ -155,7 +168,7 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
     body.reasoning_effort = reasoningLevel; // low | medium | high
   }
 
-  const r = await fetch(`${base}/v1/chat/completions`, {
+  const r = await fetch(`${apiRoot(base)}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -206,7 +219,7 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel }
     body.thinking = { type: 'enabled', budget_tokens: { low: 2048, medium: 8192, high: 16384 }[reasoningLevel] || 4096 };
   }
 
-  const r = await fetch(`${base}/v1/messages`, {
+  const r = await fetch(`${apiRoot(base)}/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
