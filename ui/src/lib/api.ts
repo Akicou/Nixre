@@ -8,6 +8,7 @@ export interface User {
   admin: boolean;
   blocked?: boolean;
   avatar_url?: string;
+  socials?: SocialLink[];
   created?: number;
   updated?: number;
 }
@@ -74,6 +75,25 @@ export interface CommitDetail {
   files: { path: string; additions: number; deletions: number; status: string }[];
 }
 
+export interface SocialLink {
+  platform: string;
+  url: string;
+}
+
+export interface UserGoal {
+  id: string;
+  label: string;
+  current: number;
+  target: number;
+  done: boolean;
+  count?: number;
+  repo?: { space_uid: string; uid: string; path: string; default_branch: string; readme: string } | null;
+}
+
+export interface UserGoals {
+  goals: UserGoal[];
+}
+
 export interface UserProfile {
   uid: string;
   display_name: string;
@@ -85,6 +105,12 @@ export interface UserProfile {
   is_public: boolean;
   avatar: string;
   avatar_url?: string;
+  socials?: SocialLink[];
+  profile_readme?: {
+    exists: boolean;
+    hasReadme: boolean;
+    repo: { path: string; default_branch: string; readme: string } | null;
+  };
   created: number;
   repos: Repository[];
 }
@@ -330,7 +356,7 @@ class ApiClient {
     return this.request<Repository>(`/repos/${repoRef}/+`);
   }
 
-  async createRepo(parent_ref: string, uid: string, description: string, is_public = true, readme = true, default_branch = 'main'): Promise<Repository> {
+  async createRepo(parent_ref: string, uid: string, description: string, is_public = true, readme = true, default_branch = 'main', readmeContent?: string): Promise<Repository> {
     try {
       return await this.request<Repository>('/repos', {
         method: 'POST',
@@ -341,6 +367,7 @@ class ApiClient {
           is_public,
           readme,
           default_branch,
+          ...(readmeContent !== undefined ? { readmeContent } : {}),
         }),
       });
     } catch (err) {
@@ -421,6 +448,17 @@ class ApiClient {
 
   async getUserProfile(uid: string): Promise<UserProfile> {
     return this.request<UserProfile>(`/users/${uid}`);
+  }
+
+  async getUserGoals(uid: string): Promise<UserGoals> {
+    return this.request<UserGoals>(`/users/${uid}/goals`);
+  }
+
+  async updateUserProfile(update: { display_name?: string; socials?: SocialLink[] }): Promise<User> {
+    return this.request<User>('/user/profile', {
+      method: 'PUT',
+      body: JSON.stringify(update),
+    });
   }
 
   async getBranches(repoRef: string): Promise<Branch[]> {

@@ -7,9 +7,13 @@ import {
   Shield,
   Trash2,
   Fingerprint,
-  ImagePlus
+  ImagePlus,
+  Plus,
+  Link2,
+  Save,
+  Loader2
 } from 'lucide-react';
-import { api, User, PublicKey, Token } from '../lib/api';
+import { api, User, PublicKey, Token, SocialLink } from '../lib/api';
 import { WebAuthnService, StoredPasskey } from '../lib/webauthn';
 import { daysToNanoseconds } from '../lib/duration';
 import { Avatar } from '../components/Avatar';
@@ -46,9 +50,17 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
   const [avatarMsg, setAvatarMsg] = useState('');
 
+  // Profile (display name + socials) state
+  const [displayName, setDisplayName] = useState(user?.display_name || '');
+  const [socials, setSocials] = useState<SocialLink[]>(user?.socials ?? []);
+  const [profileMsg, setProfileMsg] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
+
   useEffect(() => {
     setAvatarUrl(user?.avatar_url || '');
-  }, [user?.avatar_url]);
+    setDisplayName(user?.display_name || '');
+    setSocials(user?.socials ?? []);
+  }, [user?.avatar_url, user?.display_name, user?.socials]);
 
   useEffect(() => {
     if (location.hash === '#passkeys') {
@@ -164,6 +176,24 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
     }
   };
 
+  const saveProfile = async () => {
+    if (!user) return;
+    setProfileMsg('');
+    setSavingProfile(true);
+    try {
+      const updated = await api.updateUserProfile({
+        display_name: displayName,
+        socials: socials.filter(s => s.platform.trim() && s.url.trim()),
+      });
+      onUserChange?.(updated);
+      setProfileMsg('Saved.');
+    } catch (err: any) {
+      setProfileMsg(err.message || 'Failed to save profile.');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8 w-full min-w-0">
       {/* Settings Header */}
@@ -269,12 +299,90 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
                   <span className="text-txt-primary font-semibold">{user.email}</span>
                 </div>
                 <div className="p-3 rounded bg-surface-base border border-border-subtle">
-                  <span className="text-txt-tertiary block mb-1">Display Name:</span>
-                  <span className="text-txt-primary font-semibold">{user.display_name || user.uid}</span>
-                </div>
-                <div className="p-3 rounded bg-surface-base border border-border-subtle">
                   <span className="text-txt-tertiary block mb-1">Role:</span>
                   <span className="text-txt-brand font-semibold">{user.admin ? 'Administrator' : 'Standard User'}</span>
+                </div>
+              </div>
+
+              <div className="space-y-4 pt-2 border-t border-border-subtle">
+                <div>
+                  <label className="block text-xs font-semibold text-txt-secondary uppercase tracking-wider mb-1.5">
+                    Display Name
+                  </label>
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={e => setDisplayName(e.target.value)}
+                    className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-sm focus:border-brand transition"
+                  />
+                </div>
+
+                <div>
+                  <span className="block text-xs font-semibold text-txt-secondary uppercase tracking-wider mb-1.5">
+                    Social Links
+                  </span>
+                  <p className="text-[11px] text-txt-tertiary mb-2">
+                    Add links to show on your public profile — e.g. GitHub, X/Twitter, LinkedIn, or your site.
+                  </p>
+                  <div className="space-y-2">
+                    {socials.map((s, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <Link2 className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-txt-tertiary" />
+                          <input
+                            type="text"
+                            placeholder="platform (e.g. github)"
+                            value={s.platform}
+                            onChange={e => setSocials(prev => prev.map((s2, idx) => (idx === i ? { ...s2, platform: e.target.value } : s2)))}
+                            className="w-full pl-8 pr-2 py-1.5 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
+                          />
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="https://…"
+                          value={s.url}
+                          onChange={e => setSocials(prev => prev.map((s2, idx) => (idx === i ? { ...s2, url: e.target.value } : s2)))}
+                          className="flex-1 px-2 py-1.5 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setSocials(prev => prev.filter((_, idx) => idx !== i))}
+                          className="p-1.5 rounded hover:bg-feedback-error-bg text-txt-tertiary hover:text-feedback-error-text transition"
+                          title="Remove link"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                    {socials.length === 0 && (
+                      <p className="text-[11px] text-txt-tertiary">No social links yet.</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSocials(prev => [...prev, { platform: '', url: '' }])}
+                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-surface-base border border-border-subtle text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add social link</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-end gap-3">
+                  {profileMsg && (
+                    <span className={`text-[11px] ${profileMsg === 'Saved.' ? 'text-txt-open' : 'text-feedback-error-text'}`}>
+                      {profileMsg}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={saveProfile}
+                    disabled={savingProfile}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-brand text-white text-xs font-medium hover:bg-brand-hover disabled:opacity-50 transition shadow-sm"
+                  >
+                    {savingProfile ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                    <span>{savingProfile ? 'Saving…' : 'Save'}</span>
+                  </button>
                 </div>
               </div>
             </div>

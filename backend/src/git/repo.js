@@ -137,13 +137,15 @@ export async function hasHead(space, repo) {
 
 // Seed an initial commit with a README, authored by the creator. Done via a
 // temporary non-bare clone so commit machinery (identities, hooks) works.
-export async function seedReadme(space, repo, { authorName, authorEmail, description }) {
+export async function seedReadme(space, repo, { authorName, authorEmail, description, content }) {
   const dir = repoDir(space, repo);
   const tmp = `${dir}-seed-${crypto.randomBytes(4).toString('hex')}`;
   const { writeFile, mkdir, rm } = await import('node:fs/promises');
   try {
     await exec('git', ['clone', dir, tmp]);
-    await writeFile(`${tmp}/README.md`, `# ${repo}\n\n${description || ''}\n`, 'utf8');
+    const readme =
+      content && content.trim() ? content : `# ${repo}\n\n${description || ''}\n`;
+    await writeFile(`${tmp}/README.md`, readme, 'utf8');
     const identity = ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`];
     await exec('git', ['-C', tmp, ...identity, 'add', 'README.md']);
     await exec('git', ['-C', tmp, ...identity, 'commit', '-m', 'Initial commit', `--author=${authorName} <${authorEmail}>`]);

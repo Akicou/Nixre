@@ -14,6 +14,17 @@ import { isRegistrationClosed, setRegistrationClosed } from '../lib/instanceSett
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
+// Keep only well-formed { platform, url } social links (a URL, http(s) only).
+function sanitizeSocials(input, fallback = []) {
+  const list = Array.isArray(input) ? input : fallback;
+  return list
+    .map(s => ({
+      platform: String(s?.platform || '').trim().slice(0, 40),
+      url: String(s?.url || '').trim().slice(0, 500),
+    }))
+    .filter(s => s.platform && /^https?:\/\//i.test(s.url));
+}
+
 function publicUser(user) {
   // Exactly the fields the UI reads from GET /user (Gitness-compatible).
   return {
@@ -23,6 +34,7 @@ function publicUser(user) {
     admin: user.admin,
     blocked: user.blocked,
     avatar_url: user.avatar_url || '',
+    socials: user.socials || [],
     created: user.created,
     updated: user.updated,
   };
@@ -276,6 +288,20 @@ export function authRoutes(pool, authenticate) {
   // GET /user — the flat user object the UI expects.
   api.get('/user', authenticate(true), (req, res) => {
     res.json(publicUser(req.auth.user));
+  });
+
+  // PUT /user/profile — update display name + social links.
+  api.put('/user/profile', authenticate(true), async (req, res) => {
+    const displayName =
+      req.body?.display_name !== undefined
+        ? String(req.body.display_name).trim()
+        : req.auth.user.display_name;
+    const socials = sanitizeSocials(req.body?.socials, req.auth.user.socials);
+    const { rows } = await pool.query(
+      'UPDATE users SET display_name = $1, socials = $2, updated = $3 WHERE uid = $4 RETURNING *',
+      [displayName || req.auth.user.uid, JSON.stringify(socials), Date.now(), req.auth.user.uid],
+    );
+    res.json(publicUser(rowToUser(rows[0])));
   });
 
   // --- WebAuthn login --------------------------------------------------------

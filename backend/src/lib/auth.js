@@ -87,6 +87,7 @@ export function rowToUser(row) {
     admin: Boolean(row.admin),
     blocked: Boolean(row.blocked),
     avatar_url: row.avatar_data ? `/api/v1/avatars/user/${row.uid}` : '',
+    socials: Array.isArray(row.socials) ? row.socials : [],
     created: Number(row.created),
     updated: Number(row.updated),
   };

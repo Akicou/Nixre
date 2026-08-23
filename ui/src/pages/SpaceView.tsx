@@ -1,8 +1,42 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { FolderGit2, Plus, ArrowRight, ArrowLeft, ImagePlus, X } from 'lucide-react';
-import { api, Space, Repository, UserProfile } from '../lib/api';
+import { FolderGit2, Plus, ArrowRight, ArrowLeft, ImagePlus, X, AtSign, GitBranch, Globe, Link2, FileText } from 'lucide-react';
+import { api, Space, Repository, UserProfile, SocialLink } from '../lib/api';
 import { Avatar } from '../components/Avatar';
+import { ProfileGoals } from '../components/ProfileGoals';
+
+// Lazy so the org-space spec (which never renders a profile README) doesn't
+// try to resolve react-markdown at module load.
+const Markdown = React.lazy(() => import('../components/Markdown').then(m => ({ default: m.Markdown })));
+
+const SOCIAL_ICONS: Record<string, React.FC<{ className?: string }>> = {
+  github: GitBranch,
+  gitlab: GitBranch,
+  twitter: AtSign,
+  x: AtSign,
+  mastodon: AtSign,
+  bluesky: AtSign,
+  linkedin: Globe,
+  website: Globe,
+  blog: Globe,
+  site: Globe,
+};
+
+const SocialLinkChip: React.FC<{ link: SocialLink }> = ({ link }) => {
+  const Icon = SOCIAL_ICONS[link.platform.toLowerCase()] ?? Link2;
+  return (
+    <a
+      href={link.url}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] bg-surface-subtle border border-border-subtle text-txt-secondary hover:text-txt-primary hover:border-border-mid transition"
+      title={link.url}
+    >
+      <Icon className="w-3.5 h-3.5 shrink-0" />
+      <span>{link.platform}</span>
+    </a>
+  );
+};
 
 export const SpaceView: React.FC = () => {
   const { space: spaceUid } = useParams<{ space: string }>();
@@ -11,12 +45,14 @@ export const SpaceView: React.FC = () => {
   const [repos, setRepos] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [readmeContent, setReadmeContent] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!spaceUid) return;
     setLoading(true);
     setError('');
     setProfile(null);
+    setReadmeContent(null);
     api.getSpace(spaceUid)
       .then(async s => {
         setSpace(s);
@@ -24,6 +60,19 @@ export const SpaceView: React.FC = () => {
           try {
             const p = await api.getUserProfile(spaceUid);
             setProfile(p);
+            // Fetch the profile README (if a profile repo with README exists).
+            if (p.profile_readme?.hasReadme && p.profile_readme.repo) {
+              try {
+                const blob = await api.getRawBlob(
+                  p.profile_readme.repo.path,
+                  p.profile_readme.repo.default_branch,
+                  p.profile_readme.repo.readme,
+                );
+                setReadmeContent(blob.content);
+              } catch {
+                setReadmeContent(null);
+              }
+            }
           } catch {
             /* profile is best-effort; the space still renders */
           }
@@ -37,6 +86,10 @@ export const SpaceView: React.FC = () => {
         setLoading(false);
       });
   }, [spaceUid]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   if (loading) {
     return <div className="max-w-7xl mx-auto px-4 py-16 text-center text-sm text-txt-tertiary">Loading...</div>;
@@ -140,6 +193,13 @@ export const SpaceView: React.FC = () => {
                 <p className="text-sm font-medium text-txt-primary mt-0.5">{displayName}</p>
                 <p className="text-[11px] font-mono text-txt-tertiary">@{space.uid}</p>
                 {profile?.bio && <p className="text-xs text-txt-secondary mt-1">{profile.bio}</p>}
+                {(profile?.socials?.length ?? 0) > 0 && (
+                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                    {profile!.socials!.map(s => (
+                      <SocialLinkChip key={`${s.platform}-${s.url}`} link={s} />
+                    ))}
+                  </div>
+                )}
               </>
             ) : (
               <>
@@ -213,6 +273,26 @@ export const SpaceView: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Owner-only onboarding goals */}
+      {isPersonal && profile?.is_self && (
+        <ProfileGoals uid={space.uid} onChanged={load} />
+      )}
+
+      {/* Rendered profile README (public) */}
+      {isPersonal && readmeContent && (
+        <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden">
+          <div className="p-3 bg-surface-base border-b border-border-subtle flex items-center gap-2 text-xs font-mono font-semibold text-txt-primary">
+            <FileText className="w-4 h-4 text-brand" />
+            <span>{profile?.profile_readme?.repo?.readme || 'README.md'}</span>
+          </div>
+          <div className="p-6">
+            <React.Suspense fallback={<p className="text-xs text-txt-tertiary">Loading README…</p>}>
+              <Markdown content={readmeContent} />
+            </React.Suspense>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

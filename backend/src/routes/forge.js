@@ -91,6 +91,51 @@ function avatarFor(name) {
   return String(name || '').slice(0, 2).toUpperCase();
 }
 
+// Profile README status: a repo named `{uid}/{uid}` that has a README file.
+async function profileReadmeStatus(pool, uid) {
+  const { rows } = await pool.query('SELECT * FROM repos WHERE space_uid = $1 AND uid = $2', [uid, uid]);
+  if (rows.length === 0) return { exists: false, hasReadme: false, repo: null };
+  const repo = rows[0];
+  let hasReadme = false;
+  let readmeName = '';
+  try {
+    const entries = await listTree(repo.space_uid, repo.uid, repo.default_branch, '');
+    const readmeEntry = entries.find(e => e.type === 'file' && /^readme/i.test(e.name));
+    if (readmeEntry) {
+      hasReadme = true;
+      readmeName = readmeEntry.name;
+    }
+  } catch {
+    /* empty repo */
+  }
+  return {
+    exists: true,
+    hasReadme,
+    repo: {
+      space_uid: repo.space_uid,
+      uid: repo.uid,
+      path: `${repo.space_uid}/${repo.uid}`,
+      default_branch: repo.default_branch,
+      readme: readmeName || 'README.md',
+    },
+  };
+}
+
+// True when any of the repos has a commit authored by the given email.
+async function userCommitted(pool, repoRows, email) {
+  if (repoRows.length === 0 || !email) return false;
+  const lower = email.toLowerCase();
+  for (const r of repoRows) {
+    try {
+      const commits = await listCommits(r.space_uid, r.uid, r.default_branch, { page: 1, limit: 100 });
+      if (commits.some(c => String(c.author?.email || '').toLowerCase() === lower)) return true;
+    } catch {
+      /* unreadable/branch missing */
+    }
+  }
+  return false;
+}
+
 // Enrich git commit author/committer identities with the matching Nixre user
 // (by email) so the UI can render an avatar + profile link. Best-effort: a
 // commit authored with a foreign email just keeps its git identity (linked:false).
@@ -210,6 +255,7 @@ export function forgeRoutes(pool, authenticate) {
     const isPublic = req.body?.is_public !== false;
     const readme = req.body?.readme !== false;
     const defaultBranch = String(req.body?.default_branch || 'main');
+    const readmeContent = req.body?.readmeContent ? String(req.body.readmeContent) : undefined;
 
     if (!validRefSegment(spaceUid) || !validRefSegment(uid)) {
       res.status(400).json({ message: 'Invalid repo ref' });
@@ -261,6 +307,7 @@ export function forgeRoutes(pool, authenticate) {
           authorName: req.auth.user.display_name || req.auth.user.uid,
           authorEmail: req.auth.user.email,
           description,
+          content: readmeContent,
         }).catch(err => console.error('seedReadme failed:', err.message));
       }
     } catch (err) {
@@ -450,6 +497,7 @@ export function forgeRoutes(pool, authenticate) {
       [u.uid],
     );
     const counts = await openPrCounts(pool, reposRes.rows.map(r => Number(r.id)));
+    const profileReadme = await profileReadmeStatus(pool, u.uid);
     res.json({
       uid: u.uid,
       display_name: u.display_name,
@@ -461,8 +509,83 @@ export function forgeRoutes(pool, authenticate) {
       is_public: personal?.is_public ?? false,
       avatar: avatarFor(u.uid),
       avatar_url: u.avatar_data ? `/api/v1/avatars/user/${u.uid}` : '',
+      socials: Array.isArray(u.socials) ? u.socials : [],
+      profile_readme: profileReadme,
       created: Number(u.created),
       repos: reposRes.rows.map(r => rowToRepo(r, { openPulls: counts.get(Number(r.id)) ?? 0 })),
+    });
+  });
+
+  // User goals: private onboarding nudges visible only to the user. Computing
+  // reads the profile README, socials, and whether they've pushed anywhere.
+  api.get('/users/:uid/goals', auth, async (req, res) => {
+    const uid = String(req.params.uid);
+    if (req.auth.user.uid !== uid && !req.auth.user.admin) {
+      res.status(403).json({ message: 'Goals are private to the user' });
+      return;
+    }
+    const uRes = await pool.query('SELECT * FROM users WHERE uid = $1', [uid]);
+    if (uRes.rows.length === 0) {
+      res.status(404).json({ message: 'User not found' });
+      return;
+    }
+    const u = uRes.rows[0];
+    const socials = Array.isArray(u.socials) ? u.socials.filter(s => s && s.url) : [];
+    const socialCount = socials.length;
+
+    const readmeStatus = await profileReadmeStatus(pool, uid);
+
+    // Personal repos: anything in the user's own namespace.
+    const personalRes = await pool.query('SELECT * FROM repos WHERE space_uid = $1', [uid]);
+    // Org repos: repos in non-personal spaces the user belongs to.
+    const memberRes = await pool.query(
+      `SELECT sm.space_uid FROM space_members sm
+       JOIN spaces s ON s.uid = sm.space_uid
+       WHERE sm.user_uid = $1 AND s.is_personal = FALSE`,
+      [uid],
+    );
+    const orgSpaceUids = memberRes.rows.map(r => r.space_uid);
+    const orgRes =
+      orgSpaceUids.length > 0
+        ? await pool.query('SELECT * FROM repos WHERE space_uid = ANY($1)', [orgSpaceUids])
+        : { rows: [] };
+
+    const personalCommit = await userCommitted(pool, personalRes.rows, u.email);
+    const orgCommit = await userCommitted(pool, orgRes.rows, u.email);
+
+    res.json({
+      goals: [
+        {
+          id: 'profile_readme',
+          label: 'Create a README for your profile',
+          current: readmeStatus.hasReadme ? 1 : 0,
+          target: 1,
+          done: readmeStatus.hasReadme,
+          repo: readmeStatus.repo,
+        },
+        {
+          id: 'socials',
+          label: 'Link your socials',
+          current: Math.min(socialCount, 3),
+          target: 3,
+          done: socialCount >= 3,
+          count: socialCount,
+        },
+        {
+          id: 'personal_commit',
+          label: 'Commit on a personal repository',
+          current: personalCommit ? 1 : 0,
+          target: 1,
+          done: personalCommit,
+        },
+        {
+          id: 'org_commit',
+          label: 'Commit on an organization',
+          current: orgCommit ? 1 : 0,
+          target: 1,
+          done: orgCommit,
+        },
+      ],
     });
   });
 
