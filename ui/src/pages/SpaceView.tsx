@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { FolderGit2, Plus, ArrowRight, ArrowLeft } from 'lucide-react';
+import { FolderGit2, Plus, ArrowRight, ArrowLeft, ImagePlus, X } from 'lucide-react';
 import { api, Space, Repository, UserProfile } from '../lib/api';
+import { Avatar } from '../components/Avatar';
 
 export const SpaceView: React.FC = () => {
   const { space: spaceUid } = useParams<{ space: string }>();
@@ -55,17 +56,72 @@ export const SpaceView: React.FC = () => {
   }
 
   const isPersonal = Boolean(space.is_personal);
-  const canCreate = isPersonal ? Boolean(profile?.is_self) : true;
+  const canCreate = isPersonal ? Boolean(profile?.is_self) : Boolean(space.is_member);
+  // For a personal namespace we show the user's avatar; for an org, the space avatar.
+  const avatarUrl = (isPersonal ? profile?.avatar_url : space.avatar_url) || '';
   const displayName = profile?.display_name || space.uid;
-  const avatarInitials = (profile?.avatar || space.uid).slice(0, 2).toUpperCase();
+  const avatarName = isPersonal ? profile?.uid || space.uid : space.uid;
+
+  const handleFile = async (file: File) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = String(reader.result || '');
+      // strip the data-URL prefix; keep the raw base64
+      const base64 = dataUrl.split(',')[1] || '';
+      const mime = file.type;
+      try {
+        if (isPersonal) {
+          await api.setUserAvatar(base64, mime);
+          // best-effort refresh of the local profile avatar
+          if (profile) setProfile({ ...profile, avatar_url: `/api/v1/avatars/user/${spaceUid}?v=${Date.now()}` });
+        } else {
+          await api.setSpaceAvatar(spaceUid!, base64, mime);
+          setSpace({ ...space, avatar_url: `/api/v1/avatars/space/${spaceUid}?v=${Date.now()}` });
+        }
+      } catch {
+        /* ignored — the change simply won't reflect */
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemove = async () => {
+    try {
+      if (isPersonal) {
+        await api.removeUserAvatar();
+        if (profile) setProfile({ ...profile, avatar_url: '' });
+      } else {
+        await api.removeSpaceAvatar(spaceUid!);
+        setSpace({ ...space, avatar_url: '' });
+      }
+    } catch {
+      /* ignored */
+    }
+  };
+
+  const canEditAvatar = isPersonal ? Boolean(profile?.is_self) : Boolean(space.is_member);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8 w-full min-w-0">
       {/* Header: GitHub-style user profile OR org space */}
       <div className="border-b border-border-subtle pb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-4 min-w-0">
-          <div className="w-14 h-14 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center font-mono text-lg font-bold text-txt-primary shrink-0">
-            {avatarInitials}
+          <div className="relative shrink-0">
+            <Avatar name={avatarName} url={avatarUrl} size={56} />
+            {canEditAvatar && (
+              <div className="absolute -bottom-1 -right-1 flex gap-0.5">
+                <label className="p-1 rounded-full bg-surface-canvas border border-border-subtle text-txt-secondary hover:text-txt-primary transition cursor-pointer" title="Upload avatar">
+                  <ImagePlus className="w-3.5 h-3.5" />
+                  <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+                </label>
+                {avatarUrl && (
+                  <button onClick={handleRemove} className="p-1 rounded-full bg-surface-canvas border border-border-subtle text-txt-secondary hover:text-feedback-error-text transition" title="Remove avatar">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">

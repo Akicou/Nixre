@@ -22,6 +22,7 @@ function publicUser(user) {
     display_name: user.display_name,
     admin: user.admin,
     blocked: user.blocked,
+    avatar_url: user.avatar_url || '',
     created: user.created,
     updated: user.updated,
   };
@@ -122,7 +123,7 @@ export function authRoutes(pool, authenticate) {
     const { rows } = await pool.query(
       `SELECT p.*, u.uid AS account_uid, u.email AS account_email, u.display_name AS account_name,
               u.admin AS account_admin, u.blocked AS account_blocked, u.created AS account_created,
-              u.updated AS account_updated
+              u.updated AS account_updated, u.avatar_data AS account_avatar
        FROM passkeys p JOIN users u ON u.uid = p.user_uid
        WHERE p.id = $1 AND p.public_key IS NOT NULL AND COALESCE(p.rp_id, '') = $2`,
       [credentialId, rpId],
@@ -177,6 +178,7 @@ export function authRoutes(pool, authenticate) {
             display_name: cred.account_name,
             admin: cred.account_admin,
             blocked: cred.account_blocked,
+            avatar_data: cred.account_avatar,
             created: cred.account_created,
             updated: cred.account_updated,
           }),

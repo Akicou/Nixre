@@ -7,6 +7,7 @@ export interface User {
   display_name: string;
   admin: boolean;
   blocked?: boolean;
+  avatar_url?: string;
   created?: number;
   updated?: number;
 }
@@ -18,6 +19,8 @@ export interface Space {
   description: string;
   is_public: boolean;
   is_personal?: boolean;
+  avatar_url?: string;
+  is_member?: boolean;
   created: number;
   created_by: number;
   updated: number;
@@ -53,6 +56,7 @@ export interface CommitActor {
   uid?: string | null;
   display_name?: string;
   avatar?: string;
+  avatar_url?: string;
   linked?: boolean;
 }
 
@@ -75,10 +79,12 @@ export interface UserProfile {
   display_name: string;
   email: string;
   is_self: boolean;
+  is_member?: boolean;
   is_admin: boolean;
   bio: string;
   is_public: boolean;
   avatar: string;
+  avatar_url?: string;
   created: number;
   repos: Repository[];
 }
@@ -495,6 +501,29 @@ class ApiClient {
 
   async deleteToken(identifier: string): Promise<void> {
     return this.request(`/user/tokens/${identifier}`, { method: 'DELETE' });
+  }
+
+  // Avatar uploads
+  async setUserAvatar(data: string, mime: string): Promise<{ ok: boolean; avatar_url: string }> {
+    return this.request('/user/avatar', {
+      method: 'POST',
+      body: JSON.stringify({ data, mime }),
+    });
+  }
+
+  async removeUserAvatar(): Promise<void> {
+    await this.request('/user/avatar', { method: 'DELETE' });
+  }
+
+  async setSpaceAvatar(spaceUid: string, data: string, mime: string): Promise<{ ok: boolean; avatar_url: string }> {
+    return this.request(`/spaces/${spaceUid}/avatar`, {
+      method: 'POST',
+      body: JSON.stringify({ data, mime }),
+    });
+  }
+
+  async removeSpaceAvatar(spaceUid: string): Promise<void> {
+    await this.request(`/spaces/${spaceUid}/avatar`, { method: 'DELETE' });
   }
 
   // Admin Controls

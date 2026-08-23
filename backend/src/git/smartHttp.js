@@ -3,7 +3,7 @@
 //
 // Auth: HTTP Basic (`username:token`). The token is resolved against core
 // sessions/PATs (same middleware path as the API). Authorization:
-//   read  (clone/fetch) - public repo, or space member, or admin
+//   read  (clone/fetch) - public repo (no auth needed), or space member/admin
 //   write (push)        - space member or admin
 //
 // The CGI handshake is streamed both ways so pack negotiation (which can be
@@ -31,8 +31,20 @@ export function smartHttp(pool, authenticate) {
     }
     const [, space, repoUid, tail] = match;
     const service = (tail || '').replace(/^\//, '');
+    const serviceFromQuery = url.searchParams.get('service') || '';
+    // Write = git-receive-pack (the hint is in the tail for the POST, or in
+    // the `service=` query param on the leading info/refs request during push).
+    const isWrite = service === 'git-receive-pack' || serviceFromQuery === 'git-receive-pack';
 
-    // --- authentication (Basic) ---------------------------------------------
+    // Look up the repo first — we need its visibility to decide whether an
+    // anonymous read is allowed before we require credentials.
+    const repo = await findRepo(pool, `${space}/${repoUid}`);
+    if (!repo || !(await repoExists(space, repoUid))) {
+      res.status(404).send('repository not found');
+      return;
+    }
+
+    // --- optional authentication (Basic) --------------------------------------
     let user = null;
     let authKind = null;
     const authHeader = req.headers.authorization || '';
@@ -49,33 +61,39 @@ export function smartHttp(pool, authenticate) {
         }
       }
     }
-    if (!user) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="nixre-git"');
-      res.status(401).send('authentication required');
-      return;
-    }
 
     // --- authorization --------------------------------------------------------
-    const repo = await findRepo(pool, `${space}/${repoUid}`);
-    if (!repo || !(await repoExists(space, repoUid))) {
-      res.status(404).send('repository not found');
-      return;
+    let member = false;
+    if (user) {
+      member = user.admin;
+      if (!member) {
+        const { rows } = await pool.query(
+          'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
+          [repo.space_uid, user.uid],
+        );
+        member = rows.length > 0;
+      }
     }
-    let member = user.admin;
-    if (!member) {
-      const { rows } = await pool.query(
-        'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
-        [repo.space_uid, user.uid],
-      );
-      member = rows.length > 0;
-    }
-    const isPush = service === 'git-receive-pack' || req.method === 'POST' && service === 'git-receive-pack';
-    if (isPush && !member) {
-      res.status(403).send('no write access');
-      return;
-    }
-    if (!repo.is_public && !member) {
-      res.status(403).send('no read access');
+
+    // Writes always require a member/admin. Reads on public repos are open
+    // to everyone (no credentials); private reads still need a member/admin.
+    if (isWrite) {
+      if (!user) {
+        res.setHeader('WWW-Authenticate', 'Basic realm="nixre-git"');
+        res.status(401).send('authentication required');
+        return;
+      }
+      if (!member) {
+        res.status(403).send('no write access');
+        return;
+      }
+    } else if (!repo.is_public && !member) {
+      if (!user) {
+        res.setHeader('WWW-Authenticate', 'Basic realm="nixre-git"');
+        res.status(401).send('authentication required');
+      } else {
+        res.status(403).send('no read access');
+      }
       return;
     }
     void authenticate;
@@ -91,10 +109,10 @@ export function smartHttp(pool, authenticate) {
       QUERY_STRING: url.searchParams.toString(),
       CONTENT_TYPE: req.headers['content-type'] || '',
       CONTENT_LENGTH: String(req.headers['content-length'] || ''),
-      REMOTE_USER: user.uid,
+      REMOTE_USER: user ? user.uid : 'anonymous',
       REMOTE_ADDR: req.socket.remoteAddress || '',
-      GIT_COMMITTER_NAME: user.display_name || user.uid,
-      GIT_COMMITTER_EMAIL: user.email,
+      GIT_COMMITTER_NAME: (user && (user.display_name || user.uid)) || 'anonymous',
+      GIT_COMMITTER_EMAIL: (user && user.email) || '',
     };
 
     const cgi = spawn('git', ['http-backend'], { env: { ...process.env, ...env } });

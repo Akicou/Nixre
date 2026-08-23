@@ -23,9 +23,7 @@ import { PullRequestForm } from '../components/PullRequestForm';
 import { PullRequestDetail } from '../components/PullRequestDetail';
 import { RepoSettingsPanel } from '../components/RepoSettingsPanel';
 import { Markdown, isMarkdownFile } from '../components/Markdown';
-
-const initials = (name?: string | null) => (name || '?').slice(0, 2).toUpperCase();
-
+import { Avatar } from '../components/Avatar';
 export const RepoView: React.FC = () => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -250,12 +248,18 @@ export const RepoView: React.FC = () => {
               </div>
 
               {cloneProtocol === 'http' ? (
-                <p className="text-[11px] leading-relaxed text-txt-tertiary mt-2">
-                  When prompted, log in with your username and an{' '}
-                  <span className="text-txt-secondary font-medium">access token</span> as the password — account
-                  passwords are not accepted for git. Create one in{' '}
-                  <a href="/settings" className="text-brand hover:underline">Settings → Access Tokens</a>.
-                </p>
+                !repo.is_public ? (
+                  <p className="text-[11px] leading-relaxed text-txt-tertiary mt-2">
+                    When prompted, log in with your username and an{' '}
+                    <span className="text-txt-secondary font-medium">access token</span> as the password — account
+                    passwords are not accepted for git. Create one in{' '}
+                    <a href="/settings" className="text-brand hover:underline">Settings → Access Tokens</a>.
+                  </p>
+                ) : (
+                  <p className="text-[11px] leading-relaxed text-txt-tertiary mt-2">
+                    This repository is public — anyone can clone it without credentials.
+                  </p>
+                )
               ) : (
                 <p className="text-[11px] leading-relaxed text-txt-tertiary mt-2">
                   Requires an SSH public key registered in{' '}
@@ -555,9 +559,12 @@ export const RepoView: React.FC = () => {
                 commits.map(c => (
                   <div key={c.sha} className="p-4 hover:bg-surface-subtle/50 transition flex items-center justify-between gap-4">
                     <div className="flex items-start gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center text-[10px] font-bold text-txt-primary shrink-0" title={c.author.display_name || c.author.identity.name}>
-                        {c.author.avatar || initials(c.author.identity.name)}
-                      </div>
+                      <Avatar
+                        name={c.author.display_name || c.author.identity.name}
+                        url={c.author.avatar_url}
+                        size={32}
+                        className="border-border-subtle"
+                      />
                       <div className="space-y-1 min-w-0">
                         <p className="text-sm font-semibold text-txt-primary">{c.title || c.message}</p>
                         <div className="flex items-center gap-3 text-xs text-txt-tertiary font-mono flex-wrap">
@@ -699,9 +706,12 @@ const CommitDetailView: React.FC<{
           <span>All commits</span>
         </button>
         <div className="flex items-start gap-3 min-w-0">
-          <div className="w-9 h-9 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center text-[11px] font-bold text-txt-primary shrink-0">
-            {c.author.avatar || initials(c.author.identity.name)}
-          </div>
+          <Avatar
+            name={c.author.display_name || c.author.identity.name}
+            url={c.author.avatar_url}
+            size={36}
+            className="border-border-subtle"
+          />
           <div className="space-y-1 min-w-0">
             <h3 className="text-sm font-semibold text-txt-primary">{c.title}</h3>
             <p className="text-[11px] font-mono text-txt-brand">{c.sha}</p>

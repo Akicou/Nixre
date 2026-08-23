@@ -75,7 +75,7 @@ const AppShell: React.FC<{
           <Route path="/" element={currentUser ? <Dashboard user={currentUser} /> : <Navigate to="/login" />} />
           <Route path="/new-repo" element={currentUser ? <NewRepo /> : <Navigate to="/login" />} />
           <Route path="/new-space" element={currentUser ? <NewSpace /> : <Navigate to="/login" />} />
-          <Route path="/settings" element={currentUser ? <Settings user={currentUser} /> : <Navigate to="/login" />} />
+          <Route path="/settings" element={currentUser ? <Settings user={currentUser} onUserChange={setCurrentUser} /> : <Navigate to="/login" />} />
           <Route path="/admin" element={currentUser && currentUser.admin ? <AdminView /> : <Navigate to="/" />} />
           <Route path="/plugins" element={currentUser ? <Plugins /> : <Navigate to="/login" />} />
           <Route path="/agent" element={currentUser ? <AgentWorkspace /> : <Navigate to="/login" />} />

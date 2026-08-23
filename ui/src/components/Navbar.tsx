@@ -19,6 +19,7 @@ import { currentSpaceFromPathname } from '../lib/repoPath';
 import { useOutsideClick } from '../lib/useOutsideClick';
 import { isPluginLive } from '../lib/pluginPreferences';
 import { BrandMark } from './BrandMark';
+import { Avatar } from './Avatar';
 
 interface NavbarProps {
   currentUser: User | null;
@@ -107,9 +108,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
                       className="flex items-center justify-between px-3 py-2 text-xs text-txt-primary hover:bg-surface-subtle transition font-mono"
                     >
                       <div className="flex items-center gap-2">
-                        <div className="w-5 h-5 rounded bg-surface-subtle border border-border-subtle flex items-center justify-center text-[10px] font-bold text-txt-brand">
-                          {s.uid.slice(0, 2).toUpperCase()}
-                        </div>
+                        <Avatar name={s.uid} url={s.avatar_url} size={20} />
                         <span className="font-semibold">{s.uid}</span>
                       </div>
                       <span className="text-[10px] text-txt-tertiary uppercase">{s.is_public ? 'Public' : 'Private'}</span>
@@ -192,9 +191,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
                   onClick={() => setUserDropdownOpen(!userDropdownOpen)}
                   className="flex items-center gap-2 pl-2 pr-1.5 py-1 rounded hover:bg-surface-subtle transition border border-transparent hover:border-border-subtle"
                 >
-                  <div className="w-6 h-6 rounded-full bg-surface-mid border border-border-subtle flex items-center justify-center font-mono text-xs font-bold text-txt-primary uppercase">
-                    {currentUser.uid.slice(0, 2)}
-                  </div>
+                  <Avatar name={currentUser.uid} url={currentUser.avatar_url} size={24} />
                   <span className="text-xs font-medium text-txt-primary hidden md:inline">{currentUser.uid}</span>
                   <ChevronDown className="w-3.5 h-3.5 text-txt-tertiary" />
                 </button>

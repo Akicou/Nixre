@@ -6,17 +6,20 @@ import {
   User as UserIcon,
   Shield,
   Trash2,
-  Fingerprint
+  Fingerprint,
+  ImagePlus
 } from 'lucide-react';
 import { api, User, PublicKey, Token } from '../lib/api';
 import { WebAuthnService, StoredPasskey } from '../lib/webauthn';
 import { daysToNanoseconds } from '../lib/duration';
+import { Avatar } from '../components/Avatar';
 
 interface SettingsProps {
   user: User | null;
+  onUserChange?: (u: User) => void;
 }
 
-export const Settings: React.FC<SettingsProps> = ({ user }) => {
+export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
   const location = useLocation();
   const [activeTab, setActiveTab] = useState<'profile' | 'passkeys' | 'ssh' | 'tokens'>('profile');
 
@@ -38,6 +41,14 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
   const [tokens, setTokens] = useState<Token[]>([]);
   const [tokenTitle, setTokenTitle] = useState('');
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
+
+  // Avatar state
+  const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
+  const [avatarMsg, setAvatarMsg] = useState('');
+
+  useEffect(() => {
+    setAvatarUrl(user?.avatar_url || '');
+  }, [user?.avatar_url]);
 
   useEffect(() => {
     if (location.hash === '#passkeys') {
@@ -123,6 +134,36 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
     } catch {}
   };
 
+  const handleAvatarFile = async (file: File) => {
+    if (!file || !user) return;
+    setAvatarMsg('');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64 = String(reader.result || '').split(',')[1] || '';
+      try {
+        const res = await api.setUserAvatar(base64, file.type);
+        const url = `${res.avatar_url}?v=${Date.now()}`;
+        setAvatarUrl(url);
+        onUserChange?.({ ...user, avatar_url: url });
+      } catch (err: any) {
+        setAvatarMsg(err.message || 'Failed to upload avatar.');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleAvatarRemove = async () => {
+    if (!user) return;
+    setAvatarMsg('');
+    try {
+      await api.removeUserAvatar();
+      setAvatarUrl('');
+      onUserChange?.({ ...user, avatar_url: '' });
+    } catch (err: any) {
+      setAvatarMsg(err.message || 'Failed to remove avatar.');
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8 w-full min-w-0">
       {/* Settings Header */}
@@ -188,6 +229,36 @@ export const Settings: React.FC<SettingsProps> = ({ user }) => {
           {activeTab === 'profile' && user && (
             <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-6">
               <h2 className="text-sm font-semibold text-txt-secondary uppercase tracking-wider">User Profile</h2>
+
+              <div className="flex items-center gap-5 flex-wrap">
+                <Avatar name={user.uid} url={avatarUrl} size={80} />
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-surface-base border border-border-subtle text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition cursor-pointer">
+                      <ImagePlus className="w-3.5 h-3.5" />
+                      <span>Upload avatar</span>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        className="hidden"
+                        onChange={e => { const f = e.target.files?.[0]; if (f) handleAvatarFile(f); }}
+                      />
+                    </label>
+                    {avatarUrl && (
+                      <button
+                        onClick={handleAvatarRemove}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-surface-base border border-border-subtle text-txt-secondary hover:text-feedback-error-text transition"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Remove</span>
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-txt-tertiary">PNG, JPEG, WebP, or GIF — up to 2MB. Shown on your profile and commits.</p>
+                  {avatarMsg && <p className="text-xs text-feedback-error-text">{avatarMsg}</p>}
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 font-mono text-xs">
                 <div className="p-3 rounded bg-surface-base border border-border-subtle">
                   <span className="text-txt-tertiary block mb-1">Username / UID:</span>

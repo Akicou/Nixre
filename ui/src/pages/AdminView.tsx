@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Shield, Lock, Unlock, Users, Check } from 'lucide-react';
 import { api, User } from '../lib/api';
+import { Avatar } from '../components/Avatar';
 import { isRegistrationHidden, setRegistrationHidden } from '../lib/authLock';
 
 export const AdminView: React.FC = () => {
@@ -154,9 +155,7 @@ export const AdminView: React.FC = () => {
           ) : users.map(u => (
             <div key={u.id} className="p-3 flex items-center justify-between gap-4 text-xs font-mono">
               <div className="flex items-center gap-3">
-                <div className="w-7 h-7 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center font-bold text-txt-primary uppercase">
-                  {u.uid.slice(0, 2)}
-                </div>
+                <Avatar name={u.uid} url={u.avatar_url} size={28} />
                 <div>
                   <p className="font-semibold text-txt-primary">{u.display_name || u.uid} <span className="text-txt-tertiary">(@{u.uid})</span></p>
                   <p className="text-[11px] text-txt-tertiary">{u.email}</p>

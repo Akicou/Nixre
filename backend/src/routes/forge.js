@@ -30,6 +30,7 @@ function rowToSpace(row) {
     description: row.description || '',
     is_public: Boolean(row.is_public),
     is_personal: Boolean(row.is_personal),
+    avatar_url: row.avatar_data ? `/api/v1/avatars/space/${row.uid}` : '',
     created: Number(row.created),
     created_by: row.created_by,
     updated: Number(row.updated),
@@ -101,7 +102,7 @@ async function enrichCommits(pool, commits) {
     if (c.committer?.identity?.email) emails.add(c.committer.identity.email.toLowerCase());
   }
   const { rows } = await pool.query(
-    'SELECT uid, email, display_name FROM users WHERE lower(email) = ANY($1)',
+    'SELECT uid, email, display_name, avatar_data FROM users WHERE lower(email) = ANY($1)',
     [[...emails]],
   );
   const byEmail = new Map(rows.map(r => [r.email.toLowerCase(), r]));
@@ -113,6 +114,7 @@ async function enrichCommits(pool, commits) {
       c[key].uid = user?.uid || null;
       c[key].display_name = user?.display_name || ident.name;
       c[key].avatar = avatarFor(user?.uid || ident.name);
+      c[key].avatar_url = user?.avatar_data ? `/api/v1/avatars/user/${user.uid}` : '';
       c[key].linked = Boolean(user);
     }
   }
@@ -158,7 +160,7 @@ export function forgeRoutes(pool, authenticate) {
       res.status(403).json({ message: 'No access to this space' });
       return;
     }
-    res.json(rowToSpace(space));
+    res.json({ ...rowToSpace(space), is_member: await canAccessSpace(pool, space.uid, req.auth.user) });
   });
 
   api.post('/spaces', auth, async (req, res) => {
@@ -453,10 +455,12 @@ export function forgeRoutes(pool, authenticate) {
       display_name: u.display_name,
       email: canSeeAll ? u.email : '',
       is_self: isSelf,
+      is_member: canSeeAll,
       is_admin: Boolean(u.admin),
       bio: personal?.description || '',
       is_public: personal?.is_public ?? false,
       avatar: avatarFor(u.uid),
+      avatar_url: u.avatar_data ? `/api/v1/avatars/user/${u.uid}` : '',
       created: Number(u.created),
       repos: reposRes.rows.map(r => rowToRepo(r, { openPulls: counts.get(Number(r.id)) ?? 0 })),
     });

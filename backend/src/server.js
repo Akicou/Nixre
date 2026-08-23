@@ -19,6 +19,7 @@ import { syncRoutes } from './routes/sync.js';
 import { forgeRoutes } from './routes/forge.js';
 import { pullRequestRoutes } from './routes/pullreq.js';
 import { accountRoutes } from './routes/account.js';
+import { avatarRoutes } from './routes/avatar.js';
 import { internalRoutes } from './routes/internal.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { aiRoutes } from './routes/ai.js';
@@ -79,6 +80,7 @@ app.use('/api/sync/v1', syncApi); // compat alias
 
 app.use('/api/v1', adminRoutes(pool, authenticate));
 app.use('/api/v1', accountRoutes(pool, authenticate));
+app.use('/api/v1', avatarRoutes(pool, authenticate));
 app.use('/api/v1', forgeRoutes(pool, authenticate));
 app.use('/api/v1', pullRequestRoutes(pool, authenticate));
 app.use('/api/v1', internalRoutes(pool, authenticate));

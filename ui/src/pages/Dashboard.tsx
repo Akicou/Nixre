@@ -9,6 +9,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { api, Repository, Space, User } from '../lib/api';
+import { Avatar } from '../components/Avatar';
 
 interface DashboardProps {
   user: User | null;
@@ -61,10 +62,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
               to={`/${user.uid}`}
               className="px-3 py-1.5 rounded text-sm text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle border border-border-subtle transition font-medium flex items-center gap-1.5"
             >
-              <span className="w-5 h-5 rounded-full bg-surface-mid border border-border-subtle flex items-center justify-center text-[10px] font-bold text-txt-primary">
-                {user.uid.slice(0, 2).toUpperCase()}
+              <span className="flex items-center gap-1.5">
+                <Avatar name={user.uid} url={user.avatar_url} size={20} />
+                <span>My Profile</span>
               </span>
-              <span>My Profile</span>
             </Link>
           )}
           <Link
@@ -181,7 +182,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
                     to={`/${s.uid}`}
                     className="flex items-center justify-between p-2 rounded hover:bg-surface-subtle transition text-xs font-medium text-txt-primary"
                   >
-                    <span className="font-mono truncate">{s.uid}</span>
+                    <span className="flex items-center gap-2 min-w-0">
+                      <Avatar name={s.uid} url={s.avatar_url} size={18} />
+                      <span className="font-mono truncate">{s.uid}</span>
+                    </span>
                     <span className="text-[10px] text-txt-tertiary uppercase font-mono">
                       {s.is_public ? 'Public' : 'Private'}
                     </span>
