@@ -992,11 +992,11 @@ export const AgentWorkspace: React.FC = () => {
   // Drop direction depends on where the pickers sit: mid-screen in the empty
   // state (down), docked above the bottom composer in a session (up).
   const menuPos = (dropUp: boolean) =>
-    dropUp ? 'bottom-[calc(100%+6px)]' : 'top-[calc(100%+6px)]';
+    dropUp ? 'bottom-[calc(100%_+_6px)]' : 'top-[calc(100%_+_6px)]';
 
   const repoPickerDropdown = (dropUp: boolean) =>
     repoOpen && (
-    <div className={`absolute left-1/2 -translate-x-1/2 ${menuPos(dropUp)} w-[min(16rem,calc(100vw-2rem))] z-40`}>
+    <div className={`absolute left-1/2 -translate-x-1/2 ${menuPos(dropUp)} w-[min(16rem,calc(100vw_-_2rem))] z-40`}>
       <div className="max-h-64 overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl py-1 animate-pop">
         {repos.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-txt-tertiary">No repos yet.</p>
@@ -1025,7 +1025,7 @@ export const AgentWorkspace: React.FC = () => {
 
   const modePickerDropdown = (dropUp: boolean) =>
     modeOpen && (
-    <div className={`absolute left-1/2 -translate-x-1/2 ${menuPos(dropUp)} w-[min(18rem,calc(100vw-2rem))] z-40`}>
+    <div className={`absolute left-1/2 -translate-x-1/2 ${menuPos(dropUp)} w-[min(18rem,calc(100vw_-_2rem))] z-40`}>
       <div className="max-h-[min(60vh,24rem)] overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl py-1 animate-pop">
         {ASSISTANT_MODES.map(m => (
           <button
@@ -1051,8 +1051,8 @@ export const AgentWorkspace: React.FC = () => {
   );
 
   const contextPickers = (dropUp: boolean) => (
-    <div className="flex items-center gap-1 flex-wrap justify-center text-[12px] text-txt-tertiary">
-      <div ref={repoMenuRef} className="relative">
+    <div className="relative flex items-center gap-1 flex-wrap justify-center text-[12px] text-txt-tertiary">
+      <div ref={repoMenuRef}>
         <button
           type="button"
           onClick={() => {
@@ -1070,7 +1070,7 @@ export const AgentWorkspace: React.FC = () => {
         {repoPickerDropdown(dropUp)}
       </div>
       <span className="opacity-30 hidden sm:inline">·</span>
-      <div ref={modeMenuRef} className="relative">
+      <div ref={modeMenuRef}>
         <button
           type="button"
           onClick={() => {
