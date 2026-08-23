@@ -17,6 +17,9 @@ import {
   Sparkles,
   Square,
   Trash2,
+  CornerDownRight,
+  Pencil,
+  Undo2,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { isPluginLive } from '../lib/pluginPreferences';
@@ -63,6 +66,13 @@ interface WorkspaceRepo {
   label: string;
 }
 
+interface QueuedMessage {
+  id: string;
+  text: string;
+  images: ChatImage[];
+  deleted?: boolean;
+}
+
 const QUICK_CHIPS = [
   { label: 'Plan a feature', prompt: 'Research this repo and produce a concrete plan for the next feature I should ship.' },
   { label: 'Fix failing tests', prompt: 'Find failing tests, diagnose the root cause, and fix them.' },
@@ -107,7 +117,7 @@ export const AgentWorkspace: React.FC = () => {
   const [modeOpen, setModeOpen] = useState(false);
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const [trace, setTrace] = useState<SessionTraceEntry[]>([]);
-  const [queued, setQueued] = useState<{ prompt: string; images: ChatImage[]; userMessageId: string }[]>([]);
+  const [queued, setQueued] = useState<QueuedMessage[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -118,7 +128,8 @@ export const AgentWorkspace: React.FC = () => {
   const traceRef = useRef<SessionTraceEntry[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
   const currentIdRef = useRef<string | null>(null);
-  const queuedRef = useRef<{ prompt: string; images: ChatImage[]; userMessageId: string }[]>([]);
+  const queuedRef = useRef<QueuedMessage[]>([]);
+  const steerRef = useRef<QueuedMessage[]>([]);
 
   // --- boot ----------------------------------------------------------------
   useEffect(() => {
@@ -161,6 +172,9 @@ export const AgentWorkspace: React.FC = () => {
       setTrace([]);
       traceRef.current = [];
       setInput('');
+      setQueued([]);
+      queuedRef.current = [];
+      steerRef.current = [];
     },
     [setSearchParams],
   );
@@ -421,10 +435,35 @@ export const AgentWorkspace: React.FC = () => {
           agent: agentMode,
           signal: controller.signal,
           images: images.length ? images : undefined,
+          steerChannel: {
+            next: () => {
+              const s = steerRef.current.shift();
+              return s ? { prompt: s.text, images: s.images } : null;
+            },
+          },
         })) {
+          if (ev.type === 'usage') {
+            usage = ev.usage;
+            continue;
+          }
+          if (ev.type === 'steer_applied') {
+            // Mirror the injected steer into the transcript so the turn stays
+            // continuous in the UI and persists with the conversation.
+            local = [
+              ...local,
+              {
+                id: uid('u'),
+                role: 'user' as const,
+                content: ev.prompt,
+                images: ev.images?.length ? ev.images : undefined,
+                createdAt: Date.now(),
+              },
+            ];
+            setMessages(local);
+            continue;
+          }
           if (ev.type === 'message_text') outputChars += ev.text.length;
           if (ev.type === 'reasoning') reasoningChars += ev.text.length;
-          if (ev.type === 'usage') usage = ev.usage;
           local = applyEvent(local, ev);
           setMessages(local);
         }
@@ -505,15 +544,17 @@ export const AgentWorkspace: React.FC = () => {
       abortRef.current = null;
       setStreaming(false);
       refreshSessions();
-      // Run the next queued message, if any. Its user message is already in
-      // the transcript; later queued messages are stripped from this turn's
-      // base so the model sees them only when their turn runs.
-      const next = queuedRef.current[0];
+      // Steers that never hit a tool boundary fall back to the normal queue so
+      // they aren't lost; then send the first live queued message, if any.
+      const leftoverSteers = steerRef.current;
+      steerRef.current = [];
+      let nextQueue = [...leftoverSteers, ...queuedRef.current];
+      const next = nextQueue.find(q => !q.deleted);
       if (next) {
-        const later = new Set(queuedRef.current.slice(1).map(e => e.userMessageId));
-        const nextBase = messagesRef.current.filter(m => !later.has(m.id));
-        setQueued(q => q.slice(1));
-        void runTurn(next.prompt, nextBase, next.images, next.userMessageId);
+        nextQueue = nextQueue.filter(q => q.id !== next.id);
+        queuedRef.current = nextQueue;
+        setQueued(nextQueue);
+        void runTurn(next.text, messagesRef.current, next.images);
       }
     }
   };
@@ -526,22 +567,55 @@ export const AgentWorkspace: React.FC = () => {
     setPendingImages([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     if (streaming) {
-      // Busy: show the message immediately and queue it — the agent answers
-      // as soon as the running turn finishes instead of dropping it.
-      const msg: ChatMessage = {
-        id: uid('u'),
-        role: 'user',
-        content: prompt || '(image)',
-        images: images.length ? images : undefined,
-        createdAt: Date.now(),
-      };
-      const nextMessages = [...messagesRef.current, msg];
-      messagesRef.current = nextMessages;
-      setMessages(nextMessages);
-      setQueued(q => [...q, { prompt: prompt || '(image)', images, userMessageId: msg.id }]);
+      // Busy: queue the message for the composer. It is not baked into the
+      // transcript until actually sent (steered after a tool call, or sent
+      // at the end of the running turn) so the user can edit or delete it.
+      const q: QueuedMessage = { id: uid('q'), text: prompt || '(image)', images };
+      const nextQ = [...queuedRef.current, q];
+      queuedRef.current = nextQ;
+      setQueued(nextQ);
       return;
     }
     void runTurn(prompt || '(image)', messages, images);
+  };
+
+  const handleSteer = (id: string) => {
+    const item = queuedRef.current.find(q => q.id === id);
+    if (!item) return;
+    const nextQ = queuedRef.current.filter(q => q.id !== id);
+    queuedRef.current = nextQ;
+    setQueued(nextQ);
+    if (!streaming) {
+      // No running turn to steer into —send it as a fresh turn now.
+      void runTurn(item.text, messagesRef.current, item.images);
+      return;
+    }
+    // In-flight turn: hand it to the software loop to inject after the
+    // current tool round completes (see runRealTurn's steerChannel).
+    steerRef.current.push(item);
+  };
+
+  const handleEdit = (id: string) => {
+    const item = queuedRef.current.find(q => q.id === id);
+    if (!item) return;
+    const nextQ = queuedRef.current.filter(q => q.id !== id);
+    queuedRef.current = nextQ;
+    setQueued(nextQ);
+    setInput(item.text);
+    if (item.images.length) setPendingImages(prev => [...prev, ...item.images]);
+    textareaRef.current?.focus();
+  };
+
+  const handleDelete = (id: string) => {
+    const nextQ = queuedRef.current.map(q => (q.id === id ? { ...q, deleted: true } : q));
+    queuedRef.current = nextQ;
+    setQueued(nextQ);
+  };
+
+  const handleRevert = (id: string) => {
+    const nextQ = queuedRef.current.map(q => (q.id === id ? { ...q, deleted: false } : q));
+    queuedRef.current = nextQ;
+    setQueued(nextQ);
   };
 
   const startNew = () => {
@@ -552,6 +626,9 @@ export const AgentWorkspace: React.FC = () => {
     setTrace([]);
     traceRef.current = [];
     currentIdRef.current = null;
+    setQueued([]);
+    queuedRef.current = [];
+    steerRef.current = [];
     setTimeout(() => textareaRef.current?.focus(), 50);
   };
 
@@ -565,6 +642,9 @@ export const AgentWorkspace: React.FC = () => {
     setTrace(c.trace ?? []);
     traceRef.current = c.trace ?? [];
     setInput('');
+    setQueued([]);
+    queuedRef.current = [];
+    steerRef.current = [];
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -690,6 +770,78 @@ export const AgentWorkspace: React.FC = () => {
       )}
     </div>
   );
+
+  const queuePanel =
+    queued.length > 0 ? (
+      <div className="w-full max-w-3xl mb-2 space-y-1.5">
+        <p className="px-1 text-[10px] font-medium uppercase tracking-[0.12em] text-txt-tertiary">
+          Queued for the agent
+        </p>
+        {queued.map(q => (
+          <div
+            key={q.id}
+            className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition ${
+              q.deleted
+                ? 'border-border-subtle bg-surface-base/40 opacity-50'
+                : 'border-border-subtle bg-surface-base'
+            }`}
+          >
+            <span
+              className={`flex-1 min-w-0 truncate font-mono ${
+                q.deleted ? 'text-txt-tertiary line-through' : 'text-txt-secondary'
+              }`}
+            >
+              {q.text}
+              {q.images.length > 0 && <span className="ml-1 text-txt-tertiary">· {q.images.length} img</span>}
+            </span>
+            <div className="flex items-center gap-1 shrink-0">
+              {q.deleted ? (
+                <button
+                  type="button"
+                  onClick={() => handleRevert(q.id)}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-border-subtle text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
+                  title="Restore this message"
+                >
+                  <Undo2 className="w-3 h-3" />
+                  <span>Revert</span>
+                </button>
+              ) : (
+                <>
+                  {streaming && (
+                    <button
+                      type="button"
+                      onClick={() => handleSteer(q.id)}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-border-subtle text-txt-brand hover:bg-surface-subtle transition"
+                      title="Steer the agent right after its current tool call finishes"
+                    >
+                      <CornerDownRight className="w-3 h-3" />
+                      <span>Steer</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleEdit(q.id)}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-border-subtle text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
+                    title="Edit this message in the composer"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    <span>Edit</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(q.id)}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-border-subtle text-txt-tertiary hover:text-feedback-error-text hover:bg-surface-subtle transition"
+                    title="Delete this queue entry"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    ) : null;
 
   const composer = (
     <div
@@ -844,53 +996,57 @@ export const AgentWorkspace: React.FC = () => {
 
   const repoPickerDropdown = (dropUp: boolean) =>
     repoOpen && (
-    <div className={`absolute left-0 ${menuPos(dropUp)} w-[min(16rem,calc(100vw-2rem))] max-h-64 overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop`}>
-      {repos.length === 0 ? (
-        <p className="px-3 py-2 text-[12px] text-txt-tertiary">No repos yet.</p>
-      ) : (
-        repos.map(r => (
-          <button
-            key={r.path}
-            type="button"
-            onClick={() => {
-              setRepoOpen(false);
-              if (r.path !== activeRepo) changeRepo(r.path);
-            }}
-            className={`w-full text-left px-3 py-2.5 text-[12px] font-mono truncate transition min-h-11 ${
-              r.path === activeRepo
-                ? 'bg-surface-subtle text-txt-primary'
-                : 'text-txt-secondary hover:bg-surface-subtle'
-            }`}
-          >
-            {r.path}
-          </button>
-        ))
-      )}
+    <div className={`absolute left-1/2 -translate-x-1/2 ${menuPos(dropUp)} w-[min(16rem,calc(100vw-2rem))] z-40`}>
+      <div className="max-h-64 overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl py-1 animate-pop">
+        {repos.length === 0 ? (
+          <p className="px-3 py-2 text-[12px] text-txt-tertiary">No repos yet.</p>
+        ) : (
+          repos.map(r => (
+            <button
+              key={r.path}
+              type="button"
+              onClick={() => {
+                setRepoOpen(false);
+                if (r.path !== activeRepo) changeRepo(r.path);
+              }}
+              className={`w-full text-left px-3 py-2.5 text-[12px] font-mono truncate transition min-h-11 ${
+                r.path === activeRepo
+                  ? 'bg-surface-subtle text-txt-primary'
+                  : 'text-txt-secondary hover:bg-surface-subtle'
+              }`}
+            >
+              {r.path}
+            </button>
+          ))
+        )}
+      </div>
     </div>
   );
 
   const modePickerDropdown = (dropUp: boolean) =>
     modeOpen && (
-    <div className={`absolute left-0 ${menuPos(dropUp)} w-[min(18rem,calc(100vw-2rem))] rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 py-1 animate-pop`}>
-      {ASSISTANT_MODES.map(m => (
-        <button
-          key={m.id}
-          type="button"
-          onClick={() => changeMode(m.id)}
-          className={`w-full text-left px-3 py-2.5 transition min-h-11 ${
-            m.id === mode ? 'bg-surface-subtle' : 'hover:bg-surface-subtle'
-          }`}
-        >
-          <div
-            className={`text-[12.5px] font-medium ${
-              m.id === mode ? 'text-txt-primary' : 'text-txt-secondary'
+    <div className={`absolute left-1/2 -translate-x-1/2 ${menuPos(dropUp)} w-[min(18rem,calc(100vw-2rem))] z-40`}>
+      <div className="max-h-[min(60vh,24rem)] overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl py-1 animate-pop">
+        {ASSISTANT_MODES.map(m => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => changeMode(m.id)}
+            className={`w-full text-left px-3 py-2.5 transition min-h-11 ${
+              m.id === mode ? 'bg-surface-subtle' : 'hover:bg-surface-subtle'
             }`}
           >
-            {m.label}
-          </div>
-          <div className="text-[11px] text-txt-tertiary leading-snug mt-0.5">{m.description}</div>
-        </button>
-      ))}
+            <div
+              className={`text-[12.5px] font-medium ${
+                m.id === mode ? 'text-txt-primary' : 'text-txt-secondary'
+              }`}
+            >
+              {m.label}
+            </div>
+            <div className="text-[11px] text-txt-tertiary leading-snug mt-0.5">{m.description}</div>
+          </button>
+        ))}
+      </div>
     </div>
   );
 
@@ -1030,6 +1186,8 @@ export const AgentWorkspace: React.FC = () => {
             {contextPickers(false)}
             <div className="h-2" />
 
+            {queuePanel}
+
             {composer}
 
             {/* Quick chips */}
@@ -1083,13 +1241,14 @@ export const AgentWorkspace: React.FC = () => {
                     />
                   ),
                 )}
-                {streaming && <AgentWorkingLine messages={messages} queued={queued.length} />}
+                {streaming && <AgentWorkingLine messages={messages} queued={queued.filter(q => !q.deleted).length} />}
               </div>
             </div>
 
             {/* Docked floating composer */}
             <div className="px-3 sm:px-5 pb-5 pt-2 flex flex-col items-center">
               <div className="w-full max-w-3xl mb-2">{contextPickers(true)}</div>
+              {queuePanel}
               {composer}
             </div>
           </>

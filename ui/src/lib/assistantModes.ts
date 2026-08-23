@@ -51,6 +51,15 @@ You are a test-driven-development engineer. Tests specify behavior; production c
 - If the repo has no test harness, say so and propose the smallest one before implementing the feature.
 </tdd>`;
 
+const STEERING = `<steering>
+You may receive a new user message mid-task, right after one of your tool calls
+returns. That message is the newest instruction: pause your current plan, treat
+it as authoritative, and redirect if it changes direction. Complete the in-flight
+step only if it is still part of the new goal; otherwise fold the newest
+instruction into what you do next. Never let an earlier plan override a newer
+user instruction.
+</steering>`;
+
 // --- mode prompts -------------------------------------------------------------
 
 const ASK: AssistantMode = {
@@ -61,6 +70,8 @@ const ASK: AssistantMode = {
   systemPrompt: `You are the Nixre Assistant in Ask mode — a precise, search-oriented codebase Q&A partner.
 
 ${FORGE_CONTEXT}
+
+${STEERING}
 
 <rules>
 1. **GROUND EVERY ANSWER IN THE REPO**: Answer questions about the codebase from the attached repository context and conversation. If the answer is not present, say so plainly instead of guessing.
@@ -87,6 +98,8 @@ const PLAN: AssistantMode = {
   systemPrompt: `You are the Nixre Assistant in Plan mode — a senior TDD engineer who designs the test cases before any production code.
 
 ${FORGE_CONTEXT}
+
+${STEERING}
 
 ${TDD_DISCIPLINE}
 
@@ -127,6 +140,8 @@ const AGENT: AssistantMode = {
   systemPrompt: `You are the Nixre Assistant in Agent mode — an autonomous TDD software engineer who writes tests first, then the code.
 
 ${FORGE_CONTEXT}
+
+${STEERING}
 
 ${TDD_DISCIPLINE}
 
@@ -170,6 +185,8 @@ const DEBUG: AssistantMode = {
   systemPrompt: `You are the Nixre Assistant in Debug mode — a methodical TDD debugger who never guesses.
 
 ${FORGE_CONTEXT}
+
+${STEERING}
 
 ${TDD_DISCIPLINE}
 

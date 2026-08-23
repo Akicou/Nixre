@@ -232,6 +232,8 @@ export type EngineEvent =
   | { type: 'step_clear_preamble' }
   /** Clear partial assistant output before retrying a failed post-tool stream. */
   | { type: 'stream_retry' }
+  /** A mid-turn steer message was injected after a completed tool round. */
+  | { type: 'steer_applied'; prompt: string; images?: ChatImage[] }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'done'; conversationId?: string; messageId?: string };
 
@@ -433,6 +435,9 @@ export async function* runRealTurn(
     signal?: AbortSignal;
     extraContext?: string;
     images?: ChatImage[];
+    steerChannel?: {
+      next: () => { prompt: string; images?: ChatImage[] } | null;
+    };
   } = {},
 ): AsyncGenerator<EngineEvent> {
   const aiApi = await import('./aiApi');
@@ -665,9 +670,27 @@ export async function* runRealTurn(
           thread.push({ role: 'tool', tool_call_id: call.id, content: `Error: ${msg}` });
         }
       }
+      // Steer injection: a queued steer becomes a user turn right after the
+      // completed tool round, so the model can redirect itself mid-task. The
+      // consumer mirrors it into the transcript via a steer_applied event.
+      const steer = overrides.steerChannel?.next();
+      if (steer) {
+        thread.push({
+          role: 'user',
+          content:
+            steer.images && steer.images.length > 0
+              ? toMultimodalParts(steer.prompt, steer.images)
+              : steer.prompt,
+        });
+        push({
+          type: 'steer_applied',
+          prompt: steer.prompt,
+          ...(steer.images && steer.images.length > 0 ? { images: steer.images } : {}),
+        });
+      }
       yield* drain();
       afterTools = true;
-      // Loop: the model now sees the tool results and continues.
+      // Loop: the model now sees the tool results (+ any steer) and continues.
     }
   })();
 
