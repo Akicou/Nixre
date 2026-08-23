@@ -37,7 +37,7 @@ describe('SpaceView', () => {
   it('shows an empty state when the space has no repositories', async () => {
     api.listRepos.mockResolvedValue([]);
     mount();
-    expect(await screen.findByText(/No repositories in this space yet/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No repositories yet/i)).toBeInTheDocument();
   });
 
   it('shows an error when the space cannot be loaded', async () => {

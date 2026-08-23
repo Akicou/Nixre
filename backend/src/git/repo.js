@@ -189,14 +189,20 @@ export async function readBlob(space, repo, ref, filePath) {
 
 const US = '\u001f'; // unit separator for --format fields
 
-// Commit history at a ref, newest first, paginated.
-export async function listCommits(space, repo, ref, { page = 1, limit = 25 } = {}) {
+// Commit history at a ref, newest first, paginated. When `path` is given the
+// log is narrowed to commits touching that file/folder (GitHub "History").
+// `follow` follows a single path across renames.
+export async function listCommits(space, repo, ref, { page = 1, limit = 25, path, follow = false } = {}) {
   const dir = repoDir(space, repo);
   const skip = (page - 1) * limit;
   const fmt = ['%H', '%h', '%s', '%b', '%an', '%ae', '%aI', '%cI'].join(US);
-  const out = await git(dir, [
-    'log', `--format=${fmt}%n${US}${US}`, '--no-color', `--skip=${skip}`, `--max-count=${limit}`, ref,
-  ]);
+  const args = [
+    'log', `--format=${fmt}%n${US}${US}`, '--no-color', `--skip=${skip}`, `--max-count=${limit}`,
+  ];
+  if (follow) args.push('--follow');
+  args.push(ref);
+  if (path) args.push('--', path);
+  const out = await git(dir, args);
   const commits = [];
   for (const record of out.split(`${US}${US}\n`)) {
     if (!record.trim()) continue;
@@ -206,11 +212,51 @@ export async function listCommits(space, repo, ref, { page = 1, limit = 25 } = {
       short_sha: shortSha,
       title: subject,
       message: body ? `${subject}\n\n${body}` : subject,
-      author: { identity: email, name, email, when: authored },
-      committer: { identity: email, name, email, when: committed },
+      author: { identity: { name, email }, name, email, when: authored },
+      committer: { identity: { name, email }, name, email, when: committed },
     });
   }
   return commits;
+}
+
+// Parse one commit record for `show <ref>` (used by getCommit).
+async function readSingleCommit(space, repo, ref) {
+  const dir = repoDir(space, repo);
+  const fmt = ['%H', '%h', '%s', '%b', '%an', '%ae', '%aI', '%cI'].join(US);
+  const out = await git(dir, ['show', '-s', `--format=${fmt}%n${US}${US}`, ref]);
+  const record = out.split(`${US}${US}\n`)[0];
+  if (!record || !record.trim()) throw new Error('no commit');
+  const [sha, shortSha, subject, body, name, email, authored, committed] = record.trim().split(US);
+  return {
+    sha,
+    short_sha: shortSha,
+    title: subject,
+    message: body ? `${subject}\n\n${body}` : subject,
+    author: { identity: { name, email }, name, email, when: authored },
+    committer: { identity: { name, email }, name, email, when: committed },
+  };
+}
+
+// Single commit + per-file stats. Used by the commit-detail view
+// (files changed, additions/deletions totals). `ref` may be a full/short sha.
+export async function getCommit(space, repo, ref) {
+  const commit = await readSingleCommit(space, repo, ref);
+  const dir = repoDir(space, repo);
+  const numstat = await git(dir, ['show', '--numstat', '--format=', ref]);
+  const files = [];
+  let additions = 0;
+  let deletions = 0;
+  for (const line of numstat.split('\n')) {
+    if (!line) continue;
+    const m = line.match(/^(\d+|-)\t(\d+|-)\t(.*)$/);
+    if (!m) continue;
+    const add = m[1] === '-' ? 0 : Number(m[1]);
+    const del = m[2] === '-' ? 0 : Number(m[2]);
+    additions += add;
+    deletions += del;
+    files.push({ path: m[3], additions: add, deletions: del, status: 'MODIFIED' });
+  }
+  return { commit, stats: { additions, deletions, changes: additions + deletions }, files };
 }
 
 // Branch list with ahead/behind vs the default branch.

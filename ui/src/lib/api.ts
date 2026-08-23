@@ -17,6 +17,7 @@ export interface Space {
   path: string;
   description: string;
   is_public: boolean;
+  is_personal?: boolean;
   created: number;
   created_by: number;
   updated: number;
@@ -41,24 +42,45 @@ export interface Repository {
   updated: number;
 }
 
+export interface CommitIdentity {
+  name: string;
+  email: string;
+}
+
+export interface CommitActor {
+  identity: CommitIdentity;
+  when: string;
+  uid?: string | null;
+  display_name?: string;
+  avatar?: string;
+  linked?: boolean;
+}
+
 export interface Commit {
   sha: string;
   title: string;
   message: string;
-  author: {
-    identity: {
-      name: string;
-      email: string;
-    };
-    when: string;
-  };
-  committer: {
-    identity: {
-      name: string;
-      email: string;
-    };
-    when: string;
-  };
+  author: CommitActor;
+  committer: CommitActor;
+}
+
+export interface CommitDetail {
+  commit: Commit;
+  stats: { additions: number; deletions: number; changes: number };
+  files: { path: string; additions: number; deletions: number; status: string }[];
+}
+
+export interface UserProfile {
+  uid: string;
+  display_name: string;
+  email: string;
+  is_self: boolean;
+  is_admin: boolean;
+  bio: string;
+  is_public: boolean;
+  avatar: string;
+  created: number;
+  repos: Repository[];
 }
 
 export interface Branch {
@@ -224,6 +246,7 @@ class ApiClient {
           path: m.space.path || m.space.identifier,
           description: m.space.description || '',
           is_public: m.space.is_public ?? false,
+          is_personal: m.space.is_personal ?? false,
           created: m.space.created || 0,
           created_by: m.space.created_by || 0,
           updated: m.space.updated || 0,
@@ -245,6 +268,7 @@ class ApiClient {
       path: res.path || res.identifier,
       description: res.description || '',
       is_public: res.is_public ?? false,
+      is_personal: res.is_personal ?? false,
       created: res.created || 0,
       created_by: res.created_by || 0,
       updated: res.updated || 0,
@@ -262,6 +286,7 @@ class ApiClient {
       path: res.path || res.identifier,
       description: res.description || '',
       is_public: res.is_public ?? false,
+      is_personal: res.is_personal ?? false,
       created: res.created || 0,
       created_by: res.created_by || 0,
       updated: res.updated || 0,
@@ -373,9 +398,23 @@ class ApiClient {
     return { content: text, name: path.split('/').pop() || '', size: text.length };
   }
 
-  async getCommits(repoRef: string, gitRef = 'main', page = 1, limit = 25): Promise<{ commits: Commit[] }> {
-    const res = await this.request<any>(`/repos/${repoRef}/+/commits?git_ref=${encodeURIComponent(gitRef)}&page=${page}&limit=${limit}`);
+  async getCommits(repoRef: string, gitRef = 'main', page = 1, limit = 25, path?: string, follow = false): Promise<{ commits: Commit[] }> {
+    const params = new URLSearchParams();
+    params.set('git_ref', gitRef);
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    if (path) params.set('path', path);
+    if (follow) params.set('follow', 'true');
+    const res = await this.request<any>(`/repos/${repoRef}/+/commits?${params.toString()}`);
     return { commits: res.commits || [] };
+  }
+
+  async getCommit(repoRef: string, sha: string): Promise<CommitDetail> {
+    return this.request<CommitDetail>(`/repos/${repoRef}/+/commits/${sha}`);
+  }
+
+  async getUserProfile(uid: string): Promise<UserProfile> {
+    return this.request<UserProfile>(`/users/${uid}`);
   }
 
   async getBranches(repoRef: string): Promise<Branch[]> {

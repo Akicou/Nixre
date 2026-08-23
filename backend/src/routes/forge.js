@@ -10,6 +10,7 @@ import {
   listTree,
   readBlob,
   listCommits,
+  getCommit,
   listBranches,
   resolveDefaultBranch,
   validRefSegment,
@@ -28,6 +29,7 @@ function rowToSpace(row) {
     identifier: row.uid,
     description: row.description || '',
     is_public: Boolean(row.is_public),
+    is_personal: Boolean(row.is_personal),
     created: Number(row.created),
     created_by: row.created_by,
     updated: Number(row.updated),
@@ -81,6 +83,40 @@ async function findRepo(pool, repoRef) {
     [space, uid],
   );
   return rows[0] ?? null;
+}
+
+// Initials-style avatar (matches the space/user initials used across the UI).
+function avatarFor(name) {
+  return String(name || '').slice(0, 2).toUpperCase();
+}
+
+// Enrich git commit author/committer identities with the matching Nixre user
+// (by email) so the UI can render an avatar + profile link. Best-effort: a
+// commit authored with a foreign email just keeps its git identity (linked:false).
+async function enrichCommits(pool, commits) {
+  if (!commits.length) return commits;
+  const emails = new Set();
+  for (const c of commits) {
+    if (c.author?.identity?.email) emails.add(c.author.identity.email.toLowerCase());
+    if (c.committer?.identity?.email) emails.add(c.committer.identity.email.toLowerCase());
+  }
+  const { rows } = await pool.query(
+    'SELECT uid, email, display_name FROM users WHERE lower(email) = ANY($1)',
+    [[...emails]],
+  );
+  const byEmail = new Map(rows.map(r => [r.email.toLowerCase(), r]));
+  for (const c of commits) {
+    for (const key of ['author', 'committer']) {
+      const ident = c[key]?.identity;
+      if (!ident?.email) continue;
+      const user = byEmail.get(ident.email.toLowerCase());
+      c[key].uid = user?.uid || null;
+      c[key].display_name = user?.display_name || ident.name;
+      c[key].avatar = avatarFor(user?.uid || ident.name);
+      c[key].linked = Boolean(user);
+    }
+  }
+  return commits;
 }
 
 export function forgeRoutes(pool, authenticate) {
@@ -154,8 +190,11 @@ export function forgeRoutes(pool, authenticate) {
   // --- repos -------------------------------------------------------------------
 
   api.get('/spaces/:spaceUid/repos', auth, async (req, res) => {
+    // Members & admins see all repos; anyone else on a public space only
+    // sees public ones (a private repo must not leak on a public profile).
+    const member = await canAccessSpace(pool, req.params.spaceUid, req.auth.user);
     const { rows } = await pool.query(
-      'SELECT * FROM repos WHERE space_uid = $1 ORDER BY uid',
+      `SELECT * FROM repos WHERE space_uid = $1 ${member ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
       [req.params.spaceUid],
     );
     const counts = await openPrCounts(pool, rows.map(r => Number(r.id)));
@@ -327,7 +366,7 @@ export function forgeRoutes(pool, authenticate) {
     }
   });
 
-  // Commits: GET /repos/{space}/{repo}/+/commits?git_ref=&page=&limit=
+  // Commits: GET /repos/{space}/{repo}/+/commits?git_ref=&path=&page=&limit=
   api.get('/repos/:space/:repo/\\+/commits', auth, async (req, res) => {
     const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
     if (!repo) {
@@ -337,11 +376,29 @@ export function forgeRoutes(pool, authenticate) {
     const ref = String(req.query.git_ref || repo.default_branch);
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(100, Number(req.query.limit) || 25);
+    const path = req.query.path ? String(req.query.path) : undefined;
+    const follow = req.query.follow === 'true' || req.query.follow === '1';
     try {
-      const commits = await listCommits(repo.space_uid, repo.uid, ref, { page, limit });
-      res.json({ commits });
+      const commits = await listCommits(repo.space_uid, repo.uid, ref, { page, limit, path, follow });
+      res.json({ commits: await enrichCommits(pool, commits) });
     } catch {
       res.json({ commits: [] });
+    }
+  });
+
+  // Commit detail: GET /repos/{space}/{repo}/+/commits/{sha}
+  api.get('/repos/:space/:repo/\\+/commits/:sha', auth, async (req, res) => {
+    const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
+    if (!repo) {
+      res.status(404).json({ message: 'Repository not found' });
+      return;
+    }
+    try {
+      const { commit, stats, files } = await getCommit(repo.space_uid, repo.uid, req.params.sha);
+      const [enriched] = await enrichCommits(pool, [commit]);
+      res.json({ commit: enriched, stats, files });
+    } catch {
+      res.status(404).json({ message: 'Commit not found' });
     }
   });
 
@@ -371,6 +428,38 @@ export function forgeRoutes(pool, authenticate) {
     } catch {
       res.json({ branches: [] });
     }
+  });
+
+  // User profile: GET /users/{uid} — the GitHub-style profile. Reads the
+  // user's personal namespace and lists its (public) repositories.
+  api.get('/users/:uid', auth, async (req, res) => {
+    const { rows } = await pool.query('SELECT * FROM users WHERE uid = $1', [req.params.uid]);
+    if (rows.length === 0) {
+      res.status(404).json({ message: 'User not found' });
+      return;
+    }
+    const u = rows[0];
+    const isSelf = req.auth.user.uid === u.uid;
+    const canSeeAll = req.auth.user.admin || isSelf;
+    const spaceRes = await pool.query('SELECT * FROM spaces WHERE uid = $1 AND is_personal = TRUE', [u.uid]);
+    const personal = spaceRes.rows[0] || null;
+    const reposRes = await pool.query(
+      `SELECT * FROM repos WHERE space_uid = $1 ${canSeeAll ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
+      [u.uid],
+    );
+    const counts = await openPrCounts(pool, reposRes.rows.map(r => Number(r.id)));
+    res.json({
+      uid: u.uid,
+      display_name: u.display_name,
+      email: canSeeAll ? u.email : '',
+      is_self: isSelf,
+      is_admin: Boolean(u.admin),
+      bio: personal?.description || '',
+      is_public: personal?.is_public ?? false,
+      avatar: avatarFor(u.uid),
+      created: Number(u.created),
+      repos: reposRes.rows.map(r => rowToRepo(r, { openPulls: counts.get(Number(r.id)) ?? 0 })),
+    });
   });
 
   return api;

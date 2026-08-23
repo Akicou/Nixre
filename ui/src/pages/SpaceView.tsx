@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { FolderGit2, Plus, ArrowRight, ArrowLeft } from 'lucide-react';
-import { api, Space, Repository } from '../lib/api';
+import { api, Space, Repository, UserProfile } from '../lib/api';
 
 export const SpaceView: React.FC = () => {
   const { space: spaceUid } = useParams<{ space: string }>();
   const [space, setSpace] = useState<Space | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [repos, setRepos] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -13,13 +14,21 @@ export const SpaceView: React.FC = () => {
   useEffect(() => {
     if (!spaceUid) return;
     setLoading(true);
-    Promise.all([
-      api.getSpace(spaceUid),
-      api.listRepos(spaceUid),
-    ])
-      .then(([s, r]) => {
+    setError('');
+    setProfile(null);
+    api.getSpace(spaceUid)
+      .then(async s => {
         setSpace(s);
-        setRepos(r);
+        if (s.is_personal) {
+          try {
+            const p = await api.getUserProfile(spaceUid);
+            setProfile(p);
+          } catch {
+            /* profile is best-effort; the space still renders */
+          }
+        }
+        const r = await api.listRepos(spaceUid).catch(() => []);
+        setRepos(Array.isArray(r) ? r : []);
         setLoading(false);
       })
       .catch(err => {
@@ -29,7 +38,7 @@ export const SpaceView: React.FC = () => {
   }, [spaceUid]);
 
   if (loading) {
-    return <div className="max-w-7xl mx-auto px-4 py-16 text-center text-sm text-txt-tertiary">Loading space...</div>;
+    return <div className="max-w-7xl mx-auto px-4 py-16 text-center text-sm text-txt-tertiary">Loading...</div>;
   }
 
   if (error || !space) {
@@ -45,37 +54,59 @@ export const SpaceView: React.FC = () => {
     );
   }
 
+  const isPersonal = Boolean(space.is_personal);
+  const canCreate = isPersonal ? Boolean(profile?.is_self) : true;
+  const displayName = profile?.display_name || space.uid;
+  const avatarInitials = (profile?.avatar || space.uid).slice(0, 2).toUpperCase();
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8 w-full min-w-0">
-      {/* Space Header */}
+      {/* Header: GitHub-style user profile OR org space */}
       <div className="border-b border-border-subtle pb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded bg-surface-subtle border border-border-subtle flex items-center justify-center font-mono text-base font-bold text-txt-primary">
-            {space.uid.slice(0, 2).toUpperCase()}
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="w-14 h-14 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center font-mono text-lg font-bold text-txt-primary shrink-0">
+            {avatarInitials}
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold font-mono text-txt-primary">{space.uid}</h1>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl font-bold font-mono text-txt-primary truncate">{space.uid}</h1>
               <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-border-subtle text-txt-tertiary">
                 {space.is_public ? 'Public' : 'Private'}
               </span>
+              {isPersonal && profile?.is_self && (
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-open text-txt-open">
+                  You
+                </span>
+              )}
             </div>
-            {space.description && (
-              <p className="text-xs text-txt-secondary mt-0.5">{space.description}</p>
+            {isPersonal ? (
+              <>
+                <p className="text-sm font-medium text-txt-primary mt-0.5">{displayName}</p>
+                <p className="text-[11px] font-mono text-txt-tertiary">@{space.uid}</p>
+                {profile?.bio && <p className="text-xs text-txt-secondary mt-1">{profile.bio}</p>}
+              </>
+            ) : (
+              <>
+                {space.description && (
+                  <p className="text-xs text-txt-secondary mt-0.5">{space.description}</p>
+                )}
+              </>
             )}
           </div>
         </div>
 
-        <Link
-          to="/new-repo"
-          className="px-3.5 py-1.5 rounded text-xs font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm flex items-center gap-1.5 self-start sm:self-auto"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>New Repository in {space.uid}</span>
-        </Link>
+        {canCreate && (
+          <Link
+            to="/new-repo"
+            className="px-3.5 py-1.5 rounded text-xs font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm flex items-center gap-1.5 self-start sm:self-auto"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>{isPersonal ? 'New Repository' : `New Repository in ${space.uid}`}</span>
+          </Link>
+        )}
       </div>
 
-      {/* Repositories in this Space */}
+      {/* Repositories in this namespace */}
       <div className="space-y-4">
         <h2 className="text-sm font-semibold text-txt-secondary uppercase tracking-wider flex items-center gap-2">
           <FolderGit2 className="w-4 h-4 text-brand" />
@@ -84,14 +115,16 @@ export const SpaceView: React.FC = () => {
 
         {repos.length === 0 ? (
           <div className="border border-dashed border-border-subtle rounded-lg p-10 text-center bg-surface-canvas/50">
-            <p className="text-sm text-txt-secondary">No repositories in this space yet.</p>
-            <Link
-              to="/new-repo"
-              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-brand text-white text-xs font-medium hover:bg-brand-hover transition shadow-sm"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Create first repository</span>
-            </Link>
+            <p className="text-sm text-txt-secondary">No repositories yet.</p>
+            {canCreate && (
+              <Link
+                to="/new-repo"
+                className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-brand text-white text-xs font-medium hover:bg-brand-hover transition shadow-sm"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Create first repository</span>
+              </Link>
+            )}
           </div>
         ) : (
           <div className="border border-border-subtle rounded-lg bg-surface-canvas divide-y divide-border-subtle overflow-hidden">

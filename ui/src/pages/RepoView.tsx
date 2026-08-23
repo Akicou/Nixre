@@ -6,6 +6,7 @@ import {
   GitPullRequest,
   File,
   Folder,
+  History,
   Copy,
   Check,
   ChevronDown,
@@ -15,13 +16,15 @@ import {
   FileCode,
   Settings
 } from 'lucide-react';
-import { api, Repository, TreeEntry, Commit, Branch, PullRequest } from '../lib/api';
+import { api, Repository, TreeEntry, Commit, Branch, PullRequest, CommitDetail } from '../lib/api';
 import { resolveNodeType } from '../lib/repoPath';
 import { useOutsideClick } from '../lib/useOutsideClick';
 import { PullRequestForm } from '../components/PullRequestForm';
 import { PullRequestDetail } from '../components/PullRequestDetail';
 import { RepoSettingsPanel } from '../components/RepoSettingsPanel';
 import { Markdown, isMarkdownFile } from '../components/Markdown';
+
+const initials = (name?: string | null) => (name || '?').slice(0, 2).toUpperCase();
 
 export const RepoView: React.FC = () => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
@@ -33,6 +36,7 @@ export const RepoView: React.FC = () => {
   const currentPath = searchParams.get('path') || '';
   const currentNodeType = resolveNodeType(searchParams.get('type'));
   const prParam = searchParams.get('pr');
+  const commitParam = searchParams.get('commit');
   const selectedPrNumber: number | 'new' | null = prParam === 'new' ? 'new' : prParam ? Number(prParam) : null;
 
   const [repo, setRepo] = useState<Repository | null>(null);
@@ -41,6 +45,8 @@ export const RepoView: React.FC = () => {
   const [fileBlob, setFileBlob] = useState<{ content: string; name: string; size: number } | null>(null);
   const [readmeContent, setReadmeContent] = useState<string | null>(null);
   const [commits, setCommits] = useState<Commit[]>([]);
+  const [commitDetail, setCommitDetail] = useState<CommitDetail | null>(null);
+  const [latestCommit, setLatestCommit] = useState<Commit | null>(null);
   const [pullRequests, setPullRequests] = useState<PullRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -79,6 +85,12 @@ export const RepoView: React.FC = () => {
     if (!repo) return;
 
     if (activeTab === 'code') {
+      // Latest commit for the current path (repo/folder/file) — the
+      // "who made this" line GitHub shows under the file list.
+      api.getCommits(repoPath, currentBranch, 1, 1, currentPath || undefined)
+        .then(res => setLatestCommit(res.commits[0] || null))
+        .catch(() => setLatestCommit(null));
+
       if (currentNodeType === 'blob') {
         // Fetch Blob
         api.getRawBlob(repoPath, currentBranch, currentPath)
@@ -105,15 +117,25 @@ export const RepoView: React.FC = () => {
           .catch(() => setTreeEntries([]));
       }
     } else if (activeTab === 'commits') {
-      api.getCommits(repoPath, currentBranch)
-        .then(res => setCommits(res.commits))
-        .catch(() => setCommits([]));
+      if (commitParam) {
+        // Commit detail view
+        setCommitDetail(null);
+        api.getCommit(repoPath, commitParam)
+          .then(d => setCommitDetail(d))
+          .catch(() => setCommitDetail(null));
+      } else {
+        // Commit list, optionally filtered to a file/folder (History).
+        setCommitDetail(null);
+        api.getCommits(repoPath, currentBranch, 1, 50, currentPath || undefined)
+          .then(res => setCommits(res.commits))
+          .catch(() => setCommits([]));
+      }
     } else if (activeTab === 'pulls') {
       api.listPullRequests(repoPath)
         .then(prs => setPullRequests(prs))
         .catch(() => setPullRequests([]));
     }
-  }, [repo, activeTab, currentBranch, currentPath, currentNodeType]);
+  }, [repo, activeTab, currentBranch, currentPath, currentNodeType, commitParam]);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -127,6 +149,18 @@ export const RepoView: React.FC = () => {
 
   const getSshCloneUrl = () => {
     return `ssh://git@${window.location.hostname}:3022/${repoPath}.git`;
+  };
+
+  const goToCommit = (sha: string) => setSearchParams({ tab: 'commits', branch: currentBranch, commit: sha });
+  const goToPathHistory = (path: string) => setSearchParams({ tab: 'commits', branch: currentBranch, path });
+
+  const authorLink = (c: Commit) => {
+    const actor = c.author;
+    const name = actor.display_name || actor.identity.name;
+    if (actor.linked && actor.uid) {
+      return <Link to={`/${actor.uid}`} className="text-txt-brand hover:underline">{name}</Link>;
+    }
+    return <span>{name}</span>;
   };
 
   if (loading && !repo) {
@@ -357,6 +391,21 @@ export const RepoView: React.FC = () => {
             </div>
           </div>
 
+          {/* Latest commit line — who made the most recent change here */}
+          {latestCommit && (
+            <div className="flex items-center gap-2 text-xs text-txt-tertiary font-mono">
+              <GitCommit className="w-3.5 h-3.5 text-brand shrink-0" />
+              <button
+                onClick={() => goToCommit(latestCommit.sha)}
+                className="text-txt-brand hover:underline shrink-0"
+              >
+                {latestCommit.sha.slice(0, 7)}
+              </button>
+              <span className="truncate min-w-0">{latestCommit.title}</span>
+              <span className="shrink-0">· {latestCommit.author.display_name || latestCommit.author.identity.name}</span>
+            </div>
+          )}
+
           {/* If Single File Blob is active */}
           {fileBlob ? (
             <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden">
@@ -366,13 +415,22 @@ export const RepoView: React.FC = () => {
                   <span className="truncate">{fileBlob.name}</span>
                   <span className="text-txt-tertiary font-normal shrink-0">({fileBlob.size} bytes)</span>
                 </div>
-                <button
-                  onClick={() => copyToClipboard(fileBlob.content)}
-                  className="p-1 rounded hover:bg-surface-subtle text-txt-secondary hover:text-txt-primary transition"
-                  title="Copy raw file"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-txt-open" /> : <Copy className="w-3.5 h-3.5" />}
-                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() => goToPathHistory(currentPath)}
+                    className="p-1 rounded hover:bg-surface-subtle text-txt-secondary hover:text-txt-primary transition"
+                    title="History of this file"
+                  >
+                    <History className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => copyToClipboard(fileBlob.content)}
+                    className="p-1 rounded hover:bg-surface-subtle text-txt-secondary hover:text-txt-primary transition"
+                    title="Copy raw file"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-txt-open" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
               </div>
               {isMarkdownFile(fileBlob.name) ? (
                 <div className="p-6">
@@ -410,30 +468,42 @@ export const RepoView: React.FC = () => {
                       <td className="py-2 px-4 text-right text-txt-tertiary"></td>
                     </tr>
                   )}
-                  {treeEntries.map(entry => (
-                    <tr
-                      key={entry.name}
-                      onClick={() => {
-                        const nextPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
-                        setSearchParams({ tab: 'code', branch: currentBranch, path: nextPath, type: entry.type });
-                      }}
-                      className="hover:bg-surface-subtle/50 cursor-pointer transition"
-                    >
-                      <td className="py-2.5 px-4 flex items-center gap-2.5">
-                        {entry.type === 'tree' ? (
-                          <Folder className="w-4 h-4 text-brand shrink-0" />
-                        ) : (
-                          <File className="w-4 h-4 text-txt-tertiary shrink-0" />
-                        )}
-                        <span className={`hover:underline ${entry.type === 'tree' ? 'font-medium text-txt-primary' : 'text-txt-secondary'}`}>
-                          {entry.name}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-4 text-right text-txt-tertiary font-mono">
-                        {entry.sha.slice(0, 7)}
-                      </td>
-                    </tr>
-                  ))}
+                  {treeEntries.map(entry => {
+                    const nextPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+                    return (
+                      <tr
+                        key={entry.name}
+                        onClick={() => {
+                          setSearchParams({ tab: 'code', branch: currentBranch, path: nextPath, type: entry.type });
+                        }}
+                        className="hover:bg-surface-subtle/50 cursor-pointer transition group"
+                      >
+                        <td className="py-2.5 px-4 flex items-center gap-2.5">
+                          {entry.type === 'tree' ? (
+                            <Folder className="w-4 h-4 text-brand shrink-0" />
+                          ) : (
+                            <File className="w-4 h-4 text-txt-tertiary shrink-0" />
+                          )}
+                          <span className={`hover:underline ${entry.type === 'tree' ? 'font-medium text-txt-primary' : 'text-txt-secondary'}`}>
+                            {entry.name}
+                          </span>
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              goToPathHistory(nextPath);
+                            }}
+                            className="ml-2 p-1 rounded hover:bg-surface-subtle text-txt-tertiary hover:text-txt-primary transition opacity-0 group-hover:opacity-100"
+                            title="History of this path"
+                          >
+                            <History className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                        <td className="py-2.5 px-4 text-right text-txt-tertiary font-mono">
+                          {entry.sha.slice(0, 7)}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -456,26 +526,63 @@ export const RepoView: React.FC = () => {
 
       {/* TAB CONTENT: COMMITS */}
       {activeTab === 'commits' && (
-        <div className="border border-border-subtle rounded-lg bg-surface-canvas divide-y divide-border-subtle overflow-hidden">
-          {commits.length === 0 ? (
-            <div className="p-8 text-center text-xs text-txt-tertiary font-mono">No commits found for this branch.</div>
-          ) : (
-            commits.map(c => (
-              <div key={c.sha} className="p-4 hover:bg-surface-subtle/50 transition flex items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <p className="text-sm font-semibold text-txt-primary">{c.title || c.message}</p>
-                  <div className="flex items-center gap-3 text-xs text-txt-tertiary font-mono">
-                    <span className="font-sans font-medium text-txt-secondary">{c.author.identity.name}</span>
-                    <span>{new Date(c.author.when).toLocaleDateString()}</span>
-                  </div>
-                </div>
-                <div className="p-1.5 rounded bg-surface-base border border-border-subtle font-mono text-xs text-txt-brand">
-                  {c.sha.slice(0, 7)}
-                </div>
+        commitParam && commitDetail ? (
+          <CommitDetailView
+            detail={commitDetail}
+            onBack={() => setSearchParams({ tab: 'commits', branch: currentBranch })}
+          />
+        ) : (
+          <div className="space-y-4">
+            {currentPath && (
+              <div className="flex items-center justify-between gap-3 border border-border-subtle rounded-md bg-surface-base px-3 py-2 text-xs font-mono">
+                <span className="flex items-center gap-2 text-txt-secondary min-w-0">
+                  <History className="w-3.5 h-3.5 text-brand shrink-0" />
+                  <span className="truncate">History for <span className="text-txt-primary font-semibold">{currentPath}</span></span>
+                </span>
+                <button
+                  onClick={() => setSearchParams({ tab: 'commits', branch: currentBranch })}
+                  className="text-txt-brand hover:underline shrink-0"
+                >
+                  Clear filter
+                </button>
               </div>
-            ))
-          )}
-        </div>
+            )}
+
+            <div className="border border-border-subtle rounded-lg bg-surface-canvas divide-y divide-border-subtle overflow-hidden">
+              {commits.length === 0 ? (
+                <div className="p-8 text-center text-xs text-txt-tertiary font-mono">No commits found for this {currentPath ? 'path' : 'branch'}.</div>
+              ) : (
+                commits.map(c => (
+                  <div key={c.sha} className="p-4 hover:bg-surface-subtle/50 transition flex items-center justify-between gap-4">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="w-8 h-8 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center text-[10px] font-bold text-txt-primary shrink-0" title={c.author.display_name || c.author.identity.name}>
+                        {c.author.avatar || initials(c.author.identity.name)}
+                      </div>
+                      <div className="space-y-1 min-w-0">
+                        <p className="text-sm font-semibold text-txt-primary">{c.title || c.message}</p>
+                        <div className="flex items-center gap-3 text-xs text-txt-tertiary font-mono flex-wrap">
+                          <span className="font-sans text-txt-secondary">{authorLink(c)}</span>
+                          <span>{new Date(c.author.when).toLocaleDateString()}</span>
+                          {c.committer.linked && c.committer.uid && c.author.uid !== c.committer.uid && (
+                            <span className="font-sans">committed by&nbsp;
+                              <Link to={`/${c.committer.uid}`} className="text-txt-brand hover:underline">{c.committer.display_name}</Link>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => goToCommit(c.sha)}
+                      className="p-1.5 rounded bg-surface-base border border-border-subtle font-mono text-xs text-txt-brand hover:bg-surface-subtle transition shrink-0"
+                    >
+                      {c.sha.slice(0, 7)}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )
       )}
 
       {/* TAB CONTENT: PULL REQUESTS */}
@@ -573,6 +680,57 @@ export const RepoView: React.FC = () => {
           space={space}
           onUpdated={setRepo}
         />
+      )}
+    </div>
+  );
+};
+
+// Single-commit detail view: author, stats, and the files it touched.
+const CommitDetailView: React.FC<{
+  detail: CommitDetail;
+  onBack: () => void;
+}> = ({ detail, onBack }) => {
+  const c = detail.commit;
+  return (
+    <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden">
+      <div className="p-4 border-b border-border-subtle space-y-3">
+        <button onClick={onBack} className="inline-flex items-center gap-1 text-xs text-txt-secondary hover:text-txt-primary transition">
+          <ArrowLeft className="w-3.5 h-3.5" />
+          <span>All commits</span>
+        </button>
+        <div className="flex items-start gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center text-[11px] font-bold text-txt-primary shrink-0">
+            {c.author.avatar || initials(c.author.identity.name)}
+          </div>
+          <div className="space-y-1 min-w-0">
+            <h3 className="text-sm font-semibold text-txt-primary">{c.title}</h3>
+            <p className="text-[11px] font-mono text-txt-brand">{c.sha}</p>
+            <p className="text-xs text-txt-tertiary font-mono">
+              {c.author.display_name || c.author.identity.name} · {new Date(c.author.when).toLocaleString()}
+            </p>
+          </div>
+          <div className="ml-auto text-xs font-mono text-txt-secondary shrink-0">
+            <span className="text-txt-open">+{detail.stats.additions}</span>
+            <span className="mx-1 text-txt-tertiary">/</span>
+            <span className="text-txt-merged">-{detail.stats.deletions}</span>
+          </div>
+        </div>
+      </div>
+      {detail.files.length === 0 ? (
+        <div className="p-8 text-center text-xs text-txt-tertiary font-mono">No file changes in this commit.</div>
+      ) : (
+        <div className="divide-y divide-border-subtle">
+          {detail.files.map(f => (
+            <div key={f.path} className="flex items-center justify-between px-4 py-2 text-xs font-mono gap-3">
+              <span className="text-txt-primary truncate min-w-0">{f.path}</span>
+              <span className="text-txt-tertiary shrink-0">
+                <span className="text-txt-open">+{f.additions}</span>
+                <span className="mx-1">·</span>
+                <span className="text-txt-merged">-{f.deletions}</span>
+              </span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

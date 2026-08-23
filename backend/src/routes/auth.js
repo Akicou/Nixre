@@ -236,6 +236,27 @@ export function authRoutes(pool, authenticate) {
       [uid, email, displayName, passwordHash, admin, now],
     );
     const token = await createSession(pool, uid);
+
+    // Provision the user's personal namespace (GitHub-style profile owner).
+    // uid === space.uid; repos created here live at /{uid}/{repo}. Idempotent
+    // so a retry after a partial failure never double-creates.
+    try {
+      await pool.query(
+        `INSERT INTO spaces (uid, description, is_public, is_personal, created_by, created, updated)
+         VALUES ($1, '', TRUE, TRUE, $1, $2, $2)
+         ON CONFLICT (uid) DO NOTHING`,
+        [uid, now],
+      );
+      await pool.query(
+        `INSERT INTO space_members (space_uid, user_uid, role, created)
+         VALUES ($1, $1, 'owner', $2)
+         ON CONFLICT (space_uid, user_uid) DO NOTHING`,
+        [uid, now],
+      );
+    } catch (err) {
+      console.error('Failed to provision personal space for', uid, err.message);
+    }
+
     res.status(201).json({
       access_token: token,
       user: publicUser(rowToUser(rows[0])),

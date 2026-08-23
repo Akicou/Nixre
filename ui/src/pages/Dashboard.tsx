@@ -14,7 +14,7 @@ interface DashboardProps {
   user: User | null;
 }
 
-export const Dashboard: React.FC<DashboardProps> = () => {
+export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [repos, setRepos] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,6 +56,17 @@ export const Dashboard: React.FC<DashboardProps> = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          {user && (
+            <Link
+              to={`/${user.uid}`}
+              className="px-3 py-1.5 rounded text-sm text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle border border-border-subtle transition font-medium flex items-center gap-1.5"
+            >
+              <span className="w-5 h-5 rounded-full bg-surface-mid border border-border-subtle flex items-center justify-center text-[10px] font-bold text-txt-primary">
+                {user.uid.slice(0, 2).toUpperCase()}
+              </span>
+              <span>My Profile</span>
+            </Link>
+          )}
           <Link
             to="/new-space"
             className="px-3 py-1.5 rounded text-sm text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle border border-border-subtle transition font-medium flex items-center gap-1.5"
@@ -153,7 +164,7 @@ export const Dashboard: React.FC<DashboardProps> = () => {
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold text-txt-tertiary uppercase tracking-wider flex items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5" />
-                <span>Spaces (Orgs)</span>
+                <span>Namespaces</span>
               </h2>
               <Link to="/new-space" className="text-xs text-txt-brand hover:underline font-medium">
                 + New

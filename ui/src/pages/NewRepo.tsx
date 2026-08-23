@@ -18,7 +18,11 @@ export const NewRepo: React.FC = () => {
   useEffect(() => {
     api.listSpaces().then(res => {
       setSpaces(res);
-      if (res.length > 0) setParentRef(res[0].uid);
+      if (res.length > 0) {
+        // Default to the user's personal namespace (their profile) if present.
+        const personal = res.find(s => s.is_personal);
+        setParentRef((personal || res[0]).uid);
+      }
     }).catch(() => {});
   }, []);
 
@@ -73,9 +77,14 @@ export const NewRepo: React.FC = () => {
                 required
               >
                 {spaces.map(s => (
-                  <option key={s.uid} value={s.uid}>{s.uid}</option>
+                  <option key={s.uid} value={s.uid}>
+                    {s.uid}{s.is_personal ? ' (personal)' : ''}
+                  </option>
                 ))}
               </select>
+              <p className="mt-1 text-[11px] text-txt-tertiary">
+                Repositories in a personal namespace show on that user's profile.
+              </p>
             </div>
 
             <div className="sm:col-span-2">

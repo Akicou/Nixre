@@ -11,7 +11,8 @@ import {
   KeyRound,
   Plus,
   ChevronDown,
-  Sparkles
+  Sparkles,
+  User as UserIcon
 } from 'lucide-react';
 import { api, User, Space } from '../lib/api';
 import { currentSpaceFromPathname } from '../lib/repoPath';
@@ -207,6 +208,14 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
                       <p className="text-sm font-semibold text-txt-primary">{currentUser.display_name || currentUser.uid}</p>
                       <p className="text-xs text-txt-tertiary truncate">{currentUser.email}</p>
                     </div>
+
+                    <Link
+                      to={`/${currentUser.uid}`}
+                      className="flex items-center gap-2.5 px-3 py-2 text-sm text-txt-primary hover:bg-surface-subtle transition"
+                    >
+                      <UserIcon className="w-4 h-4 text-txt-brand" />
+                      <span>View Profile</span>
+                    </Link>
 
                     <Link
                       to="/settings"
