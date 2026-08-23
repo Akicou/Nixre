@@ -4,7 +4,6 @@ import {
   GitPullRequest,
   FolderGit2,
   Layers,
-  Plus,
   Search,
   Terminal,
   ArrowRight
@@ -63,13 +62,6 @@ export const Dashboard: React.FC<DashboardProps> = () => {
           >
             <Layers className="w-4 h-4 text-txt-tertiary" />
             <span>New Space</span>
-          </Link>
-          <Link
-            to="/new-repo"
-            className="px-3.5 py-1.5 rounded text-sm font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm flex items-center gap-1.5"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New Repository</span>
           </Link>
         </div>
       </div>
