@@ -10,6 +10,7 @@ import {
   listTree,
   readBlob,
   listCommits,
+  commitDates,
   getCommit,
   listBranches,
   resolveDefaultBranch,
@@ -136,6 +137,66 @@ async function userCommitted(pool, repoRows, email) {
   return false;
 }
 
+const CONTRIB_REPO_CAP = 80;
+
+function contribYear(query) {
+  const nowY = new Date().getUTCFullYear();
+  const y = Number(query);
+  if (!Number.isInteger(y) || y < 2000 || y > nowY + 1) return nowY;
+  return y;
+}
+
+function yearWindow(year) {
+  return {
+    since: `${year}-01-01`,
+    until: `${year + 1}-01-01`,
+    startMs: Date.UTC(year, 0, 1),
+    endMs: Date.UTC(year + 1, 0, 1),
+  };
+}
+
+function dayFromIso(iso) {
+  return String(iso).slice(0, 10);
+}
+
+function dayFromMs(ms) {
+  return new Date(Number(ms)).toISOString().slice(0, 10);
+}
+
+function bumpDay(map, date, n = 1) {
+  if (!date) return;
+  map.set(date, (map.get(date) || 0) + n);
+}
+
+function serializeContributions(year, map) {
+  const prefix = `${year}-`;
+  const days = [];
+  let total = 0;
+  for (const [date, count] of [...map.entries()].sort()) {
+    if (!date.startsWith(prefix)) continue;
+    days.push({ date, count });
+    total += count;
+  }
+  return { year, total, days };
+}
+
+async function collectCommitDays(repos, { since, until, authorEmail }) {
+  const map = new Map();
+  const slice = repos.slice(0, CONTRIB_REPO_CAP);
+  await Promise.all(slice.map(async r => {
+    const dates = await commitDates(r.space_uid, r.uid, { since, until, authorEmail });
+    for (const d of dates) bumpDay(map, dayFromIso(d));
+  }));
+  return map;
+}
+
+function orgSummary(row) {
+  return {
+    uid: row.uid,
+    avatar_url: row.avatar_data ? `/api/v1/avatars/space/${row.uid}` : '',
+  };
+}
+
 // Enrich git commit author/committer identities with the matching Nixre user
 // (by email) so the UI can render an avatar + profile link. Best-effort: a
 // commit authored with a foreign email just keeps its git identity (linked:false).
@@ -205,7 +266,11 @@ export function forgeRoutes(pool, authenticate) {
       res.status(403).json({ message: 'No access to this space' });
       return;
     }
-    res.json({ ...rowToSpace(space), is_member: await canAccessSpace(pool, space.uid, req.auth.user) });
+    res.json({
+      ...rowToSpace(space),
+      is_member: await canAccessSpace(pool, space.uid, req.auth.user),
+      profile_readme: await profileReadmeStatus(pool, space.uid),
+    });
   });
 
   api.post('/spaces', auth, async (req, res) => {
@@ -246,6 +311,64 @@ export function forgeRoutes(pool, authenticate) {
     );
     const counts = await openPrCounts(pool, rows.map(r => Number(r.id)));
     res.json(rows.map(r => rowToRepo(r, { openPulls: counts.get(Number(r.id)) ?? 0 })));
+  });
+
+  api.get('/spaces/:spaceUid/members', auth, async (req, res) => {
+    const { rows: spaces } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [req.params.spaceUid]);
+    if (spaces.length === 0) {
+      res.status(404).json({ message: 'Space not found' });
+      return;
+    }
+    const space = spaces[0];
+    const member = await canAccessSpace(pool, space.uid, req.auth.user);
+    if (!space.is_public && !member) {
+      res.status(403).json({ message: 'No access to this space' });
+      return;
+    }
+    const { rows } = await pool.query(
+      `SELECT u.uid, u.display_name, u.avatar_data, sm.role
+       FROM space_members sm
+       JOIN users u ON u.uid = sm.user_uid
+       WHERE sm.space_uid = $1
+       ORDER BY CASE sm.role WHEN 'owner' THEN 0 ELSE 1 END, u.uid`,
+      [space.uid],
+    );
+    res.json(rows.map(r => ({
+      uid: r.uid,
+      display_name: r.display_name,
+      role: r.role,
+      avatar_url: r.avatar_data ? `/api/v1/avatars/user/${r.uid}` : '',
+    })));
+  });
+
+  api.get('/spaces/:spaceUid/contributions', auth, async (req, res) => {
+    const { rows: spaces } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [req.params.spaceUid]);
+    if (spaces.length === 0) {
+      res.status(404).json({ message: 'Space not found' });
+      return;
+    }
+    const space = spaces[0];
+    const member = await canAccessSpace(pool, space.uid, req.auth.user);
+    if (!space.is_public && !member) {
+      res.status(403).json({ message: 'No access to this space' });
+      return;
+    }
+    const year = contribYear(req.query.year);
+    const { since, until, startMs, endMs } = yearWindow(year);
+    const { rows: repos } = await pool.query(
+      `SELECT * FROM repos WHERE space_uid = $1 ${member ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
+      [space.uid],
+    );
+    const map = await collectCommitDays(repos, { since, until });
+    const prs = await pool.query(
+      `SELECT pr.created FROM pull_requests pr
+       JOIN repos r ON r.id = pr.repo_id
+       WHERE r.space_uid = $1 AND pr.created >= $2 AND pr.created < $3
+         ${member ? '' : 'AND r.is_public = TRUE'}`,
+      [space.uid, startMs, endMs],
+    );
+    for (const p of prs.rows) bumpDay(map, dayFromMs(p.created));
+    res.json(serializeContributions(year, map));
   });
 
   api.post('/repos', auth, async (req, res) => {
@@ -498,6 +621,16 @@ export function forgeRoutes(pool, authenticate) {
     );
     const counts = await openPrCounts(pool, reposRes.rows.map(r => Number(r.id)));
     const profileReadme = await profileReadmeStatus(pool, u.uid);
+    const orgsRes = await pool.query(
+      `SELECT s.* FROM spaces s
+       JOIN space_members sm ON sm.space_uid = s.uid
+       WHERE sm.user_uid = $1 AND s.is_personal = FALSE
+       ORDER BY s.uid`,
+      [u.uid],
+    );
+    const orgs = orgsRes.rows
+      .filter(s => s.is_public || canSeeAll)
+      .map(orgSummary);
     res.json({
       uid: u.uid,
       display_name: u.display_name,
@@ -512,6 +645,7 @@ export function forgeRoutes(pool, authenticate) {
       socials: Array.isArray(u.socials) ? u.socials : [],
       profile_readme: profileReadme,
       created: Number(u.created),
+      orgs,
       repos: reposRes.rows.map(r => rowToRepo(r, { openPulls: counts.get(Number(r.id)) ?? 0 })),
     });
   });
@@ -587,6 +721,40 @@ export function forgeRoutes(pool, authenticate) {
         },
       ],
     });
+  });
+
+  api.get('/users/:uid/contributions', auth, async (req, res) => {
+    const { rows } = await pool.query('SELECT * FROM users WHERE uid = $1', [req.params.uid]);
+    if (rows.length === 0) {
+      res.status(404).json({ message: 'User not found' });
+      return;
+    }
+    const u = rows[0];
+    const canSeeAll = req.auth.user.admin || req.auth.user.uid === u.uid;
+    const year = contribYear(req.query.year);
+    const { since, until, startMs, endMs } = yearWindow(year);
+
+    const memberRes = await pool.query(
+      `SELECT sm.space_uid FROM space_members sm
+       JOIN spaces s ON s.uid = sm.space_uid
+       WHERE sm.user_uid = $1 AND s.is_personal = FALSE`,
+      [u.uid],
+    );
+    const spaceUids = [u.uid, ...memberRes.rows.map(r => r.space_uid)];
+    const reposRes = await pool.query(
+      `SELECT * FROM repos WHERE space_uid = ANY($1) ${canSeeAll ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
+      [spaceUids],
+    );
+    const map = await collectCommitDays(reposRes.rows, { since, until, authorEmail: u.email });
+    const prs = await pool.query(
+      `SELECT pr.created FROM pull_requests pr
+       JOIN repos r ON r.id = pr.repo_id
+       WHERE pr.author_uid = $1 AND pr.created >= $2 AND pr.created < $3
+         ${canSeeAll ? '' : 'AND r.is_public = TRUE'}`,
+      [u.uid, startMs, endMs],
+    );
+    for (const p of prs.rows) bumpDay(map, dayFromMs(p.created));
+    res.json(serializeContributions(year, map));
   });
 
   return api;

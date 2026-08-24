@@ -221,6 +221,26 @@ export async function listCommits(space, repo, ref, { page = 1, limit = 25, path
   return commits;
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Author dates only (`%aI`), for contribution heatmaps. Empty / unreadable
+// repos return []. `--all` so activity on any branch counts.
+export async function commitDates(space, repo, { since, until, authorEmail } = {}) {
+  const dir = repoDir(space, repo);
+  const args = ['log', '--all', '--format=%aI'];
+  if (since) args.push(`--since=${since}`);
+  if (until) args.push(`--until=${until}`);
+  if (authorEmail) args.push(`--author=${escapeRegExp(authorEmail)}`);
+  try {
+    const out = await git(dir, args);
+    return out.split('\n').map(s => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 // Parse one commit record for `show <ref>` (used by getCommit).
 async function readSingleCommit(space, repo, ref) {
   const dir = repoDir(space, repo);

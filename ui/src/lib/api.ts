@@ -13,6 +13,35 @@ export interface User {
   updated?: number;
 }
 
+export interface ProfileReadme {
+  exists: boolean;
+  hasReadme: boolean;
+  repo: { path: string; default_branch: string; readme: string } | null;
+}
+
+export interface ProfileOrg {
+  uid: string;
+  avatar_url?: string;
+}
+
+export interface SpaceMember {
+  uid: string;
+  display_name: string;
+  role: string;
+  avatar_url?: string;
+}
+
+export interface ContributionDay {
+  date: string;
+  count: number;
+}
+
+export interface Contributions {
+  year: number;
+  total: number;
+  days: ContributionDay[];
+}
+
 export interface Space {
   id: number;
   uid: string;
@@ -22,6 +51,7 @@ export interface Space {
   is_personal?: boolean;
   avatar_url?: string;
   is_member?: boolean;
+  profile_readme?: ProfileReadme;
   created: number;
   created_by: number;
   updated: number;
@@ -106,12 +136,9 @@ export interface UserProfile {
   avatar: string;
   avatar_url?: string;
   socials?: SocialLink[];
-  profile_readme?: {
-    exists: boolean;
-    hasReadme: boolean;
-    repo: { path: string; default_branch: string; readme: string } | null;
-  };
+  profile_readme?: ProfileReadme;
   created: number;
+  orgs?: ProfileOrg[];
   repos: Repository[];
 }
 
@@ -303,6 +330,7 @@ class ApiClient {
       is_personal: res.is_personal ?? false,
       is_member: res.is_member ?? false,
       avatar_url: res.avatar_url || '',
+      profile_readme: res.profile_readme,
       created: res.created || 0,
       created_by: res.created_by || 0,
       updated: res.updated || 0,
@@ -455,6 +483,16 @@ class ApiClient {
 
   async getUserGoals(uid: string): Promise<UserGoals> {
     return this.request<UserGoals>(`/users/${uid}/goals`);
+  }
+
+  async getContributions(kind: 'user' | 'space', uid: string, year: number): Promise<Contributions> {
+    const path = kind === 'user' ? `/users/${uid}/contributions` : `/spaces/${uid}/contributions`;
+    return this.request<Contributions>(`${path}?year=${year}`);
+  }
+
+  async listSpaceMembers(spaceUid: string): Promise<SpaceMember[]> {
+    const res = await this.request<SpaceMember[]>(`/spaces/${spaceUid}/members`);
+    return Array.isArray(res) ? res : [];
   }
 
   async updateUserProfile(update: { display_name?: string; socials?: SocialLink[] }): Promise<User> {
