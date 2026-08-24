@@ -51,6 +51,9 @@ export interface Space {
   is_personal?: boolean;
   avatar_url?: string;
   is_member?: boolean;
+  role?: string | null;
+  can_manage?: boolean;
+  can_transfer?: boolean;
   profile_readme?: ProfileReadme;
   created: number;
   created_by: number;
@@ -321,6 +324,18 @@ class ApiClient {
 
   async getSpace(spaceRef: string): Promise<Space> {
     const res = await this.request<any>(`/spaces/${spaceRef}`);
+    return this.normalizeSpace(res);
+  }
+
+  async updateSpace(spaceUid: string, update: { description?: string; is_public?: boolean }): Promise<Space> {
+    const res = await this.request<any>(`/spaces/${spaceUid}`, {
+      method: 'PATCH',
+      body: JSON.stringify(update),
+    });
+    return this.normalizeSpace(res);
+  }
+
+  private normalizeSpace(res: any): Space {
     return {
       id: res.id,
       uid: res.identifier || res.path || res.uid,
@@ -329,6 +344,9 @@ class ApiClient {
       is_public: res.is_public ?? false,
       is_personal: res.is_personal ?? false,
       is_member: res.is_member ?? false,
+      role: res.role ?? null,
+      can_manage: res.can_manage ?? false,
+      can_transfer: res.can_transfer ?? false,
       avatar_url: res.avatar_url || '',
       profile_readme: res.profile_readme,
       created: res.created || 0,
@@ -493,6 +511,40 @@ class ApiClient {
   async listSpaceMembers(spaceUid: string): Promise<SpaceMember[]> {
     const res = await this.request<SpaceMember[]>(`/spaces/${spaceUid}/members`);
     return Array.isArray(res) ? res : [];
+  }
+
+  async addSpaceMember(spaceUid: string, uid: string, role: 'admin' | 'member' = 'member'): Promise<SpaceMember[]> {
+    const res = await this.request<SpaceMember[]>(`/spaces/${spaceUid}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ uid, role }),
+    });
+    return Array.isArray(res) ? res : [];
+  }
+
+  async updateSpaceMember(spaceUid: string, userUid: string, role: 'admin' | 'member'): Promise<SpaceMember[]> {
+    const res = await this.request<SpaceMember[]>(`/spaces/${spaceUid}/members/${userUid}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    });
+    return Array.isArray(res) ? res : [];
+  }
+
+  async removeSpaceMember(spaceUid: string, userUid: string): Promise<SpaceMember[]> {
+    const res = await this.request<SpaceMember[]>(`/spaces/${spaceUid}/members/${userUid}`, {
+      method: 'DELETE',
+    });
+    return Array.isArray(res) ? res : [];
+  }
+
+  async transferSpace(spaceUid: string, uid: string): Promise<{ space: Space; members: SpaceMember[] }> {
+    const res = await this.request<any>(`/spaces/${spaceUid}/transfer`, {
+      method: 'POST',
+      body: JSON.stringify({ uid }),
+    });
+    return {
+      space: this.normalizeSpace(res),
+      members: Array.isArray(res.members) ? res.members : [],
+    };
   }
 
   async updateUserProfile(update: { display_name?: string; socials?: SocialLink[] }): Promise<User> {

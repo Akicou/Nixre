@@ -61,18 +61,64 @@ function rowToRepo(row, { openPulls = 0 } = {}) {
   };
 }
 
+const ORG_ROLES = new Set(['owner', 'admin', 'member']);
+
+async function spaceRole(pool, spaceUid, user) {
+  const { rows } = await pool.query(
+    'SELECT role FROM space_members WHERE space_uid = $1 AND user_uid = $2',
+    [spaceUid, user.uid],
+  );
+  return rows[0]?.role || null;
+}
+
+async function viewerFlags(pool, spaceUid, user) {
+  const role = await spaceRole(pool, spaceUid, user);
+  const instAdmin = Boolean(user.admin);
+  return {
+    is_member: Boolean(role) || instAdmin,
+    role: role || null,
+    can_manage: role === 'owner' || role === 'admin' || instAdmin,
+    can_transfer: role === 'owner' || instAdmin,
+  };
+}
+
 // membership: owner, member of the space, or instance admin
 async function canAccessSpace(pool, spaceUid, user) {
   if (user.admin) return true;
-  const { rows } = await pool.query(
-    'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
-    [spaceUid, user.uid],
-  );
-  return rows.length > 0;
+  return Boolean(await spaceRole(pool, spaceUid, user));
 }
 
 async function canWriteRepo(pool, spaceUid, user) {
   return canAccessSpace(pool, spaceUid, user);
+}
+
+async function ownerCount(pool, spaceUid) {
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS n FROM space_members WHERE space_uid = $1 AND role = 'owner'`,
+    [spaceUid],
+  );
+  return rows[0]?.n ?? 0;
+}
+
+function memberPayload(r) {
+  return {
+    uid: r.uid,
+    display_name: r.display_name,
+    role: r.role,
+    avatar_url: r.avatar_data ? `/api/v1/avatars/user/${r.uid}` : '',
+  };
+}
+
+async function listMembers(pool, spaceUid) {
+  const { rows } = await pool.query(
+    `SELECT u.uid, u.display_name, u.avatar_data, sm.role
+     FROM space_members sm
+     JOIN users u ON u.uid = sm.user_uid
+     WHERE sm.space_uid = $1
+     ORDER BY CASE sm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, u.uid`,
+    [spaceUid],
+  );
+  return rows.map(memberPayload);
 }
 
 // Look up a repo row from `space/repo`; throws 404-shaped null if absent.
@@ -262,15 +308,41 @@ export function forgeRoutes(pool, authenticate) {
       return;
     }
     const space = rows[0];
-    if (!space.is_public && !(await canAccessSpace(pool, space.uid, req.auth.user))) {
+    const flags = await viewerFlags(pool, space.uid, req.auth.user);
+    if (!space.is_public && !flags.is_member) {
       res.status(403).json({ message: 'No access to this space' });
       return;
     }
     res.json({
       ...rowToSpace(space),
-      is_member: await canAccessSpace(pool, space.uid, req.auth.user),
+      ...flags,
       profile_readme: await profileReadmeStatus(pool, space.uid),
     });
+  });
+
+  api.patch('/spaces/:spaceUid', auth, async (req, res) => {
+    const { rows } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [req.params.spaceUid]);
+    if (rows.length === 0) {
+      res.status(404).json({ message: 'Space not found' });
+      return;
+    }
+    const space = rows[0];
+    if (space.is_personal) {
+      res.status(400).json({ message: 'Edit the user profile instead' });
+      return;
+    }
+    const flags = await viewerFlags(pool, space.uid, req.auth.user);
+    if (!flags.can_manage) {
+      res.status(403).json({ message: 'Only owners and admins can edit this organization' });
+      return;
+    }
+    const description = req.body?.description !== undefined ? String(req.body.description) : space.description;
+    const isPublic = req.body?.is_public !== undefined ? Boolean(req.body.is_public) : space.is_public;
+    const { rows: updated } = await pool.query(
+      'UPDATE spaces SET description = $1, is_public = $2, updated = $3 WHERE uid = $4 RETURNING *',
+      [description, isPublic, now(), space.uid],
+    );
+    res.json({ ...rowToSpace(updated[0]), ...flags, profile_readme: await profileReadmeStatus(pool, space.uid) });
   });
 
   api.post('/spaces', auth, async (req, res) => {
@@ -320,25 +392,203 @@ export function forgeRoutes(pool, authenticate) {
       return;
     }
     const space = spaces[0];
-    const member = await canAccessSpace(pool, space.uid, req.auth.user);
-    if (!space.is_public && !member) {
+    const flags = await viewerFlags(pool, space.uid, req.auth.user);
+    if (!space.is_public && !flags.is_member) {
       res.status(403).json({ message: 'No access to this space' });
       return;
     }
-    const { rows } = await pool.query(
-      `SELECT u.uid, u.display_name, u.avatar_data, sm.role
-       FROM space_members sm
-       JOIN users u ON u.uid = sm.user_uid
-       WHERE sm.space_uid = $1
-       ORDER BY CASE sm.role WHEN 'owner' THEN 0 ELSE 1 END, u.uid`,
-      [space.uid],
+    res.json(await listMembers(pool, space.uid));
+  });
+
+  api.post('/spaces/:spaceUid/members', auth, async (req, res) => {
+    const { rows: spaces } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [req.params.spaceUid]);
+    if (spaces.length === 0) {
+      res.status(404).json({ message: 'Space not found' });
+      return;
+    }
+    const space = spaces[0];
+    if (space.is_personal) {
+      res.status(400).json({ message: 'Personal namespaces have a single owner' });
+      return;
+    }
+    const flags = await viewerFlags(pool, space.uid, req.auth.user);
+    if (!flags.can_manage) {
+      res.status(403).json({ message: 'Only owners and admins can add members' });
+      return;
+    }
+    const uid = String(req.body?.uid || '').trim();
+    const role = String(req.body?.role || 'member');
+    if (!ORG_ROLES.has(role) || role === 'owner') {
+      res.status(400).json({ message: 'Role must be member or admin' });
+      return;
+    }
+    if (flags.role === 'admin' && role !== 'member') {
+      res.status(403).json({ message: 'Admins can only add members' });
+      return;
+    }
+    const userRes = await pool.query('SELECT uid FROM users WHERE uid = $1', [uid]);
+    if (userRes.rows.length === 0) {
+      res.status(404).json({ message: 'User not found' });
+      return;
+    }
+    const existing = await pool.query(
+      'SELECT role FROM space_members WHERE space_uid = $1 AND user_uid = $2',
+      [space.uid, uid],
     );
-    res.json(rows.map(r => ({
-      uid: r.uid,
-      display_name: r.display_name,
-      role: r.role,
-      avatar_url: r.avatar_data ? `/api/v1/avatars/user/${r.uid}` : '',
-    })));
+    if (existing.rows.length > 0) {
+      res.status(409).json({ message: 'User is already a member' });
+      return;
+    }
+    await pool.query(
+      'INSERT INTO space_members (space_uid, user_uid, role, created) VALUES ($1, $2, $3, $4)',
+      [space.uid, uid, role, now()],
+    );
+    res.status(201).json(await listMembers(pool, space.uid));
+  });
+
+  api.patch('/spaces/:spaceUid/members/:userUid', auth, async (req, res) => {
+    const { spaceUid, userUid } = req.params;
+    const { rows: spaces } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [spaceUid]);
+    if (spaces.length === 0) {
+      res.status(404).json({ message: 'Space not found' });
+      return;
+    }
+    const space = spaces[0];
+    if (space.is_personal) {
+      res.status(400).json({ message: 'Personal namespaces have a single owner' });
+      return;
+    }
+    const flags = await viewerFlags(pool, space.uid, req.auth.user);
+    if (!flags.can_manage) {
+      res.status(403).json({ message: 'Only owners and admins can change roles' });
+      return;
+    }
+    const nextRole = String(req.body?.role || '');
+    if (nextRole !== 'admin' && nextRole !== 'member') {
+      res.status(400).json({ message: 'Role must be member or admin' });
+      return;
+    }
+    const target = await pool.query(
+      'SELECT role FROM space_members WHERE space_uid = $1 AND user_uid = $2',
+      [space.uid, userUid],
+    );
+    if (target.rows.length === 0) {
+      res.status(404).json({ message: 'Member not found' });
+      return;
+    }
+    const current = target.rows[0].role;
+    if (current === 'owner') {
+      res.status(400).json({ message: 'Transfer ownership instead of changing an owner\'s role' });
+      return;
+    }
+    if (flags.role === 'admin' && current !== 'member') {
+      res.status(403).json({ message: 'Admins can only change members' });
+      return;
+    }
+    await pool.query(
+      'UPDATE space_members SET role = $1 WHERE space_uid = $2 AND user_uid = $3',
+      [nextRole, space.uid, userUid],
+    );
+    res.json(await listMembers(pool, space.uid));
+  });
+
+  api.delete('/spaces/:spaceUid/members/:userUid', auth, async (req, res) => {
+    const { spaceUid, userUid } = req.params;
+    const { rows: spaces } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [spaceUid]);
+    if (spaces.length === 0) {
+      res.status(404).json({ message: 'Space not found' });
+      return;
+    }
+    const space = spaces[0];
+    if (space.is_personal) {
+      res.status(400).json({ message: 'Personal namespaces have a single owner' });
+      return;
+    }
+    const flags = await viewerFlags(pool, space.uid, req.auth.user);
+    if (!flags.can_manage) {
+      res.status(403).json({ message: 'Only owners and admins can remove members' });
+      return;
+    }
+    const target = await pool.query(
+      'SELECT role FROM space_members WHERE space_uid = $1 AND user_uid = $2',
+      [space.uid, userUid],
+    );
+    if (target.rows.length === 0) {
+      res.status(404).json({ message: 'Member not found' });
+      return;
+    }
+    const current = target.rows[0].role;
+    if (current === 'owner') {
+      if (await ownerCount(pool, space.uid) <= 1) {
+        res.status(400).json({ message: 'Transfer ownership before removing the last owner' });
+        return;
+      }
+      if (flags.role === 'admin' && !req.auth.user.admin) {
+        res.status(403).json({ message: 'Admins cannot remove owners' });
+        return;
+      }
+    } else if (flags.role === 'admin' && current !== 'member') {
+      res.status(403).json({ message: 'Admins can only remove members' });
+      return;
+    }
+    await pool.query(
+      'DELETE FROM space_members WHERE space_uid = $1 AND user_uid = $2',
+      [space.uid, userUid],
+    );
+    res.json(await listMembers(pool, space.uid));
+  });
+
+  api.post('/spaces/:spaceUid/transfer', auth, async (req, res) => {
+    const { rows: spaces } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [req.params.spaceUid]);
+    if (spaces.length === 0) {
+      res.status(404).json({ message: 'Space not found' });
+      return;
+    }
+    const space = spaces[0];
+    if (space.is_personal) {
+      res.status(400).json({ message: 'Personal namespaces cannot be transferred' });
+      return;
+    }
+    const flags = await viewerFlags(pool, space.uid, req.auth.user);
+    if (!flags.can_transfer) {
+      res.status(403).json({ message: 'Only an owner can transfer this organization' });
+      return;
+    }
+    const uid = String(req.body?.uid || '').trim();
+    if (!uid || uid === req.auth.user.uid) {
+      res.status(400).json({ message: 'Transfer to a different existing user' });
+      return;
+    }
+    const userRes = await pool.query('SELECT uid FROM users WHERE uid = $1', [uid]);
+    if (userRes.rows.length === 0) {
+      res.status(404).json({ message: 'User not found' });
+      return;
+    }
+    const ts = now();
+    await pool.query(
+      `INSERT INTO space_members (space_uid, user_uid, role, created)
+       VALUES ($1, $2, 'owner', $3)
+       ON CONFLICT (space_uid, user_uid) DO UPDATE SET role = 'owner'`,
+      [space.uid, uid, ts],
+    );
+    if (flags.role === 'owner') {
+      await pool.query(
+        `UPDATE space_members SET role = 'admin' WHERE space_uid = $1 AND user_uid = $2`,
+        [space.uid, req.auth.user.uid],
+      );
+    }
+    await pool.query(
+      'UPDATE spaces SET created_by = $1, updated = $2 WHERE uid = $3',
+      [uid, ts, space.uid],
+    );
+    const next = await viewerFlags(pool, space.uid, req.auth.user);
+    const { rows: updated } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [space.uid]);
+    res.json({
+      ...rowToSpace(updated[0]),
+      ...next,
+      profile_readme: await profileReadmeStatus(pool, space.uid),
+      members: await listMembers(pool, space.uid),
+    });
   });
 
   api.get('/spaces/:spaceUid/contributions', auth, async (req, res) => {

@@ -13,6 +13,11 @@ const { api } = vi.hoisted(() => ({
     getContributions: vi.fn(),
     listSpaceMembers: vi.fn(),
     getUserGoals: vi.fn(),
+    updateSpace: vi.fn(),
+    addSpaceMember: vi.fn(),
+    updateSpaceMember: vi.fn(),
+    removeSpaceMember: vi.fn(),
+    transferSpace: vi.fn(),
   },
 }));
 vi.mock('../lib/api', () => ({ api }));
@@ -30,13 +35,18 @@ function mount(initialPath = '/acme') {
 
 const emptyContrib = { year: 2026, total: 0, days: [] };
 
+const members = [
+  { uid: 'jane', display_name: 'Jane Doe', role: 'owner', avatar_url: '' },
+  { uid: 'bob', display_name: 'Bob Builder', role: 'member', avatar_url: '' },
+];
+
 describe('SpaceView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getSpace.mockResolvedValue(space);
     api.listRepos.mockResolvedValue([repo]);
     api.getContributions.mockResolvedValue(emptyContrib);
-    api.listSpaceMembers.mockResolvedValue([]);
+    api.listSpaceMembers.mockResolvedValue(members);
     api.getUserGoals.mockResolvedValue({ goals: [] });
     api.getUserProfile.mockRejectedValue(new Error('not a user'));
     api.getRawBlob.mockRejectedValue(new Error('no readme'));
@@ -96,5 +106,94 @@ describe('SpaceView', () => {
     expect(screen.getByText('Edit profile')).toBeInTheDocument();
     expect(await screen.findByText(/12 contributions in 2026/)).toBeInTheDocument();
     expect(screen.getByText('notes')).toBeInTheDocument();
+  });
+
+  it('lists org people with names and roles', async () => {
+    mount();
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.getByText('Bob Builder')).toBeInTheDocument();
+    expect(screen.getAllByText('Owner').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Member').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: /People/ }));
+    expect(await screen.findByText(/2 people/)).toBeInTheDocument();
+    expect(screen.queryByText('Add member')).not.toBeInTheDocument();
+    expect(screen.queryByText('Transfer ownership')).not.toBeInTheDocument();
+  });
+
+  it('lets an owner invite, edit the org, and transfer it', async () => {
+    api.getSpace.mockResolvedValue({
+      ...space,
+      is_member: true,
+      role: 'owner',
+      can_manage: true,
+      can_transfer: true,
+    });
+    api.addSpaceMember.mockResolvedValue([
+      ...members,
+      { uid: 'sam', display_name: 'Sam', role: 'member', avatar_url: '' },
+    ]);
+    api.updateSpace.mockResolvedValue({
+      ...space,
+      description: 'Updated corp',
+      is_member: true,
+      role: 'owner',
+      can_manage: true,
+      can_transfer: true,
+    });
+    api.transferSpace.mockResolvedValue({
+      space: { ...space, role: 'admin', can_manage: true, can_transfer: false },
+      members: [
+        { uid: 'bob', display_name: 'Bob Builder', role: 'owner', avatar_url: '' },
+        { uid: 'jane', display_name: 'Jane Doe', role: 'admin', avatar_url: '' },
+      ],
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    mount();
+    expect(await screen.findByText('Edit organization')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /People/ }));
+    expect(await screen.findByText('Add member')).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('username'), { target: { value: 'sam' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect((await screen.findAllByText('Sam')).length).toBeGreaterThan(0);
+    expect(api.addSpaceMember).toHaveBeenCalledWith('acme', 'sam', 'member');
+
+    fireEvent.change(screen.getByPlaceholderText('new owner username'), { target: { value: 'bob' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Transfer' }));
+    expect(await screen.findByText(/Ownership transferred to bob/)).toBeInTheDocument();
+    expect(api.transferSpace).toHaveBeenCalledWith('acme', 'bob');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const desc = await screen.findByDisplayValue('Acme Corporation');
+    fireEvent.change(desc, { target: { value: 'Updated corp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Organization saved.')).toBeInTheDocument();
+    expect(api.updateSpace).toHaveBeenCalledWith('acme', { description: 'Updated corp', is_public: true });
+    vi.restoreAllMocks();
+  });
+
+  it('hides org people and settings on a personal profile', async () => {
+    api.getSpace.mockResolvedValue({ ...space, uid: 'jane', path: 'jane', is_personal: true, description: '' });
+    api.getUserProfile.mockResolvedValue({
+      uid: 'jane',
+      display_name: 'Jane Doe',
+      email: 'jane@nixre.dev',
+      is_self: true,
+      is_admin: false,
+      bio: '',
+      is_public: true,
+      avatar: 'JA',
+      socials: [],
+      created: 1_700_000_000_000,
+      orgs: [],
+      repos: [],
+    });
+    mount('/jane');
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /People/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Edit organization')).not.toBeInTheDocument();
   });
 });

@@ -60,7 +60,7 @@ export function avatarRoutes(pool, authenticate) {
   async function canEditSpace(uid, user) {
     if (user.admin) return true;
     const { rows } = await pool.query(
-      'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
+      `SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2 AND role IN ('owner', 'admin')`,
       [uid, user.uid],
     );
     return rows.length > 0;
