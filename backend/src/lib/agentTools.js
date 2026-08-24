@@ -22,8 +22,25 @@ import os from 'node:os';
 import { repoDir } from '../git/repo.js';
 import { webSearch } from './webSearch.js';
 import { isSandboxEnabled, runCommandInSandbox, writeFileInSandbox } from './agentSandbox.js';
+import { getDecryptedSecret } from './userSecrets.js';
 
 const exec = promisify(execFile);
+
+async function githubEnv(uid) {
+  const token = uid ? await getDecryptedSecret(uid, 'github') : null;
+  return token ? { GITHUB_TOKEN: token } : {};
+}
+
+async function configureGithubGit(workdir, uid) {
+  const token = uid ? await getDecryptedSecret(uid, 'github') : null;
+  if (!token || !workdir) return;
+  const creds = path.join(workdir, '..', '.github-creds');
+  await fs.writeFile(creds, `username=x-access-token\npassword=${token}\n`, { mode: 0o600 });
+  await exec('git', [
+    '-C', workdir, 'config', 'credential.https://github.com.helper',
+    `!f() { cat ${creds} 2>/dev/null; }; f`,
+  ]).catch(() => {});
+}
 
 const MAX_LIST = 500;
 const MAX_FILE_BYTES = 48 * 1024;
@@ -302,6 +319,7 @@ async function ensureFallbackWorkspace(context, space, repo) {
   const email = context.user?.email || 'agent@nixre.local';
   await exec('git', ['-C', workdir, 'config', 'user.name', name]).catch(() => {});
   await exec('git', ['-C', workdir, 'config', 'user.email', email]).catch(() => {});
+  await configureGithubGit(workdir, userId);
   ws = { dir: workdir, expires: Date.now() + FALLBACK_WS_TTL_MS };
   fallbackWorkspaces.set(key, ws);
   return ws.dir;
@@ -396,9 +414,10 @@ export async function runCommand(space, repo, args, _permissions = {}, context =
 
   // Persistent per-conversation workspace when possible; otherwise the old
   // ephemeral clone (state does not survive the call).
+  const extraEnv = await githubEnv(userId);
   const workdir = await ensureFallbackWorkspace(context, space, repo);
   if (workdir) {
-    return runShellCommand(command, workdir);
+    return runShellCommand(command, workdir, extraEnv);
   }
 
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
@@ -414,16 +433,17 @@ export async function runCommand(space, repo, args, _permissions = {}, context =
       // Empty bare repos have no HEAD; shallow clone fails. Full clone still works.
       await exec('git', ['clone', '--quiet', src, throwaway], { timeout: 60_000 });
     }
-    return await runShellCommand(command, throwaway);
+    await configureGithubGit(throwaway, userId);
+    return await runShellCommand(command, throwaway, extraEnv);
   } finally {
     await fs.rm(parent, { recursive: true, force: true }).catch(() => {});
   }
 }
 
 /** Run `command` in `cwd` with a hard timeout and output cap. */
-function runShellCommand(command, cwd) {
+function runShellCommand(command, cwd, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('sh', ['-c', command], { cwd, env: { ...process.env, CI: '1' } });
+    const child = spawn('sh', ['-c', command], { cwd, env: { ...process.env, CI: '1', ...extraEnv } });
     let out = '';
     let truncated = false;
     const timer = setTimeout(() => {

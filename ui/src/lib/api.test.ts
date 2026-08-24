@@ -147,3 +147,54 @@ describe('api.updateRepo / api.deleteRepo', () => {
     expect(JSON.parse(options.body)).toEqual({ space: 'jane', uid: 'site' });
   });
 });
+
+describe('api GitHub secrets', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('lists secrets', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve([{ kind: 'github', configured: true, key_mask: '…abcd' }]),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const secrets = await api.listSecrets();
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/user/secrets');
+    expect(secrets[0].kind).toBe('github');
+  });
+
+  it('PUTs a GitHub token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ kind: 'github', configured: true, key_mask: '…wxyz' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.setGithubSecret('ghp_secret12');
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/user/secrets/github');
+    expect(options.method).toBe('PUT');
+    expect(JSON.parse(options.body)).toEqual({ token: 'ghp_secret12' });
+  });
+
+  it('DELETEs the GitHub token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ ok: true }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.deleteGithubSecret();
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/user/secrets/github');
+    expect(options.method).toBe('DELETE');
+  });
+});

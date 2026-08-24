@@ -15,6 +15,7 @@ import { access, constants } from 'node:fs/promises';
 import { repoDir, REPOS_ROOT } from '../git/repo.js';
 import { pool } from '../db/pool.js';
 import { newPatSecret, sha256 } from './auth.js';
+import { getDecryptedSecret } from './userSecrets.js';
 
 const DOCKER_SOCKET = process.env.DOCKER_HOST?.replace(/^unix:\/\//, '') || '/var/run/docker.sock';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'nixre-agent-sandbox:latest';
@@ -25,6 +26,8 @@ const MAX_CMD_MS = Number(process.env.SANDBOX_CMD_MS || 120_000);
 const MAX_CMD_BYTES = 32 * 1024;
 const WORK_DIR = '/workspace/repo';
 const CREDS_FILE = '/workspace/.agent-creds';
+const GITHUB_CREDS_FILE = '/workspace/.github-creds';
+const GITHUB_TOKEN_FILE = '/workspace/.github-token';
 // Where the sandbox reaches core's git smart-HTTP endpoint. The sandbox
 // container is attached to core's docker network so this name resolves.
 const CORE_GIT_URL = process.env.CORE_URL || 'http://nixre-core:3002';
@@ -173,6 +176,23 @@ git -C "$WORK" remote set-url --push origin ${JSON.stringify(`${CORE_GIT_URL}/gi
     // DB unavailable — workspace still clones/fetches; push stays disabled.
     console.warn('sandbox token mint failed, push disabled:', err.message);
   }
+  let githubSetup = `
+rm -f ${GITHUB_CREDS_FILE} ${GITHUB_TOKEN_FILE}
+git -C "$WORK" config --unset-all credential.https://github.com.helper >/dev/null 2>&1 || true
+`;
+  try {
+    const gh = uid ? await getDecryptedSecret(uid, 'github') : null;
+    if (gh) {
+      githubSetup = `
+printf 'username=%s\\npassword=%s\\n' 'x-access-token' ${JSON.stringify(gh)} > ${GITHUB_CREDS_FILE}
+printf '%s' ${JSON.stringify(gh)} > ${GITHUB_TOKEN_FILE}
+chmod 600 ${GITHUB_CREDS_FILE} ${GITHUB_TOKEN_FILE}
+git -C "$WORK" config credential.https://github.com.helper "!f() { cat ${GITHUB_CREDS_FILE} 2>/dev/null; }; f"
+`;
+    }
+  } catch (err) {
+    console.warn('sandbox github secret load failed:', err.message);
+  }
   const script = `set -eu
 BARE=${JSON.stringify(bare)}
 WORK=${JSON.stringify(WORK_DIR)}
@@ -187,7 +207,8 @@ else
 fi
 git -C "$WORK" config user.name ${JSON.stringify(name)}
 git -C "$WORK" config user.email ${JSON.stringify(email)}
-${credsSetup}`;
+${credsSetup}
+${githubSetup}`;
   const { output, code } = await dockerExec(containerId, ['bash', '-lc', script]);
   if (code !== 0) {
     throw new Error(`Git sync failed (exit ${code}): ${output.slice(0, 400)}`);
@@ -335,6 +356,7 @@ async function spawnShell(key, containerId) {
       w.reject(new Error('Sandbox shell exited'));
     }
   });
+  stream.write(`[ -f ${GITHUB_TOKEN_FILE} ] && export GITHUB_TOKEN=$(cat ${GITHUB_TOKEN_FILE})\n`);
   stream.write(`cd ${WORK_DIR} 2>/dev/null || cd /workspace\n`);
   shells.set(key, state);
   return state;

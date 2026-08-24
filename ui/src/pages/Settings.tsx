@@ -11,9 +11,10 @@ import {
   Plus,
   Link2,
   Save,
-  Loader2
+  Loader2,
+  GitBranch,
 } from 'lucide-react';
-import { api, User, PublicKey, Token, SocialLink } from '../lib/api';
+import { api, User, PublicKey, Token, SocialLink, UserSecret } from '../lib/api';
 import { WebAuthnService, StoredPasskey } from '../lib/webauthn';
 import { daysToNanoseconds } from '../lib/duration';
 import { Avatar } from '../components/Avatar';
@@ -25,7 +26,7 @@ interface SettingsProps {
 
 export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
   const location = useLocation();
-  const [activeTab, setActiveTab] = useState<'profile' | 'passkeys' | 'ssh' | 'tokens'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'passkeys' | 'ssh' | 'tokens' | 'github'>('profile');
 
   // Passkeys state
   const [passkeys, setPasskeys] = useState<StoredPasskey[]>([]);
@@ -45,6 +46,11 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
   const [tokens, setTokens] = useState<Token[]>([]);
   const [tokenTitle, setTokenTitle] = useState('');
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
+
+  const [githubSecret, setGithubSecret] = useState<UserSecret | null>(null);
+  const [githubToken, setGithubToken] = useState('');
+  const [githubMsg, setGithubMsg] = useState('');
+  const [githubSaving, setGithubSaving] = useState(false);
 
   // Avatar state
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
@@ -78,6 +84,9 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
     refreshPasskeys();
     api.listPublicKeys().then(setPublicKeys).catch(() => {});
     api.listTokens().then(setTokens).catch(() => {});
+    api.listSecrets().then(list => {
+      setGithubSecret(list.find(s => s.kind === 'github' && s.configured) || null);
+    }).catch(() => setGithubSecret(null));
   };
 
   useEffect(() => {
@@ -144,6 +153,36 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
       setTokenTitle('');
       loadAll();
     } catch {}
+  };
+
+  const handleSaveGithub = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const token = githubToken.trim();
+    if (!token) return;
+    setGithubMsg('');
+    setGithubSaving(true);
+    try {
+      const saved = await api.setGithubSecret(token);
+      setGithubSecret(saved);
+      setGithubToken('');
+      setGithubMsg('GitHub token saved. The agent will use it on the next conversation.');
+    } catch (err: any) {
+      setGithubMsg(err.message || 'Failed to save GitHub token.');
+    } finally {
+      setGithubSaving(false);
+    }
+  };
+
+  const handleRemoveGithub = async () => {
+    setGithubMsg('');
+    try {
+      await api.deleteGithubSecret();
+      setGithubSecret(null);
+      setGithubToken('');
+      setGithubMsg('GitHub token removed.');
+    } catch (err: any) {
+      setGithubMsg(err.message || 'Failed to remove GitHub token.');
+    }
   };
 
   const handleAvatarFile = async (file: File) => {
@@ -250,6 +289,16 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
           >
             <Shield className="w-4 h-4" />
             <span>Access Tokens</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('github')}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-xs font-medium transition text-left ${
+              activeTab === 'github' ? 'bg-surface-subtle text-txt-primary font-semibold' : 'text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle/50'
+            }`}
+          >
+            <GitBranch className="w-4 h-4" />
+            <span>GitHub</span>
           </button>
         </div>
 
@@ -618,6 +667,57 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {activeTab === 'github' && (
+            <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-6">
+              <h2 className="text-sm font-semibold text-txt-primary flex items-center gap-2">
+                <GitBranch className="w-4 h-4 text-brand" />
+                <span>GitHub personal access token</span>
+              </h2>
+              <p className="text-xs text-txt-secondary leading-relaxed">
+                Stored encrypted and injected into the agent as <code className="font-mono text-txt-primary">GITHUB_TOKEN</code> plus a git credential helper for github.com. Use it for private clones and the GitHub API. The token is never shown again after save.
+              </p>
+              {githubSecret?.configured && (
+                <p className="text-xs text-txt-primary font-mono">Configured {githubSecret.key_mask}</p>
+              )}
+              {githubMsg && (
+                <div className={`p-3 rounded text-xs ${
+                  githubMsg.startsWith('Failed')
+                    ? 'bg-feedback-error-bg border border-feedback-error-border text-feedback-error-text'
+                    : 'bg-feedback-success-bg border border-feedback-success-border text-feedback-success-text'
+                }`}>
+                  {githubMsg}
+                </div>
+              )}
+              <form onSubmit={handleSaveGithub} className="flex flex-col sm:flex-row gap-3">
+                <input
+                  type="password"
+                  autoComplete="off"
+                  placeholder="ghp_… or github_pat_…"
+                  value={githubToken}
+                  onChange={e => setGithubToken(e.target.value)}
+                  className="flex-1 px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
+                  required
+                />
+                <button
+                  type="submit"
+                  disabled={githubSaving}
+                  className="px-4 py-2 rounded bg-brand text-white text-xs font-medium hover:bg-brand-hover disabled:opacity-50 transition shadow-sm"
+                >
+                  {githubSaving ? 'Saving…' : 'Save'}
+                </button>
+              </form>
+              {githubSecret?.configured && (
+                <button
+                  type="button"
+                  onClick={handleRemoveGithub}
+                  className="px-4 py-2 rounded border border-feedback-error-border text-feedback-error-text text-xs font-semibold hover:bg-feedback-error-bg transition"
+                >
+                  Remove GitHub token
+                </button>
+              )}
             </div>
           )}
         </div>

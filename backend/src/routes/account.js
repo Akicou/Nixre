@@ -6,6 +6,7 @@
 import express from 'express';
 import crypto from 'node:crypto';
 import { sha256, newPatSecret } from '../lib/auth.js';
+import { encryptSecret, maskSecret } from '../lib/ai.js';
 
 function fingerprintKey(content) {
   // ssh key line: "<type> <base64> [comment]"
@@ -127,6 +128,45 @@ export function accountRoutes(pool, authenticate) {
       req.params.identifier,
     ]);
     res.json({});
+  });
+
+  // --- agent secrets (GitHub PAT, …) ------------------------------------------
+
+  api.get('/user/secrets', auth, async (req, res) => {
+    const { rows } = await pool.query(
+      'SELECT kind, key_mask FROM user_secrets WHERE user_uid = $1 ORDER BY kind',
+      [req.auth.user.uid],
+    );
+    res.json(rows.map(r => ({
+      kind: r.kind,
+      configured: true,
+      key_mask: r.key_mask || null,
+    })));
+  });
+
+  api.put('/user/secrets/github', auth, async (req, res) => {
+    const token = String(req.body?.token || '').trim();
+    if (token.length < 8) {
+      res.status(400).json({ message: 'Invalid token' });
+      return;
+    }
+    const ts = Date.now();
+    const mask = maskSecret(token);
+    await pool.query(
+      `INSERT INTO user_secrets (user_uid, kind, secret_enc, key_mask, updated)
+       VALUES ($1, 'github', $2, $3, $4)
+       ON CONFLICT (user_uid, kind) DO UPDATE SET secret_enc = $2, key_mask = $3, updated = $4`,
+      [req.auth.user.uid, encryptSecret(token), mask, ts],
+    );
+    res.json({ kind: 'github', configured: true, key_mask: mask });
+  });
+
+  api.delete('/user/secrets/github', auth, async (req, res) => {
+    await pool.query(
+      "DELETE FROM user_secrets WHERE user_uid = $1 AND kind = 'github'",
+      [req.auth.user.uid],
+    );
+    res.json({ ok: true });
   });
 
   return api;

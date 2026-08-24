@@ -211,6 +211,12 @@ export interface Token {
   expires_at: number;
 }
 
+export interface UserSecret {
+  kind: string;
+  configured: boolean;
+  key_mask?: string | null;
+}
+
 class ApiClient {
   // nixre-core owns every route (sovereignty complete, phase 4). The session
   // token is a core session (`nxs_...`) or a personal access token
@@ -639,6 +645,22 @@ class ApiClient {
 
   async deleteToken(identifier: string): Promise<void> {
     return this.request(`/user/tokens/${identifier}`, { method: 'DELETE' });
+  }
+
+  async listSecrets(): Promise<UserSecret[]> {
+    const res = await this.request<UserSecret[]>('/user/secrets');
+    return Array.isArray(res) ? res : [];
+  }
+
+  async setGithubSecret(token: string): Promise<UserSecret> {
+    return this.request<UserSecret>('/user/secrets/github', {
+      method: 'PUT',
+      body: JSON.stringify({ token }),
+    });
+  }
+
+  async deleteGithubSecret(): Promise<void> {
+    await this.request('/user/secrets/github', { method: 'DELETE' });
   }
 
   // Avatar uploads

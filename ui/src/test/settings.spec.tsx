@@ -12,6 +12,9 @@ const { api } = vi.hoisted(() => ({
     deletePublicKey: vi.fn(),
     createToken: vi.fn(),
     deleteToken: vi.fn(),
+    listSecrets: vi.fn(),
+    setGithubSecret: vi.fn(),
+    deleteGithubSecret: vi.fn(),
   },
 }));
 vi.mock('../lib/api', () => ({ api }));
@@ -35,6 +38,7 @@ describe('Settings', () => {
     vi.clearAllMocks();
     api.listPublicKeys.mockResolvedValue([]);
     api.listTokens.mockResolvedValue([]);
+    api.listSecrets.mockResolvedValue([]);
   });
 
   it('shows the profile by default', async () => {
@@ -75,5 +79,25 @@ describe('Settings', () => {
       expect(api.createToken).toHaveBeenCalledWith('CI', expect.any(Number));
     });
     expect(await screen.findByText('secret-token')).toBeInTheDocument();
+  });
+
+  it('saves and removes a GitHub token', async () => {
+    api.setGithubSecret.mockResolvedValue({ kind: 'github', configured: true, key_mask: '…wxyz' });
+    api.deleteGithubSecret.mockResolvedValue(undefined);
+    mount();
+
+    fireEvent.click(screen.getByRole('button', { name: 'GitHub' }));
+    fireEvent.change(screen.getByPlaceholderText(/ghp_/), { target: { value: 'ghp_testtoken12' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(api.setGithubSecret).toHaveBeenCalledWith('ghp_testtoken12');
+    });
+    expect(await screen.findByText(/Configured …wxyz/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Remove GitHub token/ }));
+    await waitFor(() => {
+      expect(api.deleteGithubSecret).toHaveBeenCalled();
+    });
   });
 });
