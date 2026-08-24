@@ -9,6 +9,7 @@ const { api } = vi.hoisted(() => ({
     listUsers: vi.fn(),
     getRegistrationStatus: vi.fn(),
     setRegistrationClosed: vi.fn(),
+    listEnvFeedback: vi.fn(),
   },
 }));
 vi.mock('../lib/api', () => ({ api }));
@@ -27,6 +28,7 @@ describe('AdminView', () => {
     vi.clearAllMocks();
     api.listUsers.mockResolvedValue([user, adminUser]);
     api.getRegistrationStatus.mockResolvedValue({ closed: false });
+    api.listEnvFeedback.mockResolvedValue([]);
   });
 
   it('lists registered accounts', async () => {
@@ -58,5 +60,40 @@ describe('AdminView', () => {
     });
     expect(await screen.findByText(/CLOSED/)).toBeInTheDocument();
     expect(await screen.findByText(/Registration is now closed server-side/)).toBeInTheDocument();
+  });
+
+  it('shows an empty state for environment reports', async () => {
+    mount();
+    expect(await screen.findByText(/No sandbox reports yet/i)).toBeInTheDocument();
+  });
+
+  it('lists a filed environment report and expands the details', async () => {
+    api.listEnvFeedback.mockResolvedValue([
+      {
+        id: 'envfb_1',
+        user_id: 'lyan',
+        conversation_id: 'conv_1',
+        repo_path: 'acme/website',
+        created_at: '2026-08-25T00:00:00.000Z',
+        report: {
+          missing_binaries: ['rg', 'jq'],
+          missing_packages: [],
+          missing_nixre_tools: [],
+          permission_gaps: ['web_search'],
+          dockerfile_suggestions: ['apt-get install -y ripgrep jq'],
+          notes: 'Need ripgrep in the slim image',
+        },
+      },
+    ]);
+    mount();
+    expect(await screen.findByText(/Need ripgrep in the slim image/)).toBeInTheDocument();
+    expect(screen.getByText(/lyan · acme\/website/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/lyan · acme\/website/));
+    expect(await screen.findByText('rg')).toBeInTheDocument();
+    expect(screen.getByText('web_search')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Open in Agent/ })).toHaveAttribute(
+      'href',
+      '/agent?repo=acme%2Fwebsite',
+    );
   });
 });

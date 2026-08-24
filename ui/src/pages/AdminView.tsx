@@ -1,8 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Lock, Unlock, Users, Check } from 'lucide-react';
-import { api, User } from '../lib/api';
+import { Link } from 'react-router-dom';
+import { Shield, Lock, Unlock, Users, Check, MessageSquareWarning } from 'lucide-react';
+import { api, User, EnvFeedback } from '../lib/api';
 import { Avatar } from '../components/Avatar';
 import { isRegistrationHidden, setRegistrationHidden } from '../lib/authLock';
+
+function formatWhen(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+function ReportList({ label, items }: { label: string; items?: string[] }) {
+  if (!items?.length) return null;
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wider text-txt-tertiary font-semibold mb-1">{label}</p>
+      <ul className="space-y-0.5">
+        {items.map((item, i) => (
+          <li key={`${label}-${i}`} className="text-xs text-txt-primary font-mono break-words">
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 export const AdminView: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
@@ -11,6 +34,9 @@ export const AdminView: React.FC = () => {
   const [toggling, setToggling] = useState(false);
   const [browserHidden, setBrowserHidden] = useState(false);
   const [msg, setMsg] = useState('');
+  const [reports, setReports] = useState<EnvFeedback[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(true);
+  const [openReport, setOpenReport] = useState<string | null>(null);
 
   useEffect(() => {
     setBrowserHidden(isRegistrationHidden());
@@ -24,6 +50,10 @@ export const AdminView: React.FC = () => {
     api.getRegistrationStatus()
       .then(res => setServerClosed(res.closed))
       .catch(() => setServerClosed(null));
+    api.listEnvFeedback()
+      .then(rows => setReports(rows))
+      .catch(() => setReports([]))
+      .finally(() => setReportsLoading(false));
   }, []);
 
   const toggleServerRegistration = async () => {
@@ -171,6 +201,83 @@ export const AdminView: React.FC = () => {
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-txt-secondary uppercase tracking-wider flex items-center gap-2">
+            <MessageSquareWarning className="w-4 h-4 text-brand" />
+            <span>Agent environment reports ({reports.length})</span>
+          </h2>
+        </div>
+        <p className="text-xs text-txt-secondary">
+          Filed when an agent uses the environment-feedback control. Suggestions only — they do not change the sandbox image.
+        </p>
+
+        <div className="border border-border-subtle rounded-md bg-surface-base divide-y divide-border-subtle overflow-hidden">
+          {reportsLoading ? (
+            <div className="p-8 text-center text-xs text-txt-tertiary font-mono">Loading reports…</div>
+          ) : reports.length === 0 ? (
+            <div className="p-8 text-center text-xs text-txt-tertiary">
+              No sandbox reports yet. Agents file them from the warning icon in the agent composer.
+            </div>
+          ) : (
+            reports.map(row => {
+              const report = row.report || {
+                missing_binaries: [],
+                missing_packages: [],
+                missing_nixre_tools: [],
+                permission_gaps: [],
+                dockerfile_suggestions: [],
+                notes: '',
+              };
+              const open = openReport === row.id;
+              return (
+                <div key={row.id}>
+                  <button
+                    type="button"
+                    onClick={() => setOpenReport(open ? null : row.id)}
+                    className="w-full text-left p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-surface-subtle transition"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-txt-primary truncate">
+                        {row.user_id} · {row.repo_path}
+                      </p>
+                      <p className="text-[11px] text-txt-tertiary truncate">
+                        {report.notes || 'No notes'}
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-mono text-txt-tertiary shrink-0">
+                      {formatWhen(row.created_at)}
+                    </span>
+                  </button>
+                  {open && (
+                    <div className="px-3 pb-3 space-y-3">
+                      <div className="flex flex-wrap gap-3 text-[11px]">
+                        <Link
+                          to={`/agent?repo=${encodeURIComponent(row.repo_path)}`}
+                          className="text-txt-brand hover:underline font-medium"
+                        >
+                          Open in Agent
+                        </Link>
+                        {row.conversation_id && (
+                          <span className="font-mono text-txt-tertiary">{row.conversation_id}</span>
+                        )}
+                      </div>
+                      <div className="grid sm:grid-cols-2 gap-3">
+                        <ReportList label="Missing binaries" items={report.missing_binaries} />
+                        <ReportList label="Missing packages" items={report.missing_packages} />
+                        <ReportList label="Missing Nixre tools" items={report.missing_nixre_tools} />
+                        <ReportList label="Permission gaps" items={report.permission_gaps} />
+                        <ReportList label="Dockerfile suggestions" items={report.dockerfile_suggestions} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>

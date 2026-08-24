@@ -128,6 +128,24 @@ export interface UserGoals {
   goals: UserGoal[];
 }
 
+export interface EnvFeedbackReport {
+  missing_binaries: string[];
+  missing_packages: string[];
+  missing_nixre_tools: string[];
+  permission_gaps: string[];
+  dockerfile_suggestions: string[];
+  notes: string;
+}
+
+export interface EnvFeedback {
+  id: string;
+  user_id: string;
+  conversation_id: string | null;
+  repo_path: string;
+  report: EnvFeedbackReport;
+  created_at: string;
+}
+
 export interface UserProfile {
   uid: string;
   display_name: string;
@@ -697,6 +715,11 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ audio, format }),
     });
+  }
+
+  async listEnvFeedback(): Promise<EnvFeedback[]> {
+    const res = await this.request<{ reports?: EnvFeedback[] }>('/ai/env-feedback');
+    return Array.isArray(res.reports) ? res.reports : [];
   }
 
   // Avatar uploads
