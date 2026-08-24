@@ -13,6 +13,9 @@ function rowToConversation(row) {
     title: row.title,
     messages: row.messages,
     updatedAt: new Date(row.updated_at).getTime(),
+    run_status: row.run_status || 'idle',
+    run_error: row.run_error ?? null,
+    run_queue: Array.isArray(row.run_queue) ? row.run_queue : [],
   };
 }
 

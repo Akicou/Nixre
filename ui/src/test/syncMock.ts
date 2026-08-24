@@ -16,6 +16,9 @@ export interface SyncMockConversation {
   title: string;
   messages: unknown[];
   updatedAt: number;
+  run_status?: 'idle' | 'running' | 'stopping';
+  run_error?: string | null;
+  run_queue?: unknown[];
 }
 
 export interface SyncMockPasskey {
@@ -104,6 +107,8 @@ async function handleSync(url: URL, method: string, body: any): Promise<Response
       title: String(body?.title ?? 'Untitled'),
       messages: Array.isArray(body?.messages) ? body.messages : [],
       updatedAt: Date.now(),
+      run_status: 'idle',
+      run_queue: [],
     };
     syncMockDb.conversations.push(row);
     return json(201, row);
@@ -300,6 +305,127 @@ function handleAi(path: string, method: string, body: any): Response | null {
       headers: { 'Content-Type': 'text/event-stream' },
     });
   }
+
+  if (path === '/ai/jobs' && method === 'POST') {
+    let row = body?.conversationId
+      ? syncMockDb.conversations.find(c => c.id === body.conversationId)
+      : undefined;
+    if (!row) {
+      row = {
+        id: nextId('conv'),
+        repoPath: String(body?.repoPath ?? ''),
+        title: String(body?.prompt || 'Untitled').slice(0, 48),
+        messages: [],
+        updatedAt: Date.now(),
+        run_status: 'idle',
+        run_queue: [],
+      };
+      syncMockDb.conversations.push(row);
+    }
+    if (row.run_status === 'running') {
+      const item = {
+        id: nextId('q'),
+        kind: 'followup',
+        text: String(body?.prompt || '(image)'),
+        images: body?.images,
+      };
+      row.run_queue = [...(row.run_queue ?? []), item];
+      row.updatedAt = Date.now();
+      return json(200, { conversationId: row.id, run_status: 'running', queued: true, item });
+    }
+    const userMsg = {
+      id: nextId('u'),
+      role: 'user',
+      content: String(body?.prompt || '(image)'),
+      images: body?.images,
+      createdAt: Date.now(),
+    };
+    row.messages = [...row.messages, userMsg];
+    row.title = row.title && row.title !== 'Untitled' ? row.title : String(body?.prompt || 'Untitled').slice(0, 48);
+    row.run_status = 'running';
+    row.updatedAt = Date.now();
+    return json(200, { conversationId: row.id, run_status: 'running', queued: false });
+  }
+
+  const jobEvents = path.match(/^\/ai\/jobs\/([^/]+)\/events$/);
+  if (jobEvents && method === 'GET') {
+    const id = decodeURIComponent(jobEvents[1]);
+    const row = syncMockDb.conversations.find(c => c.id === id);
+    if (!row) return json(404, { message: 'Conversation not found' });
+    const assistantText =
+      'The suite is green: **15 tests passing** across 2 files. Nothing blocking for this change.';
+    const frames: object[] = [
+      {
+        type: 'snapshot',
+        conversation: {
+          ...row,
+          run_status: row.run_status || 'idle',
+          run_queue: row.run_queue || [],
+        },
+      },
+    ];
+    if (row.run_status === 'running') {
+      frames.push(
+        { type: 'reasoning', blockId: 'r1', text: 'Checking the suite first. ' },
+        { type: 'message_text', text: 'The suite is green: **15 tests passing** across 2 files. ' },
+        { type: 'message_text', text: 'Nothing blocking for this change.' },
+      );
+      row.messages = [
+        ...row.messages,
+        {
+          id: nextId('a'),
+          role: 'assistant',
+          content: assistantText,
+          parts: [
+            { type: 'reasoning', id: 'r1', text: 'Checking the suite first. ' },
+            { type: 'text', text: assistantText },
+          ],
+          createdAt: Date.now(),
+        },
+      ];
+      row.run_status = 'idle';
+      row.updatedAt = Date.now();
+      frames.push({ type: 'status', run_status: 'idle' }, { type: 'done' });
+    } else {
+      frames.push({ type: 'status', run_status: row.run_status || 'idle' }, { type: 'done' });
+    }
+    const bodyText = frames.map(evt => `data: ${JSON.stringify(evt)}`).join('\n\n');
+    return new Response(`${bodyText}\n\n`, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }
+
+  const jobStop = path.match(/^\/ai\/jobs\/([^/]+)\/stop$/);
+  if (jobStop && method === 'POST') {
+    const id = decodeURIComponent(jobStop[1]);
+    const row = syncMockDb.conversations.find(c => c.id === id);
+    if (row) row.run_status = 'idle';
+    return json(200, { ok: true, run_status: 'idle' });
+  }
+
+  const jobQueue = path.match(/^\/ai\/jobs\/([^/]+)\/queue(?:\/([^/]+))?$/);
+  if (jobQueue) {
+    const id = decodeURIComponent(jobQueue[1]);
+    const row = syncMockDb.conversations.find(c => c.id === id);
+    if (!row) return json(404, { message: 'Conversation not found' });
+    if (method === 'POST') {
+      const item = {
+        id: nextId('q'),
+        kind: body?.kind || 'followup',
+        text: String(body?.text || ''),
+        images: body?.images,
+      };
+      row.run_queue = [...(row.run_queue ?? []), item];
+      return json(200, { item, run_queue: row.run_queue });
+    }
+    if (method === 'DELETE' && jobQueue[2]) {
+      const itemId = decodeURIComponent(jobQueue[2]);
+      row.run_queue = (row.run_queue ?? []).filter((q: any) => q.id !== itemId);
+      return json(200, { run_queue: row.run_queue });
+    }
+  }
+
   return json(404, { message: `No ai mock route for ${method} ${path}` });
 }
 

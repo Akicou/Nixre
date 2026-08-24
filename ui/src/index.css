@@ -7,6 +7,14 @@
     border-color: var(--color-border-subtle);
   }
 
+  :root {
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
   html,
   body {
     overflow-x: clip;
@@ -268,4 +276,13 @@
 }
 .markdown-body input[type="checkbox"] {
   margin-right: 0.4em;
+}
+
+/* Native textarea UA styles are `background: field` (white). A translucent
+   Tailwind bg lets that show through in dark theme, so the file editor
+   looked like a blank white box with invisible light text. */
+.file-editor-textarea {
+  background-color: var(--color-surface-canvas);
+  color: var(--color-text-primary);
+  caret-color: var(--color-text-primary);
 }

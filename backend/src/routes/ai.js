@@ -19,6 +19,15 @@ import {
 import { TOOL_SCHEMAS, executeTool } from '../lib/agentTools.js';
 import { touchSandbox } from '../lib/agentSandbox.js';
 import { transcribeAudio } from '../lib/stt.js';
+import {
+  startJob,
+  stopJob,
+  enqueue,
+  dequeue,
+  getOwnedConversation,
+  subscribe,
+  isJobLive,
+} from '../lib/agentJobs.js';
 
 const MODEL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const MAX_MSG = 64_000;
@@ -583,6 +592,109 @@ export function aiRoutes(pool, authenticate) {
       res.json(result);
     } catch (err) {
       res.status(err.status || 502).json({ message: err.message || 'Transcription failed' });
+    }
+  });
+
+  // --- server-side agent jobs ------------------------------------------------
+
+  api.post('/ai/jobs', auth, async (req, res) => {
+    try {
+      const extra = req.body?.extraContext
+        ? typeof req.body.extraContext === 'string'
+          ? req.body.extraContext
+          : `${req.body.extraContext.label || ''}\n\n${req.body.extraContext.text || ''}`
+        : '';
+      const result = await startJob(pool, {
+        user: req.auth.user,
+        conversationId: req.body?.conversationId ? String(req.body.conversationId) : undefined,
+        repoPath: String(req.body?.repoPath || ''),
+        prompt: String(req.body?.prompt || ''),
+        images: Array.isArray(req.body?.images) ? req.body.images : undefined,
+        mode: String(req.body?.mode || 'agent'),
+        model: String(req.body?.model || ''),
+        reasoningLevel: String(req.body?.reasoningLevel || 'none'),
+        extraContext: extra.trim(),
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(err.status || 400).json({ message: err.message });
+    }
+  });
+
+  api.get('/ai/jobs/:conversationId/events', auth, async (req, res) => {
+    const conv = await getOwnedConversation(pool, req.auth.user.uid, req.params.conversationId);
+    if (!conv) {
+      res.status(404).json({ message: 'Conversation not found' });
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    const send = evt => {
+      res.write(`data: ${JSON.stringify(evt)}\n\n`);
+    };
+    send({ type: 'snapshot', conversation: conv });
+    const live = isJobLive(req.params.conversationId);
+    if (!live) {
+      send({ type: 'status', run_status: conv.run_status || 'idle' });
+      if (conv.run_status !== 'running' && conv.run_status !== 'stopping') {
+        send({ type: 'done' });
+        res.end();
+        return;
+      }
+    }
+    const unsub = subscribe(req.params.conversationId, send);
+    const heartbeat = setInterval(() => {
+      try {
+        send({ type: 'heartbeat' });
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, 15_000);
+    const close = () => {
+      clearInterval(heartbeat);
+      unsub();
+    };
+    req.on('close', close);
+    res.on('close', close);
+  });
+
+  api.post('/ai/jobs/:conversationId/stop', auth, async (req, res) => {
+    try {
+      const result = await stopJob(pool, req.auth.user.uid, req.params.conversationId);
+      res.json(result);
+    } catch (err) {
+      res.status(err.status || 400).json({ message: err.message });
+    }
+  });
+
+  api.post('/ai/jobs/:conversationId/queue', auth, async (req, res) => {
+    try {
+      const result = await enqueue(pool, req.auth.user.uid, req.params.conversationId, {
+        kind: String(req.body?.kind || ''),
+        text: String(req.body?.text || ''),
+        images: Array.isArray(req.body?.images) ? req.body.images : undefined,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(err.status || 400).json({ message: err.message });
+    }
+  });
+
+  api.delete('/ai/jobs/:conversationId/queue/:itemId', auth, async (req, res) => {
+    try {
+      const result = await dequeue(
+        pool,
+        req.auth.user.uid,
+        req.params.conversationId,
+        req.params.itemId,
+      );
+      res.json(result);
+    } catch (err) {
+      res.status(err.status || 400).json({ message: err.message });
     }
   });
 

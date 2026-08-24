@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom';
 import { ChatSurface } from '../components/assistant/ChatSurface';
 import { getActiveProviderProfile } from '../lib/assistantProfiles';
-import { installSyncFetchMock, syncMockReset } from './syncMock';
+import { installSyncFetchMock, syncMockReset, syncMockDb } from './syncMock';
 
 installSyncFetchMock();
 
@@ -20,6 +20,7 @@ describe('ChatSurface', () => {
   beforeEach(() => {
     localStorage.clear();
     syncMockReset();
+    cleanup();
   });
 
   it('shows the empty state with suggestion chips once a provider is validated', async () => {
@@ -37,16 +38,51 @@ describe('ChatSurface', () => {
     expect(screen.getByText('medium')).toBeInTheDocument();
   });
 
-  it('streams a real turn through the provider proxy', async () => {
+  it('streams a job turn through the server events API', async () => {
     await mount();
     fireEvent.click(screen.getByText(/Run the tests and lint/i));
-
-    // The mock /ai/chat stream answers with the green-suite summary.
+    await waitFor(() =>
+      expect(screen.queryByText(/How can I help in acme\/website/i)).not.toBeInTheDocument(),
+    );
     expect(await screen.findByText(/suite is green/i)).toBeInTheDocument();
-    // Reasoning was streamed (interleaved flag off drops it — text only).
     await waitFor(() =>
       expect(screen.getByText(/Nothing blocking/i)).toBeInTheDocument(),
     );
+  });
+
+  it('does not stop the server job when the chat unmounts', async () => {
+    const inner = globalThis.fetch;
+    const stops: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+      if (url.includes('/ai/jobs/') && url.includes('/stop')) stops.push(url);
+      return inner(input, init);
+    }) as typeof fetch;
+    try {
+      const view = await mount();
+      fireEvent.click(screen.getByText(/Run the tests and lint/i));
+      await screen.findByText(/suite is green/i);
+      view.unmount();
+      expect(stops).toHaveLength(0);
+    } finally {
+      globalThis.fetch = inner;
+    }
+  });
+
+  it('subscribes when opening a conversation that is already running', async () => {
+    syncMockDb.conversations.push({
+      id: 'conv_live',
+      repoPath: 'acme/website',
+      title: 'live session',
+      messages: [{ id: 'u1', role: 'user', content: 'keep going', createdAt: 1 }],
+      updatedAt: Date.now(),
+      run_status: 'running',
+      run_queue: [],
+    });
+    await mount();
+    fireEvent.click(await screen.findByText('live session'));
+    await waitFor(() => expect(screen.getByText(/keep going/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/15 tests passing/i)).toBeInTheDocument());
   });
 
   it('persists conversations and lists them on reload', async () => {

@@ -127,6 +127,22 @@ describe('RepoView — web edit', () => {
     expect(screen.queryByRole('button', { name: 'Add file' })).toBeNull();
   });
 
+  it('opens the editor with the file text and can preview markdown', async () => {
+    api.getRepo.mockResolvedValue({ ...repo, can_write: true });
+    mountAt('/acme/website?tab=code&branch=main&path=README.md&type=blob');
+
+    fireEvent.click(await screen.findByTitle('Edit this file'));
+    const editor = await screen.findByLabelText('File contents');
+    expect(editor).toHaveValue('# README\nHello world');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(screen.queryByLabelText('File contents')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(await screen.findByLabelText('File contents')).toHaveValue('# README\nHello world');
+  });
+
   it('edits a file and commits to a new branch', async () => {
     api.getRepo.mockResolvedValue({ ...repo, can_write: true });
     api.commitFiles.mockResolvedValue({ sha: 'newsha', branch: 'edit-readme' });

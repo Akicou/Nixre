@@ -90,6 +90,8 @@ export interface Conversation {
   updatedAt: number;
   /** Append-only distillation log (hidden from the chat transcript). */
   trace?: SessionTraceEntry[];
+  runStatus?: 'idle' | 'running' | 'stopping';
+  runError?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +237,8 @@ export type EngineEvent =
   /** A mid-turn steer message was injected after a completed tool round. */
   | { type: 'steer_applied'; prompt: string; images?: ChatImage[] }
   | { type: 'usage'; usage: TokenUsage }
-  | { type: 'done'; conversationId?: string; messageId?: string };
+  | { type: 'done'; conversationId?: string; messageId?: string }
+  | { type: 'user_message'; message: ChatMessage };
 
 /** Retries for the provider stream immediately after tool results were sent. */
 export const MAX_POST_TOOL_RETRIES = 3;
@@ -274,6 +277,26 @@ function ensureActiveAssistant(messages: ChatMessage[]): { messages: ChatMessage
 }
 
 export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessage[] {
+  if (ev.type === 'user_message') {
+    if (messages.some(m => m.id === ev.message.id)) return messages;
+    return [...messages, ev.message];
+  }
+
+  if (ev.type === 'steer_applied') {
+    const last = messages[messages.length - 1];
+    if (last?.role === 'user' && last.content === ev.prompt) return messages;
+    return [
+      ...messages,
+      {
+        id: uid('u'),
+        role: 'user',
+        content: ev.prompt,
+        images: ev.images?.length ? ev.images : undefined,
+        createdAt: Date.now(),
+      },
+    ];
+  }
+
   if (ev.type === 'step_clear_preamble') {
     const { messages: ms, idx } = ensureActiveAssistant(messages);
     const message = { ...ms[idx] };
@@ -382,6 +405,8 @@ function coerceConversation(c: sync.SyncConversation): Conversation {
     messages,
     updatedAt: c.updatedAt,
     trace,
+    runStatus: c.run_status,
+    runError: c.run_error,
   };
 }
 

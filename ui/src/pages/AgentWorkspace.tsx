@@ -29,23 +29,29 @@ import {
   type AssistantProviderProfile,
 } from '../lib/assistantProfiles';
 import { ASSISTANT_MODES, getMode, type ModeId } from '../lib/assistantModes';
-import { modelLabel, executeAssistantTool, touchAgentSandbox } from '../lib/aiApi';
+import { modelLabel } from '../lib/aiApi';
 import {
   listConversations,
-  createConversation,
   updateConversation,
   deleteConversation,
-  runRealTurn,
   applyEvent,
-  uid,
   messageParts,
-  buildModelContext,
-  shouldAutoCompact,
-  runCompaction,
-  withCompaction,
+  getConversation,
   type ChatMessage,
   type Conversation,
+  type EngineEvent,
 } from '../lib/assistantEngine';
+import { peelTrace } from '../lib/sessionTrace';
+import {
+  startAgentJob,
+  stopAgentJob,
+  queueAgentJob,
+  deleteQueuedJob,
+  subscribeAgentJob,
+  queueToLocal,
+  type JobStreamEvent,
+  type RunQueueItem,
+} from '../lib/agentJobs';
 import { ChatMessageView } from '../components/assistant/ChatMessageView';
 import { ComposerAttach } from '../components/assistant/ComposerAttach';
 import { ComposerMic } from '../components/assistant/ComposerMic';
@@ -71,6 +77,7 @@ interface QueuedMessage {
   id: string;
   text: string;
   images: ChatImage[];
+  kind?: RunQueueItem['kind'];
   deleted?: boolean;
 }
 
@@ -125,12 +132,12 @@ export const AgentWorkspace: React.FC = () => {
   const modelRef = useRef<HTMLDivElement>(null);
   const repoMenuRef = useRef<HTMLDivElement>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const followAbortRef = useRef<AbortController | null>(null);
   const traceRef = useRef<SessionTraceEntry[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
   const currentIdRef = useRef<string | null>(null);
   const queuedRef = useRef<QueuedMessage[]>([]);
-  const steerRef = useRef<QueuedMessage[]>([]);
+  const streamingRef = useRef(false);
 
   // --- boot ----------------------------------------------------------------
   useEffect(() => {
@@ -166,6 +173,7 @@ export const AgentWorkspace: React.FC = () => {
 
   const changeRepo = useCallback(
     (path: string) => {
+      followAbortRef.current?.abort();
       setSearchParams(path ? { repo: path } : {});
       setCurrentId(null);
       currentIdRef.current = null;
@@ -175,7 +183,6 @@ export const AgentWorkspace: React.FC = () => {
       setInput('');
       setQueued([]);
       queuedRef.current = [];
-      steerRef.current = [];
     },
     [setSearchParams],
   );
@@ -216,6 +223,9 @@ export const AgentWorkspace: React.FC = () => {
   useEffect(() => {
     queuedRef.current = queued;
   }, [queued]);
+  useEffect(() => {
+    streamingRef.current = streaming;
+  }, [streaming]);
 
   const persistTrace = (
     next: SessionTraceEntry[],
@@ -225,7 +235,7 @@ export const AgentWorkspace: React.FC = () => {
     traceRef.current = next;
     setTrace(next);
     const id = currentIdRef.current;
-    if (!id || !activeRepo) return;
+    if (!id || !activeRepo || streamingRef.current) return;
     const resolvedTitle =
       title ?? allConversations.find(c => c.id === id)?.title ?? 'Agent';
     void updateConversation({
@@ -297,6 +307,87 @@ export const AgentWorkspace: React.FC = () => {
     refreshSessions();
   }, [refreshSessions]);
 
+  const applyStreamEvent = useCallback((ev: JobStreamEvent) => {
+    if (ev.type === 'heartbeat' || ev.type === 'usage') return;
+    if (ev.type === 'snapshot') {
+      const raw = Array.isArray(ev.conversation.messages) ? ev.conversation.messages : [];
+      const { messages: next, trace: nextTrace } = peelTrace(raw as ChatMessage[]);
+      setMessages(next);
+      setTrace(nextTrace);
+      traceRef.current = nextTrace;
+      const q = queueToLocal(ev.conversation.run_queue);
+      queuedRef.current = q;
+      setQueued(q);
+      const running =
+        ev.conversation.run_status === 'running' || ev.conversation.run_status === 'stopping';
+      setStreaming(running);
+      messagesRef.current = next;
+      return;
+    }
+    if (ev.type === 'queue') {
+      const q = queueToLocal(ev.items);
+      queuedRef.current = q;
+      setQueued(q);
+      return;
+    }
+    if (ev.type === 'status') {
+      const running = ev.run_status === 'running' || ev.run_status === 'stopping';
+      setStreaming(running);
+      if (!running) refreshSessions();
+      return;
+    }
+    if (ev.type === 'done') {
+      setStreaming(false);
+      refreshSessions();
+      return;
+    }
+    setMessages(prev => {
+      const next = applyEvent(messagesRef.current, ev as EngineEvent);
+      messagesRef.current = next;
+      return next;
+    });
+  }, [refreshSessions]);
+
+  const attachFollow = useCallback((id: string) => {
+    followAbortRef.current?.abort();
+    const ac = new AbortController();
+    followAbortRef.current = ac;
+    setStreaming(true);
+    const follow = async () => {
+      try {
+        await subscribeAgentJob(id, applyStreamEvent, ac.signal);
+      } catch (err: unknown) {
+        if ((err as Error)?.name === 'AbortError') return;
+      }
+      if (ac.signal.aborted) return;
+      while (!ac.signal.aborted) {
+        const conv = await getConversation(id).catch(() => undefined);
+        if (!conv) break;
+        setMessages(conv.messages);
+        const running = conv.runStatus === 'running' || conv.runStatus === 'stopping';
+        setStreaming(running);
+        if (!running) {
+          refreshSessions();
+          return;
+        }
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          await subscribeAgentJob(id, applyStreamEvent, ac.signal);
+          return;
+        } catch (err: unknown) {
+          if ((err as Error)?.name === 'AbortError') return;
+        }
+      }
+    };
+    void follow();
+  }, [applyStreamEvent, refreshSessions]);
+
+  useEffect(() => {
+    return () => {
+      followAbortRef.current?.abort();
+    };
+  }, []);
+
   // Scroll transcript to bottom on new content.
   useEffect(() => {
     const el = scrollRef.current;
@@ -318,7 +409,9 @@ export const AgentWorkspace: React.FC = () => {
   // Esc stops a running turn.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && streaming) abortRef.current?.abort();
+      if (e.key === 'Escape' && streaming && currentIdRef.current) {
+        void stopAgentJob(currentIdRef.current).catch(() => {});
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -342,221 +435,38 @@ export const AgentWorkspace: React.FC = () => {
   const empty = messages.length === 0 && !currentId;
 
   // --- turn loop -----------------------------------------------------------
-  const runTurn = async (
-    prompt: string,
-    base: ChatMessage[],
-    images: ChatImage[] = [],
-    existingUserMessageId?: string,
-  ) => {
+  const sendToJob = async (prompt: string, images: ChatImage[] = []) => {
     if (!realAi || !profile || !activeRepo) return;
-    const controller = new AbortController();
-    abortRef.current = controller;
     setStreaming(true);
-    let convId = currentId;
-    let turnTitle =
-      allConversations.find(c => c.id === currentId)?.title ?? prompt.slice(0, 48);
     try {
-      if (!convId) {
-        const conv = await createConversation(activeRepo, prompt.slice(0, 48));
-        convId = conv.id;
-        turnTitle = conv.title;
-        currentIdRef.current = conv.id;
-        setCurrentId(conv.id);
-        refreshSessions();
-      }
-
-      // Queued messages already sit in the transcript as user turns; the
-      // turn only adds a fresh user message for live sends.
-      const userMessage: ChatMessage = existingUserMessageId
-        ? base.find(m => m.id === existingUserMessageId) ?? {
-            id: existingUserMessageId,
-            role: 'user' as const,
-            content: prompt,
-            images: images.length ? images : undefined,
-            createdAt: Date.now(),
-          }
-        : {
-            id: uid('u'),
-            role: 'user' as const,
-            content: prompt,
-            images: images.length ? images : undefined,
-            createdAt: Date.now(),
-          };
-      let local: ChatMessage[] = existingUserMessageId ? [...base] : [...base, userMessage];
-      setMessages(local);
-      await updateConversation({
-        id: convId,
+      const result = await startAgentJob({
+        conversationId: currentIdRef.current,
         repoPath: activeRepo,
-        title: turnTitle,
-        messages: local,
-        updatedAt: Date.now(),
-        trace: traceRef.current,
-      });
-      seedSessionTrace(convId, activeRepo, local, turnTitle);
-
-      const workingProfile: AssistantProviderProfile = {
-        ...profile,
+        prompt,
+        images: images.length ? images : undefined,
+        mode,
         model: workingModel || profile.model,
         reasoningLevel: workingReasoning,
-      };
-
-      // @file mentions attach source as context.
-      let modelPrompt = prompt;
-      const mentions = [...prompt.matchAll(/(?:^|\s)@([\w./-]+)/g)].map(m => m[1]).slice(0, 3);
-      if (mentions.length > 0) {
-        const snippets: string[] = [];
-        for (const p of mentions) {
-          try {
-            const content = await executeAssistantTool(activeRepo, 'read_file', { path: p });
-            snippets.push(`--- ${p} ---\n${content}`);
-          } catch {
-            snippets.push(`--- ${p} --- (could not read)`);
-          }
-        }
-        modelPrompt = `<referenced_files>\n${snippets.join('\n\n')}\n</referenced_files>\n\n${prompt}`;
-      }
-
-      const { summary, history } = buildModelContext(base);
-      const agentMode = mode === 'agent' || mode === 'debug';
-      if (agentMode && convId) {
-        void touchAgentSandbox(activeRepo, convId);
-      }
-      const startedAt = performance.now();
-      let outputChars = 0;
-      let reasoningChars = 0;
-      let usage: TokenUsage | undefined;
-      try {
-        for await (const ev of runRealTurn(modelPrompt, workingProfile, history, {
-          model: workingModel || profile.model,
-          reasoningLevel: workingReasoning,
-          mode,
-          compactionSummary: summary ?? undefined,
-          repoPath: activeRepo,
-          conversationId: convId ?? undefined,
-          agent: agentMode,
-          signal: controller.signal,
-          images: images.length ? images : undefined,
-          steerChannel: {
-            next: () => {
-              const s = steerRef.current.shift();
-              return s ? { prompt: s.text, images: s.images } : null;
-            },
-          },
-        })) {
-          if (ev.type === 'usage') {
-            usage = ev.usage;
-            continue;
-          }
-          if (ev.type === 'steer_applied') {
-            // Mirror the injected steer into the transcript so the turn stays
-            // continuous in the UI and persists with the conversation.
-            local = [
-              ...local,
-              {
-                id: uid('u'),
-                role: 'user' as const,
-                content: ev.prompt,
-                images: ev.images?.length ? ev.images : undefined,
-                createdAt: Date.now(),
-              },
-            ];
-            setMessages(local);
-            continue;
-          }
-          if (ev.type === 'message_text') outputChars += ev.text.length;
-          if (ev.type === 'reasoning') reasoningChars += ev.text.length;
-          local = applyEvent(local, ev);
-          setMessages(local);
-        }
-      } catch (err: any) {
-        if (err?.name === 'AbortError') {
-          local = applyEvent(local, { type: 'message_text', text: '\n\n> ⏹ Stopped.' });
-        } else {
-          local = applyEvent(local, {
-            type: 'message_text',
-            text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}`,
-          });
-        }
-        setMessages(local);
-      }
-      const elapsedMs = Math.round(performance.now() - startedAt);
-      const estimatedTokens = usage?.output ?? estimateTokens(outputChars + reasoningChars);
-      const extras: SessionTraceEntry[] = [];
-      if (reasoningChars > 0) {
-        extras.push(
-          stamp({
-            type: 'reasoning_used',
-            thinkingLevel: workingReasoning,
-            chars: reasoningChars,
-            estimatedTokens: estimateTokens(reasoningChars),
-          }),
-        );
-      }
-      extras.push(
-        stamp({
-          type: 'turn_metrics',
-          modelId: workingModel || profile.model,
-          provider: profile.provider,
-          thinkingLevel: workingReasoning,
-          mode,
-          elapsedMs,
-          outputChars,
-          reasoningChars,
-          estimatedTokens,
-          tokensPerSecond: tokensPerSecond(estimatedTokens, elapsedMs),
-          ...(usage ? { usage } : {}),
-        }),
-      );
-      const nextTrace = [...traceRef.current, ...extras];
-      traceRef.current = nextTrace;
-      setTrace(nextTrace);
-
-      await updateConversation({
-        id: convId,
-        repoPath: activeRepo,
-        title: turnTitle,
-        messages: local,
-        updatedAt: Date.now(),
-        trace: nextTrace,
       });
-
-      if (shouldAutoCompact(local)) {
-        try {
-          const compactSummary = await runCompaction(local, workingProfile, {
-            model: workingModel || profile.model,
-          });
-          local = withCompaction(local, compactSummary);
-          setMessages(local);
-          await updateConversation({
-            id: convId,
-            repoPath: activeRepo,
-            title: turnTitle,
-            messages: local,
-            updatedAt: Date.now(),
-            trace: nextTrace,
-          });
-        } catch {
-          /* best-effort */
+      currentIdRef.current = result.conversationId;
+      setCurrentId(result.conversationId);
+      if (result.queued) {
+        if (result.item) {
+          const q: QueuedMessage[] = [
+            ...queuedRef.current,
+            { id: result.item.id, text: result.item.text, images: result.item.images ?? [], kind: result.item.kind },
+          ];
+          queuedRef.current = q;
+          setQueued(q);
         }
+        return;
       }
-    } catch {
-      /* backend unreachable — local state still rendered */
-    } finally {
-      abortRef.current = null;
-      setStreaming(false);
+      attachFollow(result.conversationId);
       refreshSessions();
-      // Steers that never hit a tool boundary fall back to the normal queue so
-      // they aren't lost; then send the first live queued message, if any.
-      const leftoverSteers = steerRef.current;
-      steerRef.current = [];
-      let nextQueue = [...leftoverSteers, ...queuedRef.current];
-      const next = nextQueue.find(q => !q.deleted);
-      if (next) {
-        nextQueue = nextQueue.filter(q => q.id !== next.id);
-        queuedRef.current = nextQueue;
-        setQueued(nextQueue);
-        void runTurn(next.text, messagesRef.current, next.images);
-      }
+    } catch (err: unknown) {
+      setStreaming(false);
+      const msg = err instanceof Error ? err.message : 'Could not start the agent job.';
+      setMessages(prev => applyEvent(prev, { type: 'message_text', text: `\n\n> ⚠️ ${msg}` }));
     }
   };
 
@@ -567,59 +477,90 @@ export const AgentWorkspace: React.FC = () => {
     setInput('');
     setPendingImages([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    if (streaming) {
-      // Busy: queue the message for the composer. It is not baked into the
-      // transcript until actually sent (steered after a tool call, or sent
-      // at the end of the running turn) so the user can edit or delete it.
-      const q: QueuedMessage = { id: uid('q'), text: prompt || '(image)', images };
-      const nextQ = [...queuedRef.current, q];
-      queuedRef.current = nextQ;
-      setQueued(nextQ);
+    if (streaming && currentIdRef.current) {
+      void queueAgentJob(currentIdRef.current, {
+        kind: 'followup',
+        text: prompt || '(image)',
+        images: images.length ? images : undefined,
+      }).then(r => {
+        const q = queueToLocal(r.run_queue);
+        queuedRef.current = q;
+        setQueued(q);
+      }).catch(() => {});
       return;
     }
-    void runTurn(prompt || '(image)', messages, images);
+    void sendToJob(prompt || '(image)', images);
+  };
+
+  const stop = () => {
+    const id = currentIdRef.current;
+    if (id) void stopAgentJob(id).catch(() => {});
   };
 
   const handleSteer = (id: string) => {
     const item = queuedRef.current.find(q => q.id === id);
-    if (!item) return;
-    const nextQ = queuedRef.current.filter(q => q.id !== id);
-    queuedRef.current = nextQ;
-    setQueued(nextQ);
-    if (!streaming) {
-      // No running turn to steer into —send it as a fresh turn now.
-      void runTurn(item.text, messagesRef.current, item.images);
-      return;
-    }
-    // In-flight turn: hand it to the software loop to inject after the
-    // current tool round completes (see runRealTurn's steerChannel).
-    steerRef.current.push(item);
+    const convId = currentIdRef.current;
+    if (!item || !convId) return;
+    void (async () => {
+      await deleteQueuedJob(convId, id).catch(() => {});
+      if (!streamingRef.current) {
+        void sendToJob(item.text, item.images);
+        return;
+      }
+      const r = await queueAgentJob(convId, {
+        kind: 'steer',
+        text: item.text,
+        images: item.images.length ? item.images : undefined,
+      });
+      const q = queueToLocal(r.run_queue);
+      queuedRef.current = q;
+      setQueued(q);
+    })();
   };
 
   const handleEdit = (id: string) => {
     const item = queuedRef.current.find(q => q.id === id);
+    const convId = currentIdRef.current;
     if (!item) return;
-    const nextQ = queuedRef.current.filter(q => q.id !== id);
-    queuedRef.current = nextQ;
-    setQueued(nextQ);
+    if (convId) {
+      void deleteQueuedJob(convId, id).then(r => {
+        const q = queueToLocal(r.run_queue);
+        queuedRef.current = q;
+        setQueued(q);
+      }).catch(() => {});
+    }
     setInput(item.text);
     if (item.images.length) setPendingImages(prev => [...prev, ...item.images]);
     textareaRef.current?.focus();
   };
 
   const handleDelete = (id: string) => {
-    const nextQ = queuedRef.current.map(q => (q.id === id ? { ...q, deleted: true } : q));
-    queuedRef.current = nextQ;
-    setQueued(nextQ);
+    const convId = currentIdRef.current;
+    if (!convId) return;
+    void deleteQueuedJob(convId, id).then(r => {
+      const q = queueToLocal(r.run_queue);
+      queuedRef.current = q;
+      setQueued(q);
+    }).catch(() => {});
   };
 
   const handleRevert = (id: string) => {
-    const nextQ = queuedRef.current.map(q => (q.id === id ? { ...q, deleted: false } : q));
-    queuedRef.current = nextQ;
-    setQueued(nextQ);
+    const item = queuedRef.current.find(q => q.id === id);
+    const convId = currentIdRef.current;
+    if (!item || !convId) return;
+    void queueAgentJob(convId, {
+      kind: item.kind || 'followup',
+      text: item.text,
+      images: item.images.length ? item.images : undefined,
+    }).then(r => {
+      const q = queueToLocal(r.run_queue);
+      queuedRef.current = q;
+      setQueued(q);
+    }).catch(() => {});
   };
 
   const startNew = () => {
+    followAbortRef.current?.abort();
     setCurrentId(null);
     setMessages([]);
     setInput('');
@@ -629,11 +570,12 @@ export const AgentWorkspace: React.FC = () => {
     currentIdRef.current = null;
     setQueued([]);
     queuedRef.current = [];
-    steerRef.current = [];
+    setStreaming(false);
     setTimeout(() => textareaRef.current?.focus(), 50);
   };
 
   const openConversation = (c: Conversation) => {
+    followAbortRef.current?.abort();
     if (c.repoPath !== activeRepo) {
       setSearchParams(c.repoPath ? { repo: c.repoPath } : {});
     }
@@ -645,7 +587,7 @@ export const AgentWorkspace: React.FC = () => {
     setInput('');
     setQueued([]);
     queuedRef.current = [];
-    steerRef.current = [];
+    attachFollow(c.id);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -895,7 +837,7 @@ export const AgentWorkspace: React.FC = () => {
           {streaming ? (
             <button
               type="button"
-              onClick={() => abortRef.current?.abort()}
+              onClick={stop}
               title="Stop (Esc)"
               className="w-8 h-8 rounded-full flex items-center justify-center bg-surface-subtle text-txt-primary hover:bg-surface-mid transition"
             >
@@ -964,7 +906,10 @@ export const AgentWorkspace: React.FC = () => {
                     }`}
                     onClick={() => pickSession(c)}
                   >
-                    <span className="flex-1 min-w-0 truncate text-[12.5px] leading-snug">
+                    <span className="flex-1 min-w-0 truncate text-[12.5px] leading-snug flex items-center gap-1.5">
+                      {(c.runStatus === 'running' || c.runStatus === 'stopping') && (
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" title="Agent running" />
+                      )}
                       {c.title || 'Untitled'}
                     </span>
                     <span className="text-[10px] text-txt-tertiary tabular-nums shrink-0 sm:group-hover:hidden">

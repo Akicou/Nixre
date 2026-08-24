@@ -183,12 +183,18 @@ export class AuthError extends Error {
 //   data: {"type":"error","message":"..."}
 //   data: {"type":"done"}
 // `send(event)` is an async callback; the caller wires it to the HTTP response.
-export async function streamChat({ provider, apiKey, baseUrl, model, messages, reasoningLevel, tools }, send) {
+function combineAbort(signal) {
+  const timeout = AbortSignal.timeout(120_000);
+  if (!signal) return timeout;
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+export async function streamChat({ provider, apiKey, baseUrl, model, messages, reasoningLevel, tools, signal }, send) {
   const { def, base } = resolveProvider(provider, baseUrl);
   if (def.kind === 'anthropic') {
-    return streamAnthropic({ base, apiKey, model, messages, reasoningLevel, tools }, send);
+    return streamAnthropic({ base, apiKey, model, messages, reasoningLevel, tools, signal }, send);
   }
-  return streamOpenAICompatible({ base, apiKey, model, messages, reasoningLevel, tools, provider }, send);
+  return streamOpenAICompatible({ base, apiKey, model, messages, reasoningLevel, tools, provider, signal }, send);
 }
 
 // Unified agent-tool events forwarded to the browser:
@@ -201,7 +207,7 @@ function toolSchemasOpenAI(tools) {
   }));
 }
 
-async function streamOpenAICompatible({ base, apiKey, model, messages, reasoningLevel, tools, provider }, send) {
+async function streamOpenAICompatible({ base, apiKey, model, messages, reasoningLevel, tools, provider, signal }, send) {
   const ollamaLike = isOllamaLike(provider, base);
   const body = {
     model,
@@ -248,7 +254,7 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    signal: combineAbort(signal),
   });
   if (r.status === 401 || r.status === 403) throw new AuthError('Invalid API key');
   if (!r.ok) {
@@ -363,7 +369,7 @@ function splitThinkTags(text, state) {
   return out;
 }
 
-async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, tools }, send) {
+async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, tools, signal }, send) {
   // Anthropic requires a system role outside the messages array.
   const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
   const rest = messages.filter(m => m.role !== 'system').map(m => {
@@ -428,7 +434,7 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, 
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    signal: combineAbort(signal),
   });
   if (r.status === 401 || r.status === 403) throw new AuthError('Invalid API key');
   if (!r.ok) {

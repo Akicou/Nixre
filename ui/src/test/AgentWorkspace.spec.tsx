@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AgentWorkspace } from '../pages/AgentWorkspace';
 import { installSyncFetchMock, syncMockReset } from './syncMock';
@@ -87,5 +87,28 @@ describe('AgentWorkspace', () => {
     await waitFor(() => {
       expect(screen.getByText('acme/website')).toBeInTheDocument();
     });
+  });
+
+  it('does not stop the server job when the workspace unmounts', async () => {
+    const inner = globalThis.fetch;
+    const stops: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+      if (url.includes('/ai/jobs/') && url.includes('/stop')) stops.push(url);
+      return inner(input, init);
+    }) as typeof fetch;
+    try {
+      const view = render(
+        <MemoryRouter initialEntries={['/agent']}>
+          <AgentWorkspace />
+        </MemoryRouter>,
+      );
+      fireEvent.click(await screen.findByText('Plan a feature'));
+      await screen.findByText(/suite is green/i);
+      view.unmount();
+      expect(stops).toHaveLength(0);
+    } finally {
+      globalThis.fetch = inner;
+    }
   });
 });

@@ -22,23 +22,27 @@ import {
 import { getPlugin } from '../../lib/plugins';
 import { isRealAi, type AssistantProviderProfile } from '../../lib/assistantProfiles';
 import { ASSISTANT_MODES, MODE_ACCENT_CLASSES, getMode, type ModeId } from '../../lib/assistantModes';
-import { modelLabel, executeAssistantTool, touchAgentSandbox } from '../../lib/aiApi';
+import { modelLabel } from '../../lib/aiApi';
 import {
   listConversations,
-  createConversation,
   updateConversation,
   deleteConversation,
-  runRealTurn,
   applyEvent,
   messageParts,
-  uid,
+  getConversation,
   buildModelContext,
-  shouldAutoCompact,
-  runCompaction,
-  withCompaction,
   type ChatMessage,
   type Conversation,
+  type EngineEvent,
 } from '../../lib/assistantEngine';
+import { peelTrace } from '../../lib/sessionTrace';
+import {
+  startAgentJob,
+  stopAgentJob,
+  queueAgentJob,
+  subscribeAgentJob,
+  type JobStreamEvent,
+} from '../../lib/agentJobs';
 import { ChatMessageView } from './ChatMessageView';
 import { ComposerAttach } from './ComposerAttach';
 import { ComposerMic } from './ComposerMic';
@@ -122,7 +126,10 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   const modelRef = useRef<HTMLDivElement>(null);
   const reasoningRef = useRef<HTMLDivElement>(null);
   const repoMenuRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const followAbortRef = useRef<AbortController | null>(null);
+  const currentIdRef = useRef<string | null>(null);
+  const streamingRef = useRef(false);
+  const messagesRef = useRef<ChatMessage[]>([]);
   // When switching repos from a cross-repo session click, carry the target
   // conversation through the reset effect instead of losing it.
   const pendingConvRef = useRef<Conversation | null>(null);
@@ -169,10 +176,14 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     if (pending && pending.repoPath === repoPath) {
       pendingConvRef.current = null;
       setCurrentId(pending.id);
+      currentIdRef.current = pending.id;
       setMessages(pending.messages ?? []);
       setInput('');
       listConversations(repoPath || undefined).then(setConversations).catch(() => setConversations([]));
       if (variant === 'workspace') listConversations().then(setAllConversations).catch(() => {});
+      if (pending.runStatus === 'running' || pending.runStatus === 'stopping') {
+        setTimeout(() => attachFollow(pending.id), 0);
+      }
       return;
     }
     pendingConvRef.current = null;
@@ -182,6 +193,82 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     listConversations(repoPath || undefined).then(setConversations).catch(() => setConversations([]));
     if (variant === 'workspace') listConversations().then(setAllConversations).catch(() => setAllConversations([]));
   }, [repoPath, variant]);
+
+  useEffect(() => {
+    currentIdRef.current = currentId;
+  }, [currentId]);
+  useEffect(() => {
+    streamingRef.current = streaming;
+  }, [streaming]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  const applyStreamEvent = (ev: JobStreamEvent) => {
+    if (ev.type === 'heartbeat' || ev.type === 'usage' || ev.type === 'queue') return;
+    if (ev.type === 'snapshot') {
+      const raw = Array.isArray(ev.conversation.messages) ? ev.conversation.messages : [];
+      const { messages: next } = peelTrace(raw as ChatMessage[]);
+      messagesRef.current = next;
+      setMessages(next);
+      setStreaming(ev.conversation.run_status === 'running' || ev.conversation.run_status === 'stopping');
+      return;
+    }
+    if (ev.type === 'status') {
+      const running = ev.run_status === 'running' || ev.run_status === 'stopping';
+      setStreaming(running);
+      if (!running) refreshConversations();
+      return;
+    }
+    if (ev.type === 'done') {
+      setStreaming(false);
+      refreshConversations();
+      return;
+    }
+    const next = applyEvent(messagesRef.current, ev as EngineEvent);
+    messagesRef.current = next;
+    setMessages(next);
+  };
+
+  const attachFollow = (id: string) => {
+    followAbortRef.current?.abort();
+    const ac = new AbortController();
+    followAbortRef.current = ac;
+    setStreaming(true);
+    const follow = async () => {
+      try {
+        await subscribeAgentJob(id, applyStreamEvent, ac.signal);
+      } catch (err: unknown) {
+        if ((err as Error)?.name === 'AbortError') return;
+      }
+      if (ac.signal.aborted) return;
+      while (!ac.signal.aborted) {
+        const conv = await getConversation(id).catch(() => undefined);
+        if (!conv) break;
+        setMessages(conv.messages);
+        const running = conv.runStatus === 'running' || conv.runStatus === 'stopping';
+        setStreaming(running);
+        if (!running) {
+          refreshConversations();
+          return;
+        }
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          await subscribeAgentJob(id, applyStreamEvent, ac.signal);
+          return;
+        } catch (err: unknown) {
+          if ((err as Error)?.name === 'AbortError') return;
+        }
+      }
+    };
+    void follow();
+  };
+
+  useEffect(() => {
+    return () => {
+      followAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
@@ -199,16 +286,22 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   }, [messages, streaming]);
 
   const startNewChat = () => {
+    followAbortRef.current?.abort();
     setCurrentId(null);
+    currentIdRef.current = null;
     setMessages([]);
     setInput('');
     setPendingImages([]);
+    setStreaming(false);
   };
 
   const loadConversation = (conv: Conversation) => {
+    followAbortRef.current?.abort();
     setCurrentId(conv.id);
+    currentIdRef.current = conv.id;
     setMessages(conv.messages);
     setInput('');
+    attachFollow(conv.id);
   };
 
   /** Open a session from the workspace rail — switching repos if needed. */
@@ -221,127 +314,54 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     onRepoChange?.(conv.repoPath);
   };
 
-  /** Core turn runner — `base` is the transcript the turn appends to. */
-  const runTurn = async (prompt: string, base: ChatMessage[], images: ChatImage[] = []) => {
+  const sendToJob = async (prompt: string, images: ChatImage[] = []) => {
     if (!realAi) return;
-    const controller = new AbortController();
-    abortRef.current = controller;
     setStreaming(true);
-    let convId = currentId;
-    let turnTitle = current?.title ?? prompt.slice(0, 48);
     try {
-      if (!convId) {
-        const conv = await createConversation(repoPath, prompt.slice(0, 48));
-        convId = conv.id;
-        turnTitle = conv.title;
-        setCurrentId(conv.id);
-        refreshConversations();
-      }
-
-      const userMessage: ChatMessage = {
-        id: uid('u'),
-        role: 'user',
-        content: prompt,
+      const result = await startAgentJob({
+        conversationId: currentIdRef.current,
+        repoPath,
+        prompt,
         images: images.length ? images : undefined,
-        createdAt: Date.now(),
-      };
-      // Accumulate locally: state from the closure would go stale across
-      // awaits inside the streaming loop below.
-      let local: ChatMessage[] = [...base, userMessage];
-      setMessages(local);
-      await updateConversation({ id: convId, repoPath, title: turnTitle, messages: local, updatedAt: Date.now() });
-
-      const workingProfile: AssistantProviderProfile = {
-        ...profile,
+        mode,
         model: workingModel,
         reasoningLevel: workingReasoning,
-      };
-
-      // @-mentions: files referenced as @path/to/file are fetched via the
-      // tools endpoint and attached as context (up to 3).
-      let modelPrompt = prompt;
-      const mentions = [...prompt.matchAll(/(?:^|\s)@([\w./-]+)/g)].map(m => m[1]).slice(0, 3);
-      if (mentions.length > 0) {
-        const snippets: string[] = [];
-        for (const p of mentions) {
-          try {
-            const content = await executeAssistantTool(repoPath, 'read_file', { path: p });
-            snippets.push(`--- ${p} ---\n${content}`);
-          } catch {
-            snippets.push(`--- ${p} --- (could not read: not found or unreadable)`);
-          }
-        }
-        modelPrompt = `<referenced_files>\n${snippets.join('\n\n')}\n</referenced_files>\n\n${prompt}`;
-      }
-
-      // History comes from the pre-turn transcript; auto-compaction replaces
-      // everything before the last compaction entry with its summary.
-      const { summary, history } = buildModelContext(base);
-      const agentMode = mode === 'agent' || mode === 'debug';
-      if (agentMode && convId) {
-        void touchAgentSandbox(repoPath, convId);
-      }
-      try {
-        for await (const ev of runRealTurn(modelPrompt, workingProfile, history, {
-          model: workingModel,
-          reasoningLevel: workingReasoning,
-          mode,
-          compactionSummary: summary ?? undefined,
-          repoPath,
-          conversationId: convId ?? undefined,
-          agent: agentMode,
-          signal: controller.signal,
-          extraContext: extraContext ? `${extraContext.label}\n\n${extraContext.text}` : undefined,
-          images: images.length ? images : undefined,
-        })) {
-          local = applyEvent(local, ev);
-          setMessages(local);
-        }
-      } catch (err: any) {
-        if (err?.name !== 'AbortError') {
-          local = applyEvent(local, {
-            type: 'message_text',
-            text: `\n\n> ⚠️ ${err.message || 'The AI provider request failed.'}`,
-          });
-          setMessages(local);
-        }
-      }
-      await updateConversation({ id: convId, repoPath, title: turnTitle, messages: local, updatedAt: Date.now() });
-
-      // Auto-compaction: once enough turns pile up, have the model distill
-      // them into a handoff summary so later turns stay inside the context
-      // window without losing the thread.
-      if (shouldAutoCompact(local)) {
-        try {
-          const compactSummary = await runCompaction(local, workingProfile, { model: workingModel });
-          local = withCompaction(local, compactSummary);
-          setMessages(local);
-          await updateConversation({ id: convId, repoPath, title: turnTitle, messages: local, updatedAt: Date.now() });
-        } catch {
-          // Compaction is best-effort — never fail a turn over it.
-        }
-      }
-    } catch {
-      // Backend unreachable — the turn still rendered locally; surface nothing
-      // extra here, the sidebar refresh below will reflect the true state.
-    } finally {
-      abortRef.current = null;
-      setStreaming(false);
+        extraContext: extraContext ? `${extraContext.label}\n\n${extraContext.text}` : undefined,
+      });
+      currentIdRef.current = result.conversationId;
+      setCurrentId(result.conversationId);
+      if (result.queued) return;
+      attachFollow(result.conversationId);
       refreshConversations();
+    } catch (err: unknown) {
+      setStreaming(false);
+      const msg = err instanceof Error ? err.message : 'Could not start the agent job.';
+      setMessages(prev => applyEvent(prev, { type: 'message_text', text: `\n\n> ⚠️ ${msg}` }));
     }
   };
 
   const send = (text?: string) => {
     const prompt = (text ?? input).trim();
-    if ((!prompt && pendingImages.length === 0) || streaming || !realAi) return;
+    if ((!prompt && pendingImages.length === 0) || !realAi) return;
     const images = pendingImages;
     setInput('');
     setPendingImages([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    void runTurn(prompt || '(image)', messages, images);
+    if (streamingRef.current && currentIdRef.current) {
+      void queueAgentJob(currentIdRef.current, {
+        kind: 'followup',
+        text: prompt || '(image)',
+        images: images.length ? images : undefined,
+      }).catch(() => {});
+      return;
+    }
+    void sendToJob(prompt || '(image)', images);
   };
 
-  const stop = () => abortRef.current?.abort();
+  const stop = () => {
+    const id = currentIdRef.current;
+    if (id) void stopAgentJob(id).catch(() => {});
+  };
 
   /** Drop everything after the last user message and run it again. */
   const regenerate = () => {
@@ -354,7 +374,17 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     const prompt = messages[idx].content;
     const base = messages.slice(0, idx);
     setMessages(base);
-    void runTurn(prompt, base);
+    if (currentIdRef.current) {
+      void updateConversation({
+        id: currentIdRef.current,
+        repoPath,
+        title: current?.title ?? prompt.slice(0, 48),
+        messages: base,
+        updatedAt: Date.now(),
+      }).then(() => sendToJob(prompt));
+    } else {
+      void sendToJob(prompt);
+    }
   };
 
   /** Edit a sent user message: truncate the transcript there and resend. */
@@ -365,7 +395,17 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     setEditingId(null);
     const base = messages.slice(0, idx);
     setMessages(base);
-    void runTurn(newText.trim(), base);
+    if (currentIdRef.current) {
+      void updateConversation({
+        id: currentIdRef.current,
+        repoPath,
+        title: current?.title ?? newText.slice(0, 48),
+        messages: base,
+        updatedAt: Date.now(),
+      }).then(() => sendToJob(newText.trim()));
+    } else {
+      void sendToJob(newText.trim());
+    }
   };
 
   /** Download the transcript as Markdown (reasoning folded into details). */
@@ -490,7 +530,12 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
                 loadConversation(c);
               }}
             >
-              <span className="truncate pr-1 flex-1">{c.title || 'Untitled'}</span>
+              <span className="truncate pr-1 flex-1 flex items-center gap-1.5">
+                {(c.runStatus === 'running' || c.runStatus === 'stopping') && (
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" title="Agent running" />
+                )}
+                {c.title || 'Untitled'}
+              </span>
               <button
                 type="button"
                 onClick={e => {

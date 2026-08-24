@@ -120,7 +120,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({
           value={content}
           onChange={e => setContent(e.target.value)}
           spellCheck={false}
-          className="w-full min-h-[16rem] p-4 bg-surface-base/30 font-mono text-xs text-txt-primary leading-relaxed outline-none resize-y"
+          className="file-editor-textarea w-full min-h-[24rem] p-4 font-mono text-xs leading-relaxed outline-none resize-y"
           aria-label="File contents"
         />
       )}
@@ -146,6 +146,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({
             <input
               type="radio"
               name="commit-target"
+              className="accent-brand"
               checked={target === 'current'}
               onChange={() => setTarget('current')}
             />
@@ -156,7 +157,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({
             <input
               type="radio"
               name="commit-target"
-              className="mt-2"
+              className="mt-2 accent-brand"
               checked={target === 'new'}
               onChange={() => setTarget('new')}
             />

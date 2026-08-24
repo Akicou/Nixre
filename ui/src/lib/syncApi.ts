@@ -18,6 +18,9 @@ export interface SyncConversation {
   title: string;
   messages: unknown[];
   updatedAt: number;
+  run_status?: 'idle' | 'running' | 'stopping';
+  run_error?: string | null;
+  run_queue?: { id: string; kind: string; text: string; images?: unknown[] }[];
 }
 
 export interface SyncPasskey {

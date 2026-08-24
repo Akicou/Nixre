@@ -26,6 +26,7 @@ import { aiRoutes } from './routes/ai.js';
 import { smartHttp } from './git/smartHttp.js';
 import { REPOS_ROOT } from './git/repo.js';
 import { initSandbox } from './lib/agentSandbox.js';
+import { sweepStaleRuns } from './lib/agentJobs.js';
 import { loadInstanceSettings } from './lib/instanceSettings.js';
 import { mkdir, access, constants } from 'node:fs/promises';
 
@@ -133,6 +134,7 @@ async function boot() {
   }
   const settings = await loadInstanceSettings();
   if (settings.registrationClosed) console.log('Registration closed (signup kill switch active)');
+  await sweepStaleRuns(pool);
   await initSandbox();
   app.listen(PORT, () => {
     console.log(`nixre-core listening on :${PORT} — sovereign, no forge dependency`);
