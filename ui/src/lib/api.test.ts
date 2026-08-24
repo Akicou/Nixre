@@ -129,4 +129,21 @@ describe('api.updateRepo / api.deleteRepo', () => {
     expect(url).toBe('/api/v1/repos/space/repo/+');
     expect(options.method).toBe('DELETE');
   });
+
+  it('POSTs a repository transfer', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ uid: 'site', path: 'jane/site' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.transferRepo('acme/website', { space: 'jane', uid: 'site' });
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/repos/acme/website/+/transfer');
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body)).toEqual({ space: 'jane', uid: 'site' });
+  });
 });

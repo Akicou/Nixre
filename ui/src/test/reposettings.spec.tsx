@@ -5,7 +5,7 @@ import { RepoSettingsPanel } from '../components/RepoSettingsPanel';
 import { repo } from './fixtures';
 
 const { api } = vi.hoisted(() => ({
-  api: { updateRepo: vi.fn(), deleteRepo: vi.fn() },
+  api: { updateRepo: vi.fn(), deleteRepo: vi.fn(), transferRepo: vi.fn(), listSpaces: vi.fn() },
 }));
 vi.mock('../lib/api', () => ({ api }));
 
@@ -25,6 +25,10 @@ function mount(onUpdated = vi.fn()) {
 describe('RepoSettingsPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.listSpaces.mockResolvedValue([
+      { id: 10, uid: 'acme', path: 'acme', description: '', is_public: true, created: 0, created_by: 1, updated: 0 },
+      { id: 11, uid: 'jane', path: 'jane', description: '', is_public: true, is_personal: true, created: 0, created_by: 1, updated: 0 },
+    ]);
   });
 
   it('shows the current repository settings', async () => {
@@ -78,6 +82,25 @@ describe('RepoSettingsPanel', () => {
 
     await waitFor(() => {
       expect(api.deleteRepo).toHaveBeenCalledWith('acme/website');
+    });
+  });
+
+  it('transfers the repository to another space and name', async () => {
+    api.transferRepo.mockResolvedValue({ ...repo, uid: 'site', path: 'jane/site' });
+    mount();
+
+    await screen.findByRole('option', { name: /jane/ });
+    fireEvent.change(screen.getByLabelText('Destination space'), { target: { value: 'jane' } });
+    fireEvent.change(screen.getByLabelText('Destination repository name'), { target: { value: 'site' } });
+    const confirm = screen.getByPlaceholderText('confirm to transfer');
+    const transferBtn = screen.getByRole('button', { name: /Transfer repository/ });
+    expect(transferBtn).toBeDisabled();
+    fireEvent.change(confirm, { target: { value: 'website' } });
+    expect(transferBtn).toBeEnabled();
+    fireEvent.click(transferBtn);
+
+    await waitFor(() => {
+      expect(api.transferRepo).toHaveBeenCalledWith('acme/website', { space: 'jane', uid: 'site' });
     });
   });
 });

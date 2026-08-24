@@ -116,6 +116,21 @@ export async function removeBareRepo(space, repo) {
   await exec('rm', ['-rf', dir]);
 }
 
+export async function moveBareRepo(fromSpace, fromRepo, toSpace, toRepo) {
+  const src = repoDir(fromSpace, fromRepo);
+  const dest = repoDir(toSpace, toRepo);
+  if (src === dest) return dest;
+  if (await repoExists(toSpace, toRepo)) {
+    throw new Error('Destination repository already exists on disk');
+  }
+  const { rename } = await import('node:fs/promises');
+  await mkdir(path.dirname(dest), { recursive: true });
+  await rename(src, dest);
+  await installPostReceiveHook(dest);
+  await exec('chmod', ['-R', 'a+rX', dest]).catch(() => {});
+  return dest;
+}
+
 export async function repoExists(space, repo) {
   try {
     await git(repoDir(space, repo), ['rev-parse', '--is-bare-repository']);

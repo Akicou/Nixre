@@ -445,6 +445,13 @@ class ApiClient {
     await this.request(`/repos/${repoRef}/+`, { method: 'DELETE' });
   }
 
+  async transferRepo(repoRef: string, dest: { space: string; uid?: string }): Promise<Repository> {
+    return this.request<Repository>(`/repos/${repoRef}/+/transfer`, {
+      method: 'POST',
+      body: JSON.stringify(dest),
+    });
+  }
+
   // Git / Code Explorer
   // Gitness serves repo content at /repos/{ref}/+/content/{path}?git_ref={ref}
   // and nests the listing under `content.entries` with `file`/`dir` types.

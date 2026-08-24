@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Trash2, Save, Globe, Lock, Bot } from 'lucide-react';
-import { api, Repository } from '../lib/api';
+import { Trash2, Save, Globe, Lock, Bot, ArrowRightLeft } from 'lucide-react';
+import { api, Repository, Space } from '../lib/api';
 import { getPlugin } from '../lib/plugins';
 import { isPluginLive } from '../lib/pluginPreferences';
 import { AssistantProfileForm } from './assistant/AssistantProfileForm';
@@ -25,6 +25,12 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
   const [confirmText, setConfirmText] = useState('');
   const [deleting, setDeleting] = useState(false);
 
+  const [spaces, setSpaces] = useState<Space[]>([]);
+  const [destSpace, setDestSpace] = useState(space);
+  const [destUid, setDestUid] = useState(repo.uid);
+  const [transferConfirm, setTransferConfirm] = useState('');
+  const [transferring, setTransferring] = useState(false);
+
   const assistant = getPlugin('nixre-assistant');
   const [assistantLive, setAssistantLive] = useState(false);
   const [showAssistantConfig, setShowAssistantConfig] = useState(false);
@@ -46,7 +52,15 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
   useEffect(() => {
     setDescription(repo.description || '');
     setIsPublic(repo.is_public);
-  }, [repo.id, repo.description, repo.is_public]);
+    setDestUid(repo.uid);
+    setDestSpace(space);
+  }, [repo.id, repo.description, repo.is_public, repo.uid, space]);
+
+  useEffect(() => {
+    api.listSpaces()
+      .then(list => setSpaces(Array.isArray(list) ? list : []))
+      .catch(() => setSpaces([]));
+  }, []);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,6 +88,26 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
     } catch (err: any) {
       setError(err.message || 'Failed to delete repository.');
       setDeleting(false);
+    }
+  };
+
+  const handleTransfer = async () => {
+    const nextSpace = destSpace.trim();
+    const nextUid = destUid.trim();
+    if (transferConfirm !== repo.uid) return;
+    if (!nextSpace || !nextUid || (nextSpace === space && nextUid === repo.uid)) {
+      setError('Pick a different space or name.');
+      return;
+    }
+    setError('');
+    setSuccess('');
+    setTransferring(true);
+    try {
+      const updated = await api.transferRepo(repoPath, { space: nextSpace, uid: nextUid });
+      navigate(`/${updated.path}`);
+    } catch (err: any) {
+      setError(err.message || 'Failed to transfer repository.');
+      setTransferring(false);
     }
   };
 
@@ -194,6 +228,76 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
           )}
         </div>
       )}
+
+      <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold text-txt-primary uppercase tracking-wider">Transfer repository</h2>
+          <p className="text-xs text-txt-secondary mt-0.5">
+            Move this repository to another space or rename it. Git history, pull requests, and webhooks stay with it. Clone URLs change to the new path.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-txt-secondary uppercase tracking-wider mb-1.5">
+              Destination space
+            </label>
+            <select
+              aria-label="Destination space"
+              value={destSpace}
+              onChange={e => setDestSpace(e.target.value)}
+              className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-sm font-mono focus:border-brand transition"
+            >
+              {spaces.length === 0 && <option value={space}>{space}</option>}
+              {spaces.map(s => (
+                <option key={s.uid} value={s.uid}>
+                  {s.uid}{s.is_personal ? ' (personal)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-txt-secondary uppercase tracking-wider mb-1.5">
+              Repository name
+            </label>
+            <input
+              aria-label="Destination repository name"
+              type="text"
+              value={destUid}
+              onChange={e => setDestUid(e.target.value)}
+              className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-sm font-mono focus:border-brand transition"
+            />
+          </div>
+        </div>
+
+        <p className="text-xs text-txt-tertiary font-mono">
+          {destSpace || space}/{destUid || repo.uid}
+        </p>
+
+        <div>
+          <p className="text-xs text-txt-primary mb-1.5">
+            Type <code className="font-mono font-semibold">{repo.uid}</code> to confirm.
+          </p>
+          <input
+            type="text"
+            placeholder="confirm to transfer"
+            value={transferConfirm}
+            onChange={e => setTransferConfirm(e.target.value)}
+            aria-label="Confirm repository name to transfer"
+            className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-sm font-mono focus:border-brand transition"
+          />
+        </div>
+
+        <button
+          type="button"
+          onClick={handleTransfer}
+          disabled={transferring || transferConfirm !== repo.uid}
+          className="px-4 py-2 rounded border border-border-subtle text-txt-primary text-xs font-semibold hover:bg-surface-subtle disabled:opacity-50 transition flex items-center gap-1.5"
+        >
+          <ArrowRightLeft className="w-4 h-4" />
+          <span>{transferring ? 'Transferring...' : 'Transfer repository'}</span>
+        </button>
+      </div>
 
       <div className="border border-feedback-error-border rounded-lg bg-surface-canvas p-6 space-y-4">
         <div>

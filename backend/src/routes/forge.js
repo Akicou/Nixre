@@ -7,6 +7,7 @@ import {
   initBareRepo,
   hasHead,
   removeBareRepo,
+  moveBareRepo,
   listTree,
   readBlob,
   listCommits,
@@ -719,6 +720,82 @@ export function forgeRoutes(pool, authenticate) {
       [description, isPublic, now(), repo.id],
     );
     res.json(rowToRepo(rows[0]));
+  });
+
+  api.post('/repos/:space/:repo/\\+/transfer', auth, async (req, res) => {
+    const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
+    if (!repo) {
+      res.status(404).json({ message: 'Repository not found' });
+      return;
+    }
+    if (!(await canWriteRepo(pool, repo.space_uid, req.auth.user))) {
+      res.status(403).json({ message: 'No write access' });
+      return;
+    }
+    const destSpace = String(req.body?.space || '').trim();
+    const destUid = String(req.body?.uid || repo.uid).trim();
+    if (!validRefSegment(destSpace) || !validRefSegment(destUid)) {
+      res.status(400).json({ message: 'Invalid destination' });
+      return;
+    }
+    if (destSpace === repo.space_uid && destUid === repo.uid) {
+      res.status(400).json({ message: 'Pick a different space or name' });
+      return;
+    }
+    const dest = await pool.query('SELECT uid FROM spaces WHERE uid = $1', [destSpace]);
+    if (dest.rows.length === 0) {
+      res.status(404).json({ message: 'Destination space not found' });
+      return;
+    }
+    if (!(await canWriteRepo(pool, destSpace, req.auth.user))) {
+      res.status(403).json({ message: 'No write access to the destination' });
+      return;
+    }
+    const clash = await pool.query(
+      'SELECT id FROM repos WHERE space_uid = $1 AND uid = $2',
+      [destSpace, destUid],
+    );
+    if (clash.rows.length > 0) {
+      res.status(409).json({ message: 'A repository already exists at that path' });
+      return;
+    }
+
+    const fromPath = `${repo.space_uid}/${repo.uid}`;
+    const toPath = `${destSpace}/${destUid}`;
+    try {
+      await moveBareRepo(repo.space_uid, repo.uid, destSpace, destUid);
+    } catch (err) {
+      console.error('moveBareRepo failed:', err.message);
+      res.status(502).json({ message: err.message || 'Failed to move git repository' });
+      return;
+    }
+
+    try {
+      const { rows } = await pool.query(
+        'UPDATE repos SET space_uid = $1, uid = $2, updated = $3 WHERE id = $4 RETURNING *',
+        [destSpace, destUid, now(), repo.id],
+      );
+      await pool.query(
+        'UPDATE conversations SET repo_path = $1 WHERE repo_path = $2',
+        [toPath, fromPath],
+      );
+      await pool.query(
+        `UPDATE prefs
+         SET value = jsonb_set(
+           value,
+           '{repoProfiles}',
+           (COALESCE(value->'repoProfiles', '{}'::jsonb) - $1)
+             || jsonb_build_object($2::text, value->'repoProfiles'->$1)
+         )
+         WHERE key = 'assistant_profiles' AND value->'repoProfiles' ? $1`,
+        [fromPath, toPath],
+      );
+      res.json(rowToRepo(rows[0]));
+    } catch (err) {
+      console.error('repo transfer metadata failed:', err.message);
+      await moveBareRepo(destSpace, destUid, repo.space_uid, repo.uid).catch(() => {});
+      res.status(500).json({ message: 'Failed to transfer repository' });
+    }
   });
 
   api.delete('/repos/:space/:repo/\\+', auth, async (req, res) => {
