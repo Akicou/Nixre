@@ -38,6 +38,7 @@ interface SyncMockDb {
 }
 
 export const syncMockDb: SyncMockDb = { prefs: {}, conversations: [], passkeys: [] };
+export let lastAiJobBody: Record<string, unknown> | null = null;
 
 let idSeq = 0;
 const nextId = (prefix: string) => `${prefix}_mock_${idSeq++}`;
@@ -46,6 +47,7 @@ export function syncMockReset(seed?: Partial<SyncMockDb>): void {
   syncMockDb.prefs = { ...(seed?.prefs ?? {}) };
   syncMockDb.conversations = [...(seed?.conversations ?? [])];
   syncMockDb.passkeys = [...(seed?.passkeys ?? [])];
+  lastAiJobBody = null;
   // Reset the AI provider store to a single validated DeepSeek.
   aiMockProviders.length = 0;
   aiMockProviders.push({
@@ -307,6 +309,7 @@ function handleAi(path: string, method: string, body: any): Response | null {
   }
 
   if (path === '/ai/jobs' && method === 'POST') {
+    lastAiJobBody = body ?? null;
     let row = body?.conversationId
       ? syncMockDb.conversations.find(c => c.id === body.conversationId)
       : undefined;
@@ -424,6 +427,10 @@ function handleAi(path: string, method: string, body: any): Response | null {
       row.run_queue = (row.run_queue ?? []).filter((q: any) => q.id !== itemId);
       return json(200, { run_queue: row.run_queue });
     }
+  }
+
+  if (path === '/ai/env-feedback' && method === 'GET') {
+    return json(200, { reports: [] });
   }
 
   return json(404, { message: `No ai mock route for ${method} ${path}` });

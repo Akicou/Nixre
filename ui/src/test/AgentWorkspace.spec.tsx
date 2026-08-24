@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AgentWorkspace } from '../pages/AgentWorkspace';
-import { installSyncFetchMock, syncMockReset } from './syncMock';
+import { installSyncFetchMock, syncMockReset, lastAiJobBody } from './syncMock';
 
 installSyncFetchMock();
 
@@ -110,5 +110,15 @@ describe('AgentWorkspace', () => {
     } finally {
       globalThis.fetch = inner;
     }
+  });
+
+  it('starts an environment audit job from the feedback button', async () => {
+    render(
+      <MemoryRouter initialEntries={['/agent']}>
+        <AgentWorkspace />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByTitle('Environment feedback'));
+    await waitFor(() => expect(lastAiJobBody?.kind).toBe('env_audit'));
   });
 });

@@ -99,6 +99,7 @@ const assistantTools: PluginTool[] = [
   { name: 'write_file', description: 'Create or overwrite a text file in the agent workspace. Use instead of cat > or heredocs.' },
   { name: 'show_images', description: 'Display one or more images from the repository inline in the chat.' },
   { name: 'web_search', description: 'Search the web for up-to-date docs, APIs and fixes.' },
+  { name: 'read_skill', description: 'Load a repository SKILL.md when the task matches its description.' },
 ];
 
 const providerFields: ProfileField[] = [

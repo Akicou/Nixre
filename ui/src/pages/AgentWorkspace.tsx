@@ -20,6 +20,7 @@ import {
   CornerDownRight,
   Pencil,
   Undo2,
+  MessageSquareWarning,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { isPluginLive } from '../lib/pluginPreferences';
@@ -49,6 +50,7 @@ import {
   deleteQueuedJob,
   subscribeAgentJob,
   queueToLocal,
+  ENV_AUDIT_PROMPT,
   type JobStreamEvent,
   type RunQueueItem,
 } from '../lib/agentJobs';
@@ -435,7 +437,7 @@ export const AgentWorkspace: React.FC = () => {
   const empty = messages.length === 0 && !currentId;
 
   // --- turn loop -----------------------------------------------------------
-  const sendToJob = async (prompt: string, images: ChatImage[] = []) => {
+  const sendToJob = async (prompt: string, images: ChatImage[] = [], opts: { kind?: 'env_audit' } = {}) => {
     if (!realAi || !profile || !activeRepo) return;
     setStreaming(true);
     try {
@@ -447,6 +449,7 @@ export const AgentWorkspace: React.FC = () => {
         mode,
         model: workingModel || profile.model,
         reasoningLevel: workingReasoning,
+        kind: opts.kind,
       });
       currentIdRef.current = result.conversationId;
       setCurrentId(result.conversationId);
@@ -490,6 +493,25 @@ export const AgentWorkspace: React.FC = () => {
       return;
     }
     void sendToJob(prompt || '(image)', images);
+  };
+
+  const requestEnvFeedback = () => {
+    if (!realAi || !activeRepo) return;
+    if (streaming && currentIdRef.current) {
+      void queueAgentJob(currentIdRef.current, {
+        kind: 'followup',
+        text: ENV_AUDIT_PROMPT,
+        jobKind: 'env_audit',
+      })
+        .then(r => {
+          const q = queueToLocal(r.run_queue);
+          queuedRef.current = q;
+          setQueued(q);
+        })
+        .catch(() => {});
+      return;
+    }
+    void sendToJob(ENV_AUDIT_PROMPT, [], { kind: 'env_audit' });
   };
 
   const stop = () => {
@@ -830,6 +852,15 @@ export const AgentWorkspace: React.FC = () => {
       <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
         {modelCard}
         <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={requestEnvFeedback}
+            disabled={!activeRepo || !realAi}
+            title="Environment feedback"
+            className="w-8 h-8 rounded-full flex items-center justify-center text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle disabled:opacity-25 disabled:cursor-not-allowed transition"
+          >
+            <MessageSquareWarning className="w-3.5 h-3.5" />
+          </button>
           <ComposerMic
             round
             onTranscript={text => setInput(prev => (prev.trim() ? `${prev.trim()} ${text}` : text))}

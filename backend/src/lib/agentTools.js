@@ -23,6 +23,7 @@ import { repoDir } from '../git/repo.js';
 import { webSearch } from './webSearch.js';
 import { isSandboxEnabled, runCommandInSandbox, writeFileInSandbox } from './agentSandbox.js';
 import { getDecryptedSecret } from './userSecrets.js';
+import { READ_SKILL_SCHEMA, readSkill } from './agentSkills.js';
 
 const exec = promisify(execFile);
 
@@ -124,6 +125,7 @@ export const TOOL_SCHEMAS = [
       required: ['query'],
     },
   },
+  READ_SKILL_SCHEMA,
 ];
 
 // --- safety -----------------------------------------------------------------
@@ -534,6 +536,8 @@ const EXECUTORS = {
     writeFile(space, repo, args, permissions, context),
   show_images: (space, repo, args, permissions) => showImages(space, repo, args, permissions),
   web_search: (space, repo, args) => webSearchTool(args),
+  read_skill: (space, repo, args) =>
+    readSkill(space, repo, args?.name).then(output => ({ output })),
 };
 
 // --- web_search (permission-gated) ---------------------------------------------

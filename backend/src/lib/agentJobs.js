@@ -7,6 +7,13 @@ import { TOOL_SCHEMAS, executeTool } from './agentTools.js';
 import { touchSandbox } from './agentSandbox.js';
 import { getMode } from './assistantModes.js';
 import { runAgentLoop } from './agentLoop.js';
+import { listSkills, formatSkillCatalog, expandMentions } from './agentSkills.js';
+import {
+  SUBMIT_ENV_FEEDBACK_SCHEMA,
+  saveEnvFeedback,
+  formatEnvAuditContext,
+  collectToolFailures,
+} from './envFeedback.js';
 import {
   applyEvent,
   uid,
@@ -186,21 +193,6 @@ async function popQueueKind(pool, job, kind) {
   return item;
 }
 
-async function expandMentions(prompt, execute) {
-  const mentions = [...String(prompt).matchAll(/(?:^|\s)@([\w./-]+)/g)].map(m => m[1]).slice(0, 3);
-  if (mentions.length === 0) return prompt;
-  const snippets = [];
-  for (const p of mentions) {
-    try {
-      const content = await execute('read_file', { path: p });
-      snippets.push(`--- ${p} ---\n${content}`);
-    } catch {
-      snippets.push(`--- ${p} --- (could not read)`);
-    }
-  }
-  return `<referenced_files>\n${snippets.join('\n\n')}\n</referenced_files>\n\n${prompt}`;
-}
-
 async function compactIfNeeded(pool, job, providerRow, apiKey, model) {
   if (!shouldAutoCompact(job.messages)) return;
   const start = (() => {
@@ -248,7 +240,7 @@ async function compactIfNeeded(pool, job, providerRow, apiKey, model) {
   }) });
 }
 
-async function runTurn(pool, job, { prompt, images, existingUser }) {
+async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
   const row = await loadOwned(pool, job.userId, job.conversationId);
   if (!row) throw new Error('Conversation not found');
   job.row = row;
@@ -289,14 +281,46 @@ async function runTurn(pool, job, { prompt, images, existingUser }) {
     repoPath: job.repoPath,
   };
   const exec = async (name, args) => {
+    if (name === 'submit_env_feedback') {
+      const saved = await saveEnvFeedback(pool, {
+        userId: job.userId,
+        conversationId: job.conversationId,
+        repoPath: job.repoPath,
+        report: args,
+      });
+      return JSON.stringify(saved);
+    }
     const result = await executeTool(name, space, repo, args, permissions, toolCtx);
     return String(result?.output ?? result ?? '');
   };
 
   const mode = getMode(job.mode);
-  const agentMode = job.mode === 'agent' || job.mode === 'debug';
+  const turnKind = jobKind || job.kind || 'chat';
+  const agentMode = job.mode === 'agent' || job.mode === 'debug' || turnKind === 'env_audit';
+  const skills = await listSkills(space, repo).catch(() => []);
+  const extras = [];
+  if (job.extraContext) extras.push(job.extraContext);
+  const catalog = formatSkillCatalog(skills);
+  if (catalog) extras.push(catalog);
+  if (turnKind === 'env_audit') {
+    extras.push(
+      formatEnvAuditContext({
+        permissions,
+        tools: [
+          ...TOOL_SCHEMAS.map(t => t.name),
+          SUBMIT_ENV_FEEDBACK_SCHEMA.name,
+        ],
+        failures: collectToolFailures(job.messages),
+      }),
+    );
+  }
   const { summary, history } = buildModelContext(job.messages.slice(0, -1));
-  const modelPrompt = await expandMentions(prompt, exec).catch(() => prompt);
+  const modelPrompt = await expandMentions(prompt, { execute: exec, skills }).catch(() => prompt);
+  const tools = agentMode
+    ? turnKind === 'env_audit'
+      ? [...TOOL_SCHEMAS, SUBMIT_ENV_FEEDBACK_SCHEMA]
+      : [...TOOL_SCHEMAS]
+    : null;
 
   const touch = () =>
     touchSandbox({
@@ -311,7 +335,7 @@ async function runTurn(pool, job, { prompt, images, existingUser }) {
   await runAgentLoop(
     {
       systemPrompt: mode.systemPrompt,
-      extraContext: job.extraContext,
+      extraContext: extras.join('\n\n'),
       compactionSummary: summary ?? undefined,
       history,
       prompt: modelPrompt,
@@ -321,7 +345,7 @@ async function runTurn(pool, job, { prompt, images, existingUser }) {
       baseUrl: providerRow.base_url,
       model: job.model || providerRow.default_model,
       reasoningLevel: job.reasoningLevel || 'none',
-      tools: agentMode ? TOOL_SCHEMAS : null,
+      tools,
       signal: job.abort.signal,
     },
     ev => emitJob(pool, job, ev),
@@ -342,6 +366,7 @@ async function driveJob(pool, job) {
       prompt: job.pendingPrompt,
       images: job.pendingImages,
       existingUser: job.pendingExistingUser,
+      jobKind: job.kind,
     });
     job.pendingExistingUser = false;
 
@@ -350,7 +375,11 @@ async function driveJob(pool, job) {
       const followup = await popQueueKind(pool, job, 'followup');
       if (!followup) break;
       job.abort = new AbortController();
-      await runTurn(pool, job, { prompt: followup.text, images: followup.images });
+      await runTurn(pool, job, {
+        prompt: followup.text,
+        images: followup.images,
+        jobKind: followup.jobKind,
+      });
     }
 
     await flushPersist(pool, job, { run_status: 'idle', run_error: null });
@@ -390,6 +419,7 @@ export async function startJob(pool, {
   model,
   reasoningLevel,
   extraContext,
+  kind,
 }) {
   const userId = user.uid;
   let row = conversationId ? await loadOwned(pool, userId, conversationId) : null;
@@ -411,6 +441,7 @@ export async function startJob(pool, {
       kind: 'followup',
       text: prompt || '(image)',
       ...(images?.length ? { images } : {}),
+      ...(kind === 'env_audit' ? { jobKind: 'env_audit' } : {}),
     };
     const queue = [...(Array.isArray(row.run_queue) ? row.run_queue : []), item];
     await pool.query(
@@ -456,6 +487,7 @@ export async function startJob(pool, {
     model: model || '',
     reasoningLevel: reasoningLevel || 'none',
     extraContext: extraContext || '',
+    kind: kind === 'env_audit' ? 'env_audit' : 'chat',
     pendingPrompt: prompt || '(image)',
     pendingImages: images,
     pendingExistingUser: true,
@@ -492,7 +524,7 @@ export async function stopJob(pool, userId, conversationId) {
   return { ok: true, run_status: 'idle' };
 }
 
-export async function enqueue(pool, userId, conversationId, { kind, text, images }) {
+export async function enqueue(pool, userId, conversationId, { kind, text, images, jobKind }) {
   if (kind !== 'steer' && kind !== 'followup') {
     throw Object.assign(new Error('kind must be steer or followup'), { status: 400 });
   }
@@ -503,6 +535,7 @@ export async function enqueue(pool, userId, conversationId, { kind, text, images
     kind,
     text: text || '(image)',
     ...(images?.length ? { images } : {}),
+    ...(jobKind === 'env_audit' ? { jobKind: 'env_audit' } : {}),
   };
   const queue = [...(Array.isArray(row.run_queue) ? row.run_queue : []), item];
   await pool.query(

@@ -28,6 +28,7 @@ import {
   subscribe,
   isJobLive,
 } from '../lib/agentJobs.js';
+import { listEnvFeedback } from '../lib/envFeedback.js';
 
 const MODEL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const MAX_MSG = 64_000;
@@ -614,6 +615,7 @@ export function aiRoutes(pool, authenticate) {
         model: String(req.body?.model || ''),
         reasoningLevel: String(req.body?.reasoningLevel || 'none'),
         extraContext: extra.trim(),
+        kind: String(req.body?.kind || ''),
       });
       res.json(result);
     } catch (err) {
@@ -677,6 +679,7 @@ export function aiRoutes(pool, authenticate) {
         kind: String(req.body?.kind || ''),
         text: String(req.body?.text || ''),
         images: Array.isArray(req.body?.images) ? req.body.images : undefined,
+        jobKind: String(req.body?.jobKind || ''),
       });
       res.json(result);
     } catch (err) {
@@ -695,6 +698,19 @@ export function aiRoutes(pool, authenticate) {
       res.json(result);
     } catch (err) {
       res.status(err.status || 400).json({ message: err.message });
+    }
+  });
+
+  api.get('/ai/env-feedback', auth, async (req, res) => {
+    try {
+      const rows = await listEnvFeedback(pool, {
+        userId: req.auth.user.uid,
+        admin: Boolean(req.auth.user.admin),
+        limit: req.query?.limit,
+      });
+      res.json({ reports: rows });
+    } catch (err) {
+      res.status(400).json({ message: err.message });
     }
   });
 

@@ -17,7 +17,8 @@ import {
   Square,
   Settings2,
   FolderGit2,
-  ArrowUpRight
+  ArrowUpRight,
+  MessageSquareWarning
 } from 'lucide-react';
 import { getPlugin } from '../../lib/plugins';
 import { isRealAi, type AssistantProviderProfile } from '../../lib/assistantProfiles';
@@ -41,6 +42,7 @@ import {
   stopAgentJob,
   queueAgentJob,
   subscribeAgentJob,
+  ENV_AUDIT_PROMPT,
   type JobStreamEvent,
 } from '../../lib/agentJobs';
 import { ChatMessageView } from './ChatMessageView';
@@ -314,7 +316,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     onRepoChange?.(conv.repoPath);
   };
 
-  const sendToJob = async (prompt: string, images: ChatImage[] = []) => {
+  const sendToJob = async (prompt: string, images: ChatImage[] = [], opts: { kind?: 'env_audit' } = {}) => {
     if (!realAi) return;
     setStreaming(true);
     try {
@@ -327,6 +329,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         model: workingModel,
         reasoningLevel: workingReasoning,
         extraContext: extraContext ? `${extraContext.label}\n\n${extraContext.text}` : undefined,
+        kind: opts.kind,
       });
       currentIdRef.current = result.conversationId;
       setCurrentId(result.conversationId);
@@ -356,6 +359,19 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
       return;
     }
     void sendToJob(prompt || '(image)', images);
+  };
+
+  const requestEnvFeedback = () => {
+    if (!realAi) return;
+    if (streamingRef.current && currentIdRef.current) {
+      void queueAgentJob(currentIdRef.current, {
+        kind: 'followup',
+        text: ENV_AUDIT_PROMPT,
+        jobKind: 'env_audit',
+      }).catch(() => {});
+      return;
+    }
+    void sendToJob(ENV_AUDIT_PROMPT, [], { kind: 'env_audit' });
   };
 
   const stop = () => {
@@ -856,6 +872,15 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
         }`}
         disabled={streaming || !realAi}
       />
+      <button
+        type="button"
+        onClick={requestEnvFeedback}
+        disabled={!realAi}
+        title="Environment feedback"
+        className="p-2.5 rounded-md text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle disabled:opacity-40 disabled:cursor-not-allowed transition shrink-0"
+      >
+        <MessageSquareWarning className="w-4 h-4" />
+      </button>
       <ComposerMic
         onTranscript={text => setInput(prev => (prev.trim() ? `${prev.trim()} ${text}` : text))}
       />
@@ -887,7 +912,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
       {controlRow}
       {composerRow}
       <p className="max-w-3xl mx-auto mt-1.5 text-[10px] font-mono text-txt-tertiary">
-        @file attaches code · Enter sends · Shift+Enter newline
+        @file or @skill attaches context · Enter sends · Shift+Enter newline
         {workspace ? ' · tools run per repo permissions' : ''}
       </p>
     </>

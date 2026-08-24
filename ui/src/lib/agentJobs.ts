@@ -58,6 +58,9 @@ async function jobRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (contentType.includes('application/json') ? res.json() : {}) as T;
 }
 
+export const ENV_AUDIT_PROMPT =
+  'Audit this agent sandbox and Nixre tools for gaps from this session. Probe the environment, call submit_env_feedback, then summarize what is missing vs what is a permission gate. Do not edit the Dockerfile.';
+
 export function startAgentJob(body: {
   conversationId?: string | null;
   repoPath: string;
@@ -67,6 +70,7 @@ export function startAgentJob(body: {
   model?: string;
   reasoningLevel?: string;
   extraContext?: string | { label: string; text: string } | null;
+  kind?: 'chat' | 'env_audit';
 }): Promise<{ conversationId: string; run_status: RunStatus; queued?: boolean; item?: RunQueueItem }> {
   return jobRequest('/ai/jobs', { method: 'POST', body: JSON.stringify(body) });
 }
@@ -77,7 +81,7 @@ export function stopAgentJob(conversationId: string): Promise<{ ok: boolean; run
 
 export function queueAgentJob(
   conversationId: string,
-  body: { kind: 'steer' | 'followup'; text: string; images?: ChatImage[] },
+  body: { kind: 'steer' | 'followup'; text: string; images?: ChatImage[]; jobKind?: 'env_audit' },
 ): Promise<{ item: RunQueueItem; run_queue: RunQueueItem[] }> {
   return jobRequest(`/ai/jobs/${encodeURIComponent(conversationId)}/queue`, {
     method: 'POST',

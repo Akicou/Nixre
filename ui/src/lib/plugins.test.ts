@@ -25,6 +25,7 @@ describe('plugin registry', () => {
       'write_file',
       'show_images',
       'web_search',
+      'read_skill',
     ]);
     expect(isAssistantPlugin(assistant!)).toBe(true);
   });

@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom';
 import { ChatSurface } from '../components/assistant/ChatSurface';
 import { getActiveProviderProfile } from '../lib/assistantProfiles';
-import { installSyncFetchMock, syncMockReset, syncMockDb } from './syncMock';
+import { installSyncFetchMock, syncMockReset, syncMockDb, lastAiJobBody } from './syncMock';
 
 installSyncFetchMock();
 
@@ -99,5 +99,12 @@ describe('ChatSurface', () => {
     // A new mount should read the persisted conversation (by title) from the backend.
     await mount();
     expect(await screen.findByText(/verify persistence convo/i)).toBeInTheDocument();
+  });
+
+  it('starts an environment audit job from the feedback button', async () => {
+    await mount();
+    fireEvent.click(screen.getByTitle('Environment feedback'));
+    await waitFor(() => expect(lastAiJobBody?.kind).toBe('env_audit'));
+    expect(String(lastAiJobBody?.prompt || '')).toMatch(/submit_env_feedback/);
   });
 });
