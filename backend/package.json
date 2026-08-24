@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test src/lib/chatApply.test.js src/lib/agentLoop.test.js src/lib/agentJobs.test.js src/lib/agentSkills.test.js src/lib/envFeedback.test.js"
+    "test": "node --test src/lib/chatApply.test.js src/lib/agentLoop.test.js src/lib/agentJobs.test.js src/lib/agentSkills.test.js src/lib/envFeedback.test.js src/lib/agentSandbox.cred.test.js"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

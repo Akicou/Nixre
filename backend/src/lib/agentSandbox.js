@@ -26,12 +26,22 @@ const MAX_CMD_MS = Number(process.env.SANDBOX_CMD_MS || 120_000);
 const MAX_CMD_BYTES = 32 * 1024;
 const WORK_DIR = '/workspace/repo';
 const CREDS_FILE = '/workspace/.agent-creds';
+const GIT_CREDS_STORE = '/workspace/.git-credentials';
 const GITHUB_CREDS_FILE = '/workspace/.github-creds';
 const GITHUB_TOKEN_FILE = '/workspace/.github-token';
 // Where the sandbox reaches core's git smart-HTTP endpoint. The sandbox
 // container is attached to core's docker network so this name resolves.
 const CORE_GIT_URL = process.env.CORE_URL || 'http://nixre-core:3002';
 const MARKER = '__NIXRE_EXIT__';
+
+// git-credential-store line. URL-scoped `credential.http://host:port.helper`
+// often never matches, so git push hits core with no Basic auth (401).
+export function gitCredentialStoreLine(origin, username, password) {
+  const u = new URL(String(origin || 'http://nixre-core:3002'));
+  u.username = String(username || 'x');
+  u.password = String(password || '');
+  return u.href.replace(/\/$/, '');
+}
 
 let docker = null;
 let dockerChecked = false;
@@ -166,10 +176,14 @@ async function syncRepo(containerId, space, repo, key, user) {
     const token = await mintSandboxToken(key, uid);
     // Credential helper serves the PAT only to core's endpoint; the push URL
     // and `git remote -v` stay clean (no token in .git/config or transcripts).
+    const storeLine = gitCredentialStoreLine(CORE_GIT_URL, uid, token);
     credsSetup = `
 printf 'username=%s\\npassword=%s\\n' ${JSON.stringify(uid)} ${JSON.stringify(token)} > ${CREDS_FILE}
-chmod 600 ${CREDS_FILE}
-git -C "$WORK" config credential.${CORE_GIT_URL}.helper "!f() { cat ${CREDS_FILE} 2>/dev/null; }; f"
+printf '%s\\n' ${JSON.stringify(storeLine)} > ${GIT_CREDS_STORE}
+chmod 600 ${CREDS_FILE} ${GIT_CREDS_STORE}
+git -C "$WORK" config --unset-all credential.helper >/dev/null 2>&1 || true
+git -C "$WORK" config credential.helper ${JSON.stringify(`store --file=${GIT_CREDS_STORE}`)}
+git -C "$WORK" config credential.useHttpPath false
 git -C "$WORK" remote set-url --push origin ${JSON.stringify(`${CORE_GIT_URL}/git/${space}/${repo}.git`)}
 `;
   } catch (err) {

@@ -4,10 +4,25 @@
 export const SANDBOX_IMAGE_RECIPE = {
   image: 'nixre-agent-sandbox:latest',
   base: 'node:22-bookworm-slim',
-  apt: ['bash', 'ca-certificates', 'coreutils', 'git', 'g++', 'make', 'python3'],
-  runtime: 'node 22 + python3',
+  apt: [
+    'bash',
+    'ca-certificates',
+    'coreutils',
+    'git',
+    'g++',
+    'make',
+    'python3',
+    'python3-pytest',
+    'curl',
+    'jq',
+    'ripgrep',
+    'zip',
+    'unzip',
+    'xz-utils',
+  ],
+  runtime: 'node 22 + python3 + pytest',
   notes:
-    'Intentionally slim. Session apt/npm/pip installs persist on the conversation volume until the sandbox is idle-stopped; they are not baked into the image.',
+    'Intentionally slim besides the CLIs agents actually missed (curl, jq, rg, zip/unzip, pytest). Session npm/pip installs still persist on the conversation volume.',
 };
 
 export const ENV_AUDIT_PROMPT =
