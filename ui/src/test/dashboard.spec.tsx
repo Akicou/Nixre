@@ -32,6 +32,15 @@ describe('Dashboard', () => {
     expect(await screen.findByText('acme')).toBeInTheDocument();
   });
 
+  it('shows uploaded org avatars in the namespaces list', async () => {
+    api.listSpaces.mockResolvedValue([
+      { ...space, avatar_url: '/api/v1/avatars/space/acme' },
+    ]);
+    mount();
+    const img = await screen.findByAltText('acme');
+    expect(img).toHaveAttribute('src', '/api/v1/avatars/space/acme');
+  });
+
   it('filters repositories by search text', async () => {
     mount();
     await screen.findByText('acme/website');

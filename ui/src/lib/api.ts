@@ -316,17 +316,7 @@ class ApiClient {
     try {
       const memberships = await this.request<any[]>('/user/memberships');
       if (Array.isArray(memberships) && memberships.length > 0) {
-        return memberships.map(m => ({
-          id: m.space.id,
-          uid: m.space.identifier || m.space.path || m.space.uid,
-          path: m.space.path || m.space.identifier,
-          description: m.space.description || '',
-          is_public: m.space.is_public ?? false,
-          is_personal: m.space.is_personal ?? false,
-          created: m.space.created || 0,
-          created_by: m.space.created_by || 0,
-          updated: m.space.updated || 0,
-        }));
+        return memberships.map(m => this.normalizeSpace(m.space));
       }
     } catch {}
     try {

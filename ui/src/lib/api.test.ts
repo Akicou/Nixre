@@ -296,3 +296,57 @@ describe('api speech-to-text', () => {
     expect(res.text).toBe('hello agent');
   });
 });
+
+describe('api.listSpaces', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('keeps org and personal avatar URLs from memberships', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve([
+        {
+          role: 'owner',
+          space: {
+            id: 1,
+            uid: 'nayhein',
+            identifier: 'nayhein',
+            path: 'nayhein',
+            description: '',
+            is_public: false,
+            is_personal: false,
+            avatar_url: '/api/v1/avatars/space/nayhein',
+            created: 1,
+            created_by: 'lyan',
+            updated: 1,
+          },
+        },
+        {
+          role: 'owner',
+          space: {
+            id: 2,
+            uid: 'lyan',
+            identifier: 'lyan',
+            path: 'lyan',
+            description: '',
+            is_public: true,
+            is_personal: true,
+            avatar_url: '/api/v1/avatars/user/lyan',
+            created: 1,
+            created_by: 'lyan',
+            updated: 1,
+          },
+        },
+      ]),
+    }));
+
+    const spaces = await api.listSpaces();
+    expect(spaces[0].uid).toBe('nayhein');
+    expect(spaces[0].avatar_url).toBe('/api/v1/avatars/space/nayhein');
+    expect(spaces[1].avatar_url).toBe('/api/v1/avatars/user/lyan');
+    expect(spaces[1].is_personal).toBe(true);
+  });
+});

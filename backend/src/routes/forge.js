@@ -25,6 +25,13 @@ function now() {
 }
 
 function rowToSpace(row) {
+  const personal = Boolean(row.is_personal);
+  let avatar_url = '';
+  if (personal && row.user_avatar_data) {
+    avatar_url = `/api/v1/avatars/user/${row.uid}`;
+  } else if (!personal && row.avatar_data) {
+    avatar_url = `/api/v1/avatars/space/${row.uid}`;
+  }
   return {
     id: row.numeric_id ?? 0,
     uid: row.uid,
@@ -32,8 +39,8 @@ function rowToSpace(row) {
     identifier: row.uid,
     description: row.description || '',
     is_public: Boolean(row.is_public),
-    is_personal: Boolean(row.is_personal),
-    avatar_url: row.avatar_data ? `/api/v1/avatars/space/${row.uid}` : '',
+    is_personal: personal,
+    avatar_url,
     created: Number(row.created),
     created_by: row.created_by,
     updated: Number(row.updated),
@@ -284,10 +291,12 @@ export function forgeRoutes(pool, authenticate) {
   // Shape-compatible with the UI's listSpaces() membership mapping.
   api.get('/user/memberships', auth, async (req, res) => {
     const { rows } = await pool.query(
-      `SELECT s.*, sm.role FROM spaces s
-       JOIN space_members sm ON sm.space_uid = s.uid
-       WHERE sm.user_uid = $1
-       ORDER BY s.uid`,
+      `SELECT s.*, sm.role, u.avatar_data AS user_avatar_data
+         FROM spaces s
+         JOIN space_members sm ON sm.space_uid = s.uid
+         LEFT JOIN users u ON u.uid = s.uid AND s.is_personal
+        WHERE sm.user_uid = $1
+        ORDER BY s.uid`,
       [req.auth.user.uid],
     );
     res.json(rows.map(r => ({ space: rowToSpace(r), role: r.role })));
@@ -299,7 +308,13 @@ export function forgeRoutes(pool, authenticate) {
       : `WHERE s.is_public OR EXISTS (
            SELECT 1 FROM space_members m WHERE m.space_uid = s.uid AND m.user_uid = $1)`;
     const params = req.auth.user.admin ? [] : [req.auth.user.uid];
-    const { rows } = await pool.query(`SELECT s.* FROM spaces s ${visibility} ORDER BY s.uid`, params);
+    const { rows } = await pool.query(
+      `SELECT s.*, u.avatar_data AS user_avatar_data
+         FROM spaces s
+         LEFT JOIN users u ON u.uid = s.uid AND s.is_personal
+         ${visibility} ORDER BY s.uid`,
+      params,
+    );
     res.json(rows.map(rowToSpace));
   });
 

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 interface AvatarProps {
   name?: string | null;
@@ -12,13 +12,17 @@ interface AvatarProps {
 // Renders an uploaded avatar image if `url` is set, otherwise a generated
 // initials badge (the existing behavior across the app).
 export const Avatar: React.FC<AvatarProps> = ({ name, url, size = 32, className = '', shape = 'circle', fill = false }) => {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => {
+    setBroken(false);
+  }, [url]);
   const shapeClass = shape === 'circle' ? 'rounded-full' : 'rounded-md';
   const boxStyle: React.CSSProperties = fill
     ? { width: '100%', height: '100%' }
     : { width: size, height: size };
   const fontSize = fill ? undefined : Math.round(size * 0.4);
 
-  if (url) {
+  if (url && !broken) {
     return (
       <img
         src={url}
@@ -28,6 +32,7 @@ export const Avatar: React.FC<AvatarProps> = ({ name, url, size = 32, className 
         className={`${shapeClass} object-cover bg-surface-subtle border border-border-subtle shrink-0 ${className}`}
         style={boxStyle}
         referrerPolicy="no-referrer"
+        onError={() => setBroken(true)}
       />
     );
   }
