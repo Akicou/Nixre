@@ -169,5 +169,60 @@ export function accountRoutes(pool, authenticate) {
     res.json({ ok: true });
   });
 
+  // --- speech-to-text endpoint ------------------------------------------------
+
+  api.get('/user/stt', auth, async (req, res) => {
+    const { rows } = await pool.query(
+      'SELECT base_url, model, key_mask FROM user_stt WHERE user_uid = $1',
+      [req.auth.user.uid],
+    );
+    const row = rows[0];
+    if (!row) {
+      res.json({ configured: false, base_url: null, model: null, key_mask: null });
+      return;
+    }
+    res.json({
+      configured: true,
+      base_url: row.base_url,
+      model: row.model,
+      key_mask: row.key_mask || null,
+    });
+  });
+
+  api.put('/user/stt', auth, async (req, res) => {
+    const baseUrl = String(req.body?.base_url || '').trim().replace(/\/+$/, '');
+    const model = String(req.body?.model || '').trim();
+    const apiKey = String(req.body?.api_key || '').trim();
+    if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
+      res.status(400).json({ message: 'A valid base URL is required' });
+      return;
+    }
+    if (!model) {
+      res.status(400).json({ message: 'A model id is required' });
+      return;
+    }
+    const existing = await pool.query(
+      'SELECT api_key_enc, key_mask FROM user_stt WHERE user_uid = $1',
+      [req.auth.user.uid],
+    );
+    const prev = existing.rows[0];
+    const enc = apiKey ? encryptSecret(apiKey) : (prev?.api_key_enc || null);
+    const mask = apiKey ? maskSecret(apiKey) : (prev?.key_mask || null);
+    const ts = Date.now();
+    await pool.query(
+      `INSERT INTO user_stt (user_uid, base_url, model, api_key_enc, key_mask, updated)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (user_uid) DO UPDATE SET
+         base_url = $2, model = $3, api_key_enc = $4, key_mask = $5, updated = $6`,
+      [req.auth.user.uid, baseUrl, model, enc, mask, ts],
+    );
+    res.json({ configured: true, base_url: baseUrl, model, key_mask: mask });
+  });
+
+  api.delete('/user/stt', auth, async (req, res) => {
+    await pool.query('DELETE FROM user_stt WHERE user_uid = $1', [req.auth.user.uid]);
+    res.json({ ok: true });
+  });
+
   return api;
 }

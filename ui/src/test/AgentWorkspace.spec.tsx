@@ -26,6 +26,7 @@ vi.mock('../lib/api', async importOriginal => {
           num_forks: 0,
         },
       ]),
+      getStt: vi.fn().mockResolvedValue({ configured: false, base_url: null, model: null }),
     },
   };
 });

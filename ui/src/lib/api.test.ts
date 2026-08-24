@@ -198,3 +198,101 @@ describe('api GitHub secrets', () => {
     expect(options.method).toBe('DELETE');
   });
 });
+
+describe('api web commits', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('POSTs file commits', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ sha: 'abc', branch: 'main' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.commitFiles('acme/website', {
+      branch: 'main',
+      message: 'Update README',
+      files: [{ path: 'README.md', content: '# hi', action: 'update' }],
+      base_sha: 'old',
+    });
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/repos/acme/website/+/commits');
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body)).toEqual({
+      branch: 'main',
+      message: 'Update README',
+      files: [{ path: 'README.md', content: '# hi', action: 'update' }],
+      base_sha: 'old',
+    });
+  });
+});
+
+describe('api speech-to-text', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('GETs STT config', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ configured: true, base_url: 'https://openrouter.ai/api/v1', model: 'openai/whisper-large-v3', key_mask: '…abcd' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const cfg = await api.getStt();
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/user/stt');
+    expect(cfg.configured).toBe(true);
+  });
+
+  it('PUTs STT config', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ configured: true, base_url: 'https://openrouter.ai/api/v1', model: 'openai/whisper-large-v3', key_mask: '…key1' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.setStt({ base_url: 'https://openrouter.ai/api/v1', model: 'openai/whisper-large-v3', api_key: 'sk-or-v1-x' });
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/user/stt');
+    expect(options.method).toBe('PUT');
+    expect(JSON.parse(options.body).model).toBe('openai/whisper-large-v3');
+  });
+
+  it('DELETEs STT config', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ ok: true }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.deleteStt();
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/user/stt');
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE');
+  });
+
+  it('POSTs audio for transcription', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ text: 'hello agent' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await api.transcribeAudio('AAAA', 'webm');
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/ai/transcribe');
+    expect(JSON.parse(options.body)).toEqual({ audio: 'AAAA', format: 'webm' });
+    expect(res.text).toBe('hello agent');
+  });
+});

@@ -48,6 +48,7 @@ import {
 } from '../lib/assistantEngine';
 import { ChatMessageView } from '../components/assistant/ChatMessageView';
 import { ComposerAttach } from '../components/assistant/ComposerAttach';
+import { ComposerMic } from '../components/assistant/ComposerMic';
 import { MobileDrawer } from '../components/MobileDrawer';
 import { appendPastedImages, imageFilesFromClipboard, type ChatImage } from '../lib/chatImages';
 import {
@@ -886,26 +887,32 @@ export const AgentWorkspace: React.FC = () => {
       />
       <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
         {modelCard}
-        {streaming ? (
-          <button
-            type="button"
-            onClick={() => abortRef.current?.abort()}
-            title="Stop (Esc)"
-            className="w-8 h-8 rounded-full flex items-center justify-center bg-surface-subtle text-txt-primary hover:bg-surface-mid transition"
-          >
-            <Square className="w-3.5 h-3.5 fill-current" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => send()}
-            disabled={(!input.trim() && pendingImages.length === 0) || !activeRepo}
-            title="Send"
-            className="w-8 h-8 rounded-full flex items-center justify-center bg-txt-primary text-surface-base hover:opacity-90 disabled:opacity-25 disabled:cursor-not-allowed transition"
-          >
-            <ArrowUp className="w-4 h-4" strokeWidth={2.5} />
-          </button>
-        )}
+        <div className="flex items-center gap-1.5">
+          <ComposerMic
+            round
+            onTranscript={text => setInput(prev => (prev.trim() ? `${prev.trim()} ${text}` : text))}
+          />
+          {streaming ? (
+            <button
+              type="button"
+              onClick={() => abortRef.current?.abort()}
+              title="Stop (Esc)"
+              className="w-8 h-8 rounded-full flex items-center justify-center bg-surface-subtle text-txt-primary hover:bg-surface-mid transition"
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => send()}
+              disabled={(!input.trim() && pendingImages.length === 0) || !activeRepo}
+              title="Send"
+              className="w-8 h-8 rounded-full flex items-center justify-center bg-txt-primary text-surface-base hover:opacity-90 disabled:opacity-25 disabled:cursor-not-allowed transition"
+            >
+              <ArrowUp className="w-4 h-4" strokeWidth={2.5} />
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

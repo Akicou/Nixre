@@ -15,6 +15,9 @@ const { api } = vi.hoisted(() => ({
     listSecrets: vi.fn(),
     setGithubSecret: vi.fn(),
     deleteGithubSecret: vi.fn(),
+    getStt: vi.fn(),
+    setStt: vi.fn(),
+    deleteStt: vi.fn(),
   },
 }));
 vi.mock('../lib/api', () => ({ api }));
@@ -39,6 +42,7 @@ describe('Settings', () => {
     api.listPublicKeys.mockResolvedValue([]);
     api.listTokens.mockResolvedValue([]);
     api.listSecrets.mockResolvedValue([]);
+    api.getStt.mockResolvedValue({ configured: false, base_url: null, model: null, key_mask: null });
   });
 
   it('shows the profile by default', async () => {
@@ -98,6 +102,35 @@ describe('Settings', () => {
     fireEvent.click(screen.getByRole('button', { name: /Remove GitHub token/ }));
     await waitFor(() => {
       expect(api.deleteGithubSecret).toHaveBeenCalled();
+    });
+  });
+
+  it('saves and removes a speech endpoint', async () => {
+    api.setStt.mockResolvedValue({
+      configured: true,
+      base_url: 'https://openrouter.ai/api/v1',
+      model: 'openai/whisper-large-v3',
+      key_mask: '…or12',
+    });
+    api.deleteStt.mockResolvedValue(undefined);
+    mount();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Speech' }));
+    fireEvent.change(screen.getByPlaceholderText(/sk-or|API key/i), { target: { value: 'sk-or-v1-testkey' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(api.setStt).toHaveBeenCalledWith({
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'openai/whisper-large-v3',
+        api_key: 'sk-or-v1-testkey',
+      });
+    });
+    expect(await screen.findByText(/Configured openai\/whisper-large-v3 …or12/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Remove speech endpoint/ }));
+    await waitFor(() => {
+      expect(api.deleteStt).toHaveBeenCalled();
     });
   });
 });

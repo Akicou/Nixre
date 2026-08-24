@@ -16,6 +16,7 @@ const { api } = vi.hoisted(() => ({
     getPullRequestDiff: vi.fn(),
     createPullRequest: vi.fn(),
     mergePullRequest: vi.fn(),
+    commitFiles: vi.fn(),
   },
 }));
 
@@ -116,5 +117,34 @@ describe('RepoView — tabs', () => {
     mountAt('/acme/website?tab=pulls');
     expect(await screen.findByText('#7')).toBeInTheDocument();
     expect(await screen.findByText('Add landing page')).toBeInTheDocument();
+  });
+});
+
+describe('RepoView — web edit', () => {
+  it('hides Add file when the user cannot write', async () => {
+    mountAt('/acme/website?tab=code&branch=main&type=tree');
+    await screen.findByText('LICENSE');
+    expect(screen.queryByRole('button', { name: 'Add file' })).toBeNull();
+  });
+
+  it('edits a file and commits to a new branch', async () => {
+    api.getRepo.mockResolvedValue({ ...repo, can_write: true });
+    api.commitFiles.mockResolvedValue({ sha: 'newsha', branch: 'edit-readme' });
+    mountAt('/acme/website?tab=code&branch=main&path=README.md&type=blob');
+
+    fireEvent.click(await screen.findByTitle('Edit this file'));
+    const editor = await screen.findByLabelText('File contents');
+    fireEvent.change(editor, { target: { value: '# Hello edit' } });
+    fireEvent.click(screen.getByRole('radio', { name: /Commit to a new branch/i }));
+    fireEvent.change(screen.getByLabelText('New branch name'), { target: { value: 'edit-readme' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Commit changes' }));
+
+    await waitFor(() => {
+      expect(api.commitFiles).toHaveBeenCalledWith('acme/website', expect.objectContaining({
+        branch: 'main',
+        new_branch: 'edit-readme',
+        files: [{ path: 'README.md', content: '# Hello edit', action: 'update' }],
+      }));
+    });
   });
 });

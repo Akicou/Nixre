@@ -16,6 +16,7 @@ import {
   listBranches,
   resolveDefaultBranch,
   validRefSegment,
+  commitFiles,
 } from '../git/repo.js';
 import { openPrCounts } from './pullreq.js';
 
@@ -700,7 +701,10 @@ export function forgeRoutes(pool, authenticate) {
       return;
     }
     const counts = await openPrCounts(pool, [Number(repo.id)]);
-    res.json(rowToRepo(repo, { openPulls: counts.get(Number(repo.id)) ?? 0 }));
+    res.json({
+      ...rowToRepo(repo, { openPulls: counts.get(Number(repo.id)) ?? 0 }),
+      can_write: await canWriteRepo(pool, repo.space_uid, req.auth.user),
+    });
   });
 
   api.patch('/repos/:space/:repo/\\+', auth, async (req, res) => {
@@ -845,6 +849,33 @@ export function forgeRoutes(pool, authenticate) {
   };
   api.get('/repos/:space/:repo/\\+/content', auth, contentHandler);
   api.get('/repos/:space/:repo/\\+/content/*', auth, contentHandler);
+
+  // Web UI commit: POST /repos/{space}/{repo}/+/commits
+  api.post('/repos/:space/:repo/\\+/commits', auth, async (req, res) => {
+    const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
+    if (!repo) {
+      res.status(404).json({ message: 'Repository not found' });
+      return;
+    }
+    if (!(await canWriteRepo(pool, repo.space_uid, req.auth.user))) {
+      res.status(403).json({ message: 'No write access' });
+      return;
+    }
+    try {
+      const result = await commitFiles(repo.space_uid, repo.uid, {
+        branch: String(req.body?.branch || repo.default_branch),
+        newBranch: req.body?.new_branch ? String(req.body.new_branch) : undefined,
+        message: String(req.body?.message || ''),
+        files: req.body?.files,
+        baseSha: req.body?.base_sha ? String(req.body.base_sha) : undefined,
+        authorName: req.auth.user.display_name || req.auth.user.uid,
+        authorEmail: req.auth.user.email,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(err.status || 502).json({ message: err.message || 'Commit failed' });
+    }
+  });
 
   // Raw blob: GET /repos/{space}/{repo}/+/raw/{path}?git_ref=
   api.get('/repos/:space/:repo/\\+/raw/*', auth, async (req, res) => {

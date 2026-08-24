@@ -170,6 +170,124 @@ export async function seedReadme(space, repo, { authorName, authorEmail, descrip
   }
 }
 
+const MAX_WEB_FILE_BYTES = 1024 * 1024;
+
+function httpError(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+// Repo-relative path: no absolute, no `.` / `..` segments, no NUL.
+export function validGitPath(filePath) {
+  const s = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!s || s.length > 512 || s.includes('\0')) return null;
+  const parts = s.split('/');
+  if (parts.some(p => !p || p === '.' || p === '..')) return null;
+  return s;
+}
+
+// Lightweight git-check-ref-format for branch names we create or check out.
+export function validBranchName(name) {
+  const s = String(name || '').trim();
+  if (!s || s.length > 200 || s === 'HEAD') return null;
+  if (s.startsWith('/') || s.endsWith('/') || s.includes('//') || s.includes('..')) return null;
+  if (s.endsWith('.lock') || /[\s\\~\^:?*\[\@\{]/.test(s) || s.includes('\0')) return null;
+  if (!/^[A-Za-z0-9._/-]+$/.test(s)) return null;
+  return s;
+}
+
+function resolveUnder(root, rel) {
+  const abs = path.resolve(root, ...rel.split('/'));
+  const base = path.resolve(root);
+  if (abs !== base && !abs.startsWith(base + path.sep)) return null;
+  return abs;
+}
+
+// Web UI commit: temp clone, write text files, commit as the session user, push.
+export async function commitFiles(space, repo, {
+  branch,
+  newBranch,
+  message,
+  files,
+  baseSha,
+  authorName,
+  authorEmail,
+}) {
+  const src = validBranchName(branch);
+  if (!src) throw httpError(400, 'Invalid branch');
+  const dest = newBranch ? validBranchName(newBranch) : null;
+  if (newBranch && !dest) throw httpError(400, 'Invalid new branch name');
+  const msg = String(message || '').trim();
+  if (!msg) throw httpError(400, 'Commit message is required');
+  const list = Array.isArray(files) ? files : [];
+  if (list.length === 0) throw httpError(400, 'No files to commit');
+
+  const dir = repoDir(space, repo);
+  const tmp = `${dir}-web-${crypto.randomBytes(4).toString('hex')}`;
+  const { writeFile, mkdir, rm, access } = await import('node:fs/promises');
+  const { constants } = await import('node:fs');
+  const identity = ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`];
+
+  try {
+    await exec('git', ['clone', '--branch', src, '--single-branch', dir, tmp]);
+    if (baseSha) {
+      const { stdout } = await exec('git', ['-C', tmp, 'rev-parse', 'HEAD']);
+      if (stdout.trim() !== String(baseSha).trim()) {
+        throw httpError(409, 'The branch has new commits. Reload and try again.');
+      }
+    }
+    if (dest) {
+      if (await branchExists(space, repo, dest)) {
+        throw httpError(409, `Branch '${dest}' already exists`);
+      }
+      await exec('git', ['-C', tmp, 'checkout', '-b', dest]);
+    }
+
+    for (const f of list) {
+      const rel = validGitPath(f.path);
+      if (!rel) throw httpError(400, 'Invalid file path');
+      const action = f.action === 'create' ? 'create' : 'update';
+      const content = String(f.content ?? '');
+      if (content.includes('\0')) {
+        throw httpError(400, 'Binary files cannot be edited in the web UI');
+      }
+      if (Buffer.byteLength(content, 'utf8') > MAX_WEB_FILE_BYTES) {
+        throw httpError(400, 'File is too large to commit in the web UI (1 MB max)');
+      }
+      const abs = resolveUnder(tmp, rel);
+      if (!abs) throw httpError(400, 'Invalid file path');
+      let exists = false;
+      try {
+        await access(abs, constants.F_OK);
+        exists = true;
+      } catch { /* missing */ }
+      if (action === 'create' && exists) throw httpError(409, 'File already exists');
+      if (action === 'update' && !exists) throw httpError(404, 'File not found');
+      await mkdir(path.dirname(abs), { recursive: true });
+      await writeFile(abs, content, 'utf8');
+      await exec('git', ['-C', tmp, 'add', '--', rel]);
+    }
+
+    try {
+      await exec('git', [
+        '-C', tmp, ...identity, 'commit', '-m', msg,
+        `--author=${authorName} <${authorEmail}>`,
+      ]);
+    } catch (err) {
+      const out = `${err.stdout || ''}${err.stderr || ''}${err.message || ''}`;
+      if (/nothing to commit/i.test(out)) throw httpError(400, 'No changes to commit');
+      throw err;
+    }
+    const target = dest || src;
+    await exec('git', ['-C', tmp, 'push', 'origin', `HEAD:refs/heads/${target}`]);
+    const { stdout } = await exec('git', ['-C', tmp, 'rev-parse', 'HEAD']);
+    return { sha: stdout.trim(), branch: target };
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 // --- reads --------------------------------------------------------------------
 
 // Tree listing at a ref + path. Returns [{ type: 'file'|'dir', name, size }]

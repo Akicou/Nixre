@@ -12,6 +12,7 @@ import {
   ChevronDown,
   Download,
   Plus,
+  Pencil,
   ArrowLeft,
   FileCode,
   Settings
@@ -22,6 +23,7 @@ import { useOutsideClick } from '../lib/useOutsideClick';
 import { PullRequestForm } from '../components/PullRequestForm';
 import { PullRequestDetail } from '../components/PullRequestDetail';
 import { RepoSettingsPanel } from '../components/RepoSettingsPanel';
+import { FileEditor } from '../components/FileEditor';
 import { Markdown, isMarkdownFile } from '../components/Markdown';
 import { Avatar } from '../components/Avatar';
 export const RepoView: React.FC = () => {
@@ -53,6 +55,7 @@ export const RepoView: React.FC = () => {
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [cloneProtocol, setCloneProtocol] = useState<'http' | 'ssh'>('http');
+  const [editor, setEditor] = useState<{ mode: 'edit' | 'create'; path: string; content: string } | null>(null);
   const cloneMenuRef = useRef<HTMLDivElement>(null);
   const branchMenuRef = useRef<HTMLDivElement>(null);
 
@@ -393,6 +396,20 @@ export const RepoView: React.FC = () => {
                 })}
               </div>
             </div>
+            {repo.can_write && currentNodeType !== 'blob' && (
+              <button
+                type="button"
+                onClick={() => setEditor({
+                  mode: 'create',
+                  path: currentPath ? `${currentPath}/` : '',
+                  content: '',
+                })}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-canvas border border-border-subtle text-xs font-medium text-txt-primary hover:bg-surface-subtle transition shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add file
+              </button>
+            )}
           </div>
 
           {/* Latest commit line — who made the most recent change here */}
@@ -411,7 +428,21 @@ export const RepoView: React.FC = () => {
           )}
 
           {/* If Single File Blob is active */}
-          {fileBlob ? (
+          {editor ? (
+            <FileEditor
+              repoPath={repoPath}
+              branch={currentBranch}
+              path={editor.path}
+              initialContent={editor.content}
+              mode={editor.mode}
+              baseSha={latestCommit?.sha}
+              onCancel={() => setEditor(null)}
+              onCommitted={({ branch, path }) => {
+                setEditor(null);
+                setSearchParams({ tab: 'code', branch, path, type: 'blob' });
+              }}
+            />
+          ) : fileBlob ? (
             <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden">
               <div className="p-3 bg-surface-base border-b border-border-subtle flex items-center justify-between gap-2 text-xs font-mono min-w-0">
                 <div className="flex items-center gap-2 text-txt-primary font-semibold min-w-0">
@@ -427,14 +458,24 @@ export const RepoView: React.FC = () => {
                   >
                     <History className="w-3.5 h-3.5" />
                   </button>
-                  <button
-                    onClick={() => copyToClipboard(fileBlob.content)}
-                    className="p-1 rounded hover:bg-surface-subtle text-txt-secondary hover:text-txt-primary transition"
-                    title="Copy raw file"
-                  >
-                    {copied ? <Check className="w-3.5 h-3.5 text-txt-open" /> : <Copy className="w-3.5 h-3.5" />}
-                  </button>
-                </div>
+                    <button
+                      onClick={() => copyToClipboard(fileBlob.content)}
+                      className="p-1 rounded hover:bg-surface-subtle text-txt-secondary hover:text-txt-primary transition"
+                      title="Copy raw file"
+                    >
+                      {copied ? <Check className="w-3.5 h-3.5 text-txt-open" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                    {repo.can_write && (
+                      <button
+                        type="button"
+                        onClick={() => setEditor({ mode: 'edit', path: currentPath, content: fileBlob.content })}
+                        className="p-1 rounded hover:bg-surface-subtle text-txt-secondary hover:text-txt-primary transition"
+                        title="Edit this file"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
               </div>
               {isMarkdownFile(fileBlob.name) ? (
                 <div className="p-6">
@@ -514,7 +555,7 @@ export const RepoView: React.FC = () => {
           )}
 
           {/* README Rendered Box */}
-          {readmeContent && !fileBlob && (
+          {readmeContent && !fileBlob && !editor && (
             <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden mt-6">
               <div className="p-3 bg-surface-base border-b border-border-subtle flex items-center gap-2 text-xs font-mono font-semibold text-txt-primary">
                 <File className="w-4 h-4 text-brand" />

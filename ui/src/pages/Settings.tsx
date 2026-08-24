@@ -13,8 +13,9 @@ import {
   Save,
   Loader2,
   GitBranch,
+  Mic,
 } from 'lucide-react';
-import { api, User, PublicKey, Token, SocialLink, UserSecret } from '../lib/api';
+import { api, User, PublicKey, Token, SocialLink, UserSecret, UserStt } from '../lib/api';
 import { WebAuthnService, StoredPasskey } from '../lib/webauthn';
 import { daysToNanoseconds } from '../lib/duration';
 import { Avatar } from '../components/Avatar';
@@ -26,7 +27,7 @@ interface SettingsProps {
 
 export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
   const location = useLocation();
-  const [activeTab, setActiveTab] = useState<'profile' | 'passkeys' | 'ssh' | 'tokens' | 'github'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'passkeys' | 'ssh' | 'tokens' | 'github' | 'speech'>('profile');
 
   // Passkeys state
   const [passkeys, setPasskeys] = useState<StoredPasskey[]>([]);
@@ -51,6 +52,14 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
   const [githubToken, setGithubToken] = useState('');
   const [githubMsg, setGithubMsg] = useState('');
   const [githubSaving, setGithubSaving] = useState(false);
+
+  const [stt, setStt] = useState<UserStt | null>(null);
+  const [sttPreset, setSttPreset] = useState('openrouter');
+  const [sttBaseUrl, setSttBaseUrl] = useState('https://openrouter.ai/api/v1');
+  const [sttModel, setSttModel] = useState('openai/whisper-large-v3');
+  const [sttKey, setSttKey] = useState('');
+  const [sttMsg, setSttMsg] = useState('');
+  const [sttSaving, setSttSaving] = useState(false);
 
   // Avatar state
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
@@ -87,6 +96,18 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
     api.listSecrets().then(list => {
       setGithubSecret(list.find(s => s.kind === 'github' && s.configured) || null);
     }).catch(() => setGithubSecret(null));
+    api.getStt().then(cfg => {
+      setStt(cfg);
+      if (cfg.configured) {
+        setSttBaseUrl(cfg.base_url || '');
+        setSttModel(cfg.model || '');
+        const url = (cfg.base_url || '').replace(/\/+$/, '');
+        if (/openrouter\.ai/i.test(url)) setSttPreset('openrouter');
+        else if (/api\.openai\.com/i.test(url)) setSttPreset('openai');
+        else if (/groq\.com/i.test(url)) setSttPreset('groq');
+        else setSttPreset('custom');
+      }
+    }).catch(() => setStt(null));
   };
 
   useEffect(() => {
@@ -182,6 +203,52 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
       setGithubMsg('GitHub token removed.');
     } catch (err: any) {
       setGithubMsg(err.message || 'Failed to remove GitHub token.');
+    }
+  };
+
+  const applySttPreset = (id: string) => {
+    setSttPreset(id);
+    if (id === 'openrouter') {
+      setSttBaseUrl('https://openrouter.ai/api/v1');
+      setSttModel('openai/whisper-large-v3');
+    } else if (id === 'openai') {
+      setSttBaseUrl('https://api.openai.com/v1');
+      setSttModel('whisper-1');
+    } else if (id === 'groq') {
+      setSttBaseUrl('https://api.groq.com/openai/v1');
+      setSttModel('whisper-large-v3');
+    }
+  };
+
+  const handleSaveStt = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSttMsg('');
+    setSttSaving(true);
+    try {
+      const saved = await api.setStt({
+        base_url: sttBaseUrl.trim(),
+        model: sttModel.trim(),
+        api_key: sttKey.trim() || undefined,
+      });
+      setStt(saved);
+      setSttKey('');
+      setSttMsg('Speech endpoint saved. The agent mic will use it on the next recording.');
+    } catch (err: any) {
+      setSttMsg(err.message || 'Failed to save speech endpoint.');
+    } finally {
+      setSttSaving(false);
+    }
+  };
+
+  const handleRemoveStt = async () => {
+    setSttMsg('');
+    try {
+      await api.deleteStt();
+      setStt({ configured: false, base_url: null, model: null, key_mask: null });
+      setSttKey('');
+      setSttMsg('Speech endpoint removed.');
+    } catch (err: any) {
+      setSttMsg(err.message || 'Failed to remove speech endpoint.');
     }
   };
 
@@ -299,6 +366,16 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
           >
             <GitBranch className="w-4 h-4" />
             <span>GitHub</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('speech')}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-xs font-medium transition text-left ${
+              activeTab === 'speech' ? 'bg-surface-subtle text-txt-primary font-semibold' : 'text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle/50'
+            }`}
+          >
+            <Mic className="w-4 h-4" />
+            <span>Speech</span>
           </button>
         </div>
 
@@ -716,6 +793,98 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
                   className="px-4 py-2 rounded border border-feedback-error-border text-feedback-error-text text-xs font-semibold hover:bg-feedback-error-bg transition"
                 >
                   Remove GitHub token
+                </button>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'speech' && (
+            <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-6">
+              <h2 className="text-sm font-semibold text-txt-primary flex items-center gap-2">
+                <Mic className="w-4 h-4 text-brand" />
+                <span>Speech to text</span>
+              </h2>
+              <p className="text-xs text-txt-secondary leading-relaxed">
+                OpenAI-compatible <code className="font-mono text-txt-primary">/audio/transcriptions</code> endpoint used by the agent mic.
+                Works with OpenRouter, Groq, OpenAI, Speaches, LocalAI, and whisper.cpp started with
+                {' '}<code className="font-mono text-txt-primary">--inference-path /v1/audio/transcriptions --convert</code>.
+                Local URLs are reached from the Nixre server (use <code className="font-mono text-txt-primary">http://host.docker.internal:8080/v1</code> from Docker).
+                The API key stays encrypted and is never returned after save.
+              </p>
+              {stt?.configured && (
+                <p className="text-xs text-txt-primary font-mono">
+                  Configured {stt.model}{stt.key_mask ? ` ${stt.key_mask}` : ' (no key)'}
+                </p>
+              )}
+              {sttMsg && (
+                <div className={`p-3 rounded text-xs ${
+                  sttMsg.startsWith('Failed')
+                    ? 'bg-feedback-error-bg border border-feedback-error-border text-feedback-error-text'
+                    : 'bg-feedback-success-bg border border-feedback-success-border text-feedback-success-text'
+                }`}>
+                  {sttMsg}
+                </div>
+              )}
+              <div className="flex flex-wrap gap-1.5">
+                {([
+                  ['openrouter', 'OpenRouter'],
+                  ['openai', 'OpenAI'],
+                  ['groq', 'Groq'],
+                  ['custom', 'Custom'],
+                ] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => applySttPreset(id)}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition ${
+                      sttPreset === id
+                        ? 'border-brand bg-brand/10 text-txt-primary'
+                        : 'border-border-subtle text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <form onSubmit={handleSaveStt} className="space-y-3">
+                <input
+                  type="url"
+                  placeholder="https://openrouter.ai/api/v1"
+                  value={sttBaseUrl}
+                  onChange={e => { setSttPreset('custom'); setSttBaseUrl(e.target.value); }}
+                  className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
+                  required
+                />
+                <input
+                  placeholder="openai/whisper-large-v3"
+                  value={sttModel}
+                  onChange={e => setSttModel(e.target.value)}
+                  className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
+                  required
+                />
+                <input
+                  type="password"
+                  autoComplete="off"
+                  placeholder={stt?.key_mask ? `API key (${stt.key_mask}) — leave blank to keep` : 'API key (optional for local)'}
+                  value={sttKey}
+                  onChange={e => setSttKey(e.target.value)}
+                  className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
+                />
+                <button
+                  type="submit"
+                  disabled={sttSaving}
+                  className="px-4 py-2 rounded bg-brand text-white text-xs font-medium hover:bg-brand-hover disabled:opacity-50 transition shadow-sm"
+                >
+                  {sttSaving ? 'Saving…' : 'Save'}
+                </button>
+              </form>
+              {stt?.configured && (
+                <button
+                  type="button"
+                  onClick={handleRemoveStt}
+                  className="px-4 py-2 rounded border border-feedback-error-border text-feedback-error-text text-xs font-semibold hover:bg-feedback-error-bg transition"
+                >
+                  Remove speech endpoint
                 </button>
               )}
             </div>

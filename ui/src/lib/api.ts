@@ -77,6 +77,7 @@ export interface Repository {
   num_merged_pulls: number;
   created: number;
   updated: number;
+  can_write?: boolean;
 }
 
 export interface CommitIdentity {
@@ -214,6 +215,13 @@ export interface Token {
 export interface UserSecret {
   kind: string;
   configured: boolean;
+  key_mask?: string | null;
+}
+
+export interface UserStt {
+  configured: boolean;
+  base_url: string | null;
+  model: string | null;
   key_mask?: string | null;
 }
 
@@ -508,6 +516,22 @@ class ApiClient {
     return this.request<CommitDetail>(`/repos/${repoRef}/+/commits/${sha}`);
   }
 
+  async commitFiles(
+    repoRef: string,
+    body: {
+      branch: string;
+      new_branch?: string;
+      message: string;
+      files: { path: string; content: string; action: 'create' | 'update' }[];
+      base_sha?: string;
+    },
+  ): Promise<{ sha: string; branch: string }> {
+    return this.request(`/repos/${repoRef}/+/commits`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
   async getUserProfile(uid: string): Promise<UserProfile> {
     return this.request<UserProfile>(`/users/${uid}`);
   }
@@ -661,6 +685,28 @@ class ApiClient {
 
   async deleteGithubSecret(): Promise<void> {
     await this.request('/user/secrets/github', { method: 'DELETE' });
+  }
+
+  async getStt(): Promise<UserStt> {
+    return this.request<UserStt>('/user/stt');
+  }
+
+  async setStt(body: { base_url: string; model: string; api_key?: string }): Promise<UserStt> {
+    return this.request<UserStt>('/user/stt', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async deleteStt(): Promise<void> {
+    await this.request('/user/stt', { method: 'DELETE' });
+  }
+
+  async transcribeAudio(audio: string, format: string): Promise<{ text: string }> {
+    return this.request<{ text: string }>('/ai/transcribe', {
+      method: 'POST',
+      body: JSON.stringify({ audio, format }),
+    });
   }
 
   // Avatar uploads

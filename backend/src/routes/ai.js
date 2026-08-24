@@ -18,6 +18,7 @@ import {
 } from '../lib/ai.js';
 import { TOOL_SCHEMAS, executeTool } from '../lib/agentTools.js';
 import { touchSandbox } from '../lib/agentSandbox.js';
+import { transcribeAudio } from '../lib/stt.js';
 
 const MODEL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const MAX_MSG = 64_000;
@@ -570,6 +571,18 @@ export function aiRoutes(pool, authenticate) {
       res.json({ ok: true });
     } catch (err) {
       res.status(400).json({ message: err.message });
+    }
+  });
+
+  api.post('/ai/transcribe', auth, async (req, res) => {
+    try {
+      const result = await transcribeAudio(req.auth.user.uid, {
+        audioB64: String(req.body?.audio || ''),
+        format: String(req.body?.format || 'webm'),
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(err.status || 502).json({ message: err.message || 'Transcription failed' });
     }
   });
 

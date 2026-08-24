@@ -41,6 +41,7 @@ import {
 } from '../../lib/assistantEngine';
 import { ChatMessageView } from './ChatMessageView';
 import { ComposerAttach } from './ComposerAttach';
+import { ComposerMic } from './ComposerMic';
 import { MobileDrawer } from '../MobileDrawer';
 import { appendPastedImages, imageFilesFromClipboard, type ChatImage } from '../../lib/chatImages';
 
@@ -809,6 +810,9 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           heroMode ? 'min-h-[96px] text-sm' : 'max-h-40 text-xs'
         }`}
         disabled={streaming || !realAi}
+      />
+      <ComposerMic
+        onTranscript={text => setInput(prev => (prev.trim() ? `${prev.trim()} ${text}` : text))}
       />
       {streaming ? (
         <button
