@@ -641,12 +641,10 @@ export function aiRoutes(pool, authenticate) {
     send({ type: 'snapshot', conversation: conv });
     const live = isJobLive(req.params.conversationId);
     if (!live) {
-      send({ type: 'status', run_status: conv.run_status || 'idle' });
-      if (conv.run_status !== 'running' && conv.run_status !== 'stopping') {
-        send({ type: 'done' });
-        res.end();
-        return;
-      }
+      send({ type: 'status', run_status: conv.run_status === 'running' || conv.run_status === 'stopping' ? 'idle' : (conv.run_status || 'idle') });
+      send({ type: 'done' });
+      res.end();
+      return;
     }
     const unsub = subscribe(req.params.conversationId, send);
     const heartbeat = setInterval(() => {
