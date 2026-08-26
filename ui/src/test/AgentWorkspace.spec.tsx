@@ -27,6 +27,14 @@ vi.mock('../lib/api', async importOriginal => {
         },
       ]),
       getStt: vi.fn().mockResolvedValue({ configured: false, base_url: null, model: null }),
+      listGithubRepos: vi.fn().mockResolvedValue({
+        configured: true,
+        valid: true,
+        repos: [
+          { full_name: 'octo/widget', private: false, description: '', updated_at: '' },
+          { full_name: 'octo/private-repo', private: true, description: '', updated_at: '' },
+        ],
+      }),
     },
   };
 });
@@ -120,5 +128,33 @@ describe('AgentWorkspace', () => {
     );
     fireEvent.click(await screen.findByTitle('Environment feedback'));
     await waitFor(() => expect(lastAiJobBody?.kind).toBe('env_audit'));
+  });
+
+  it('repo picker searches sources and switches to GitHub/Unrestricted targets', async () => {
+    render(
+      <MemoryRouter initialEntries={['/agent']}>
+        <AgentWorkspace />
+      </MemoryRouter>,
+    );
+
+    // Open the picker: Unrestricted is pinned, the Nixre section lists hosted repos.
+    fireEvent.click(await screen.findByText('acme/website'));
+    const input = await screen.findByPlaceholderText(/search repositories/i);
+    expect(screen.getByText('free-form')).toBeInTheDocument();
+    expect(await screen.findByText('octo/widget')).toBeInTheDocument();
+    expect(screen.getByText('octo/private-repo')).toBeInTheDocument();
+
+    // Search narrows both sources.
+    fireEvent.change(input, { target: { value: 'widget' } });
+    expect(screen.queryByText('octo/private-repo')).not.toBeInTheDocument();
+
+    // Selecting a GitHub repo retargets the workspace.
+    fireEvent.click(screen.getByText('octo/widget'));
+    expect(await screen.findByText('octo/widget')).toBeInTheDocument();
+
+    // Switch to Unrestricted mode.
+    fireEvent.click(screen.getByText('octo/widget'));
+    fireEvent.click(await screen.findByText('free-form'));
+    expect(await screen.findByText('Unrestricted')).toBeInTheDocument();
   });
 });

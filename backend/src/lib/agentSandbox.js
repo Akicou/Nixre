@@ -16,6 +16,7 @@ import { repoDir, REPOS_ROOT } from '../git/repo.js';
 import { pool } from '../db/pool.js';
 import { newPatSecret, sha256 } from './auth.js';
 import { getDecryptedSecret } from './userSecrets.js';
+import { parseWorkspacePath, workspaceGitDir } from './workspaces.js';
 
 const DOCKER_SOCKET = process.env.DOCKER_HOST?.replace(/^unix:\/\//, '') || '/var/run/docker.sock';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'nixre-agent-sandbox:latest';
@@ -166,30 +167,74 @@ async function mintSandboxToken(key, uid) {
   return token;
 }
 
-async function syncRepo(containerId, space, repo, key, user) {
-  const bare = repoDir(space, repo);
+// Kind-aware workspace provisioning:
+//   nixre        — clone/fetch from the hosted bare repo; pushes return to core.
+//   github       — clone/fetch from the local read-only mirror of a github.com
+//                  repo (kept fresh by core); pushes go straight to github.com
+//                  with the user's stored PAT via the github.com credential helper.
+//   unrestricted — no hosted source: just ensure an empty git scratch dir exists;
+//                  github creds still load so the agent can clone/push anywhere.
+async function syncRepo(containerId, repoPath, key, user) {
+  const ws = parseWorkspacePath(repoPath);
+  if (ws.kind === 'invalid') throw new Error(`Invalid workspace target '${repoPath}'`);
   const uid = user?.uid || '';
   const name = user?.name || 'Nixre Agent';
   const email = user?.email || 'agent@nixre.local';
+
   let credsSetup = '';
-  try {
-    const token = await mintSandboxToken(key, uid);
-    // Credential helper serves the PAT only to core's endpoint; the push URL
-    // and `git remote -v` stay clean (no token in .git/config or transcripts).
-    const storeLine = gitCredentialStoreLine(CORE_GIT_URL, uid, token);
-    credsSetup = `
+  let bareBlock = '';
+  let workSync = `
+mkdir -p "$WORK"
+if [ ! -d "$WORK/.git" ]; then
+  git init --quiet "$WORK"
+fi
+`;
+  if (ws.kind === 'nixre') {
+    try {
+      const token = await mintSandboxToken(key, uid);
+      // Credential helper serves the PAT only to core's endpoint; the push URL
+      // and `git remote -v` stay clean (no token in .git/config or transcripts).
+      const storeLine = gitCredentialStoreLine(CORE_GIT_URL, uid, token);
+      bareBlock = `BARE=${JSON.stringify(repoDir(ws.space, ws.repo))}`;
+      workSync = `
+if [ ! -d "$WORK/.git" ]; then
+  git clone --quiet "$BARE" "$WORK"
+else
+  git -C "$WORK" fetch --quiet "$BARE" '+HEAD:refs/remotes/nixre/upstream' 2>/dev/null || git clone --quiet "$BARE" "$WORK"
+  git -C "$WORK" reset --hard refs/remotes/nixre/upstream 2>/dev/null || git -C "$WORK" reset --hard HEAD
+fi
+`;
+      credsSetup = `
 printf 'username=%s\\npassword=%s\\n' ${JSON.stringify(uid)} ${JSON.stringify(token)} > ${CREDS_FILE}
 printf '%s\\n' ${JSON.stringify(storeLine)} > ${GIT_CREDS_STORE}
 chmod 600 ${CREDS_FILE} ${GIT_CREDS_STORE}
 git -C "$WORK" config --unset-all credential.helper >/dev/null 2>&1 || true
 git -C "$WORK" config credential.helper ${JSON.stringify(`store --file=${GIT_CREDS_STORE}`)}
 git -C "$WORK" config credential.useHttpPath false
-git -C "$WORK" remote set-url --push origin ${JSON.stringify(`${CORE_GIT_URL}/git/${space}/${repo}.git`)}
+git -C "$WORK" remote set-url --push origin ${JSON.stringify(`${CORE_GIT_URL}/git/${ws.space}/${ws.repo}.git`)}
 `;
-  } catch (err) {
-    // DB unavailable — workspace still clones/fetches; push stays disabled.
-    console.warn('sandbox token mint failed, push disabled:', err.message);
+    } catch (err) {
+      // DB unavailable — workspace still clones/fetches; push stays disabled.
+      console.warn('sandbox token mint failed, push disabled:', err.message);
+    }
+  } else if (ws.kind === 'github') {
+    // The mirror keeps refs/heads/* mirroring github.com, HEAD pointing at its
+    // default branch — the same shape core's own bare repos have.
+    bareBlock = `BARE=${JSON.stringify(workspaceGitDir(ws))}`;
+    workSync = `
+if [ ! -d "$WORK/.git" ]; then
+  git clone --quiet "$BARE" "$WORK"
+else
+  git -C "$WORK" fetch --quiet "$BARE" '+HEAD:refs/remotes/nixre/upstream' 2>/dev/null || git clone --quiet "$BARE" "$WORK"
+  git -C "$WORK" reset --hard refs/remotes/nixre/upstream 2>/dev/null || git -C "$WORK" reset --hard HEAD
+fi
+`;
+    credsSetup = `
+# Pushes bypass core entirely — straight to github.com over https (PAT helper below).
+git -C "$WORK" remote set-url --push origin ${JSON.stringify(`https://github.com/${ws.fullName}.git`)}
+`;
   }
+
   let githubSetup = `
 rm -f ${GITHUB_CREDS_FILE} ${GITHUB_TOKEN_FILE}
 git -C "$WORK" config --unset-all credential.https://github.com.helper >/dev/null 2>&1 || true
@@ -208,17 +253,12 @@ git -C "$WORK" config credential.https://github.com.helper "!f() { cat ${GITHUB_
     console.warn('sandbox github secret load failed:', err.message);
   }
   const script = `set -eu
-BARE=${JSON.stringify(bare)}
+${bareBlock}
 WORK=${JSON.stringify(WORK_DIR)}
 # The ro-mounted bare repos are owned by a different uid than the sandbox user.
 git config --global --add safe.directory '*' >/dev/null 2>&1 || true
 mkdir -p "$(dirname "$WORK")"
-if [ ! -d "$WORK/.git" ]; then
-  git clone --quiet "$BARE" "$WORK"
-else
-  git -C "$WORK" fetch --quiet "$BARE" '+HEAD:refs/remotes/nixre/upstream' 2>/dev/null || git clone --quiet "$BARE" "$WORK"
-  git -C "$WORK" reset --hard refs/remotes/nixre/upstream 2>/dev/null || git -C "$WORK" reset --hard HEAD
-fi
+${workSync}
 git -C "$WORK" config user.name ${JSON.stringify(name)}
 git -C "$WORK" config user.email ${JSON.stringify(email)}
 ${credsSetup}
@@ -293,7 +333,7 @@ async function createContainer(key, userId, conversationId, repoPath, space, rep
   });
   await container.start();
   try {
-    await syncRepo(container.id, space, repo, key, user);
+    await syncRepo(container.id, repoPath, key, user);
   } catch (err) {
     // A half-provisioned container (clone failed) would be reused without a
     // resync — remove it so the next attempt provisions cleanly.
@@ -339,7 +379,7 @@ async function ensureRunningContainer(key, userId, conversationId, repoPath, spa
   }
 
   if (created || resumed) {
-    await syncRepo(info.Id, space, repo, key, user);
+    await syncRepo(info.Id, repoPath, key, user);
     closeShell(key);
   }
 

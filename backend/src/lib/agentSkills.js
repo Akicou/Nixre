@@ -108,10 +108,10 @@ export function mentionedSkillNames(prompt, skills) {
   return found;
 }
 
-export async function listSkills(space, repo) {
-  let dir;
+export async function listSkills(space, repo, dirOverride) {
+  let dir = dirOverride || null;
   try {
-    dir = repoDir(space, repo);
+    dir ||= repoDir(space, repo);
   } catch {
     return [];
   }
@@ -141,10 +141,10 @@ export async function listSkills(space, repo) {
   return skills;
 }
 
-export async function readSkill(space, repo, name, skills) {
+export async function readSkill(space, repo, name, skills, dirOverride) {
   const id = String(name || '').trim();
   if (!NAME_RE.test(id)) throw new Error('Unknown skill');
-  const list = skills || (await listSkills(space, repo));
+  const list = skills || (await listSkills(space, repo, dirOverride));
   const skill = list.find(s => s.name === id);
   if (!skill) throw new Error(`Unknown skill '${id}'`);
   return `# ${skill.name}\n\n${skill.body}`;

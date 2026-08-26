@@ -12,8 +12,10 @@ import {
   Download,
   FolderGit2,
   Loader2,
+  Lock,
   PanelLeft,
   Plus,
+  Search,
   Sparkles,
   Square,
   Trash2,
@@ -22,7 +24,8 @@ import {
   Undo2,
   MessageSquareWarning,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, type GithubRepoInfo } from '../lib/api';
+import { classifyWorkspacePath, workspaceLabel, UNRESTRICTED_PATH } from '../lib/workspaces';
 import { isPluginLive } from '../lib/pluginPreferences';
 import {
   getActiveProviderProfile,
@@ -129,6 +132,16 @@ export const AgentWorkspace: React.FC = () => {
   const [trace, setTrace] = useState<SessionTraceEntry[]>([]);
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
 
+  // Repo picker: search + source filter + lazily loaded GitHub repos.
+  type PickerFilter = 'all' | 'nixre' | 'github';
+  const [pickerQuery, setPickerQuery] = useState('');
+  const [pickerFilter, setPickerFilter] = useState<PickerFilter>('all');
+  const [ghRepos, setGhRepos] = useState<GithubRepoInfo[]>([]);
+  const [ghState, setGhState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+  const [ghSubState, setGhSubState] = useState<'none' | 'no-pat' | 'invalid'>('none');
+  const [ghMessage, setGhMessage] = useState('');
+  const ghBusyRef = useRef(false);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
@@ -170,8 +183,36 @@ export const AgentWorkspace: React.FC = () => {
     };
   }, []);
 
-  const activeRepo =
-    repos.find(r => r.path === repoParam)?.path ?? repos[0]?.path ?? '';
+  const loadGithubRepos = useCallback(async () => {
+    if (ghBusyRef.current) return;
+    ghBusyRef.current = true;
+    setGhState(prev => (prev === 'ok' ? prev : 'loading'));
+    try {
+      const res = await api.listGithubRepos();
+      if (!res.configured) {
+        setGhState('error');
+        setGhSubState('no-pat');
+        setGhMessage(res.message || 'No GitHub token configured.');
+      } else if (!res.valid) {
+        setGhState('error');
+        setGhSubState('invalid');
+        setGhMessage(res.message || 'The GitHub token was rejected.');
+      } else {
+        setGhRepos(res.repos);
+        setGhState('ok');
+      }
+    } catch (err: unknown) {
+      setGhState('error');
+      setGhMessage(err instanceof Error ? err.message : 'Could not reach github.com.');
+    } finally {
+      ghBusyRef.current = false;
+    }
+  }, []);
+
+  // Selected target: any repoPath is legal even when it is not in the Nixre
+  // list (github/owner/repo and unrestricted are never in it).
+  const activeRepo = repoParam || repos[0]?.path || '';
+  const activeKind = classifyWorkspacePath(activeRepo);
 
   const changeRepo = useCallback(
     (path: string) => {
@@ -924,7 +965,7 @@ export const AgentWorkspace: React.FC = () => {
             <div key={groupPath}>
               <div className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-txt-tertiary">
                 <FolderGit2 className="w-3 h-3 shrink-0 opacity-70" />
-                <span className="truncate">{groupPath}</span>
+                <span className="truncate">{workspaceLabel(groupPath)}</span>
               </div>
               <div className="space-y-0.5">
                 {convs.map(c => (
@@ -977,34 +1018,187 @@ export const AgentWorkspace: React.FC = () => {
   const menuPos = (dropUp: boolean) =>
     dropUp ? 'bottom-[calc(100%_+_6px)]' : 'top-[calc(100%_+_6px)]';
 
-  const repoPickerDropdown = (dropUp: boolean) =>
-    repoOpen && (
-    <div className={`absolute left-1/2 -translate-x-1/2 ${menuPos(dropUp)} w-[min(16rem,calc(100vw_-_2rem))] z-40`}>
-      <div className="max-h-64 overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl py-1 animate-pop">
-        {repos.length === 0 ? (
-          <p className="px-3 py-2 text-[12px] text-txt-tertiary">No repos yet.</p>
-        ) : (
-          repos.map(r => (
-            <button
-              key={r.path}
-              type="button"
-              onClick={() => {
-                setRepoOpen(false);
-                if (r.path !== activeRepo) changeRepo(r.path);
-              }}
-              className={`w-full text-left px-3 py-2.5 text-[12px] font-mono truncate transition min-h-11 ${
-                r.path === activeRepo
-                  ? 'bg-surface-subtle text-txt-primary'
-                  : 'text-txt-secondary hover:bg-surface-subtle'
-              }`}
-            >
-              {r.path}
-            </button>
-          ))
-        )}
-      </div>
+  // --- repo picker -----------------------------------------------------------
+  const q = pickerQuery.trim().toLowerCase();
+  const matchesQuery = (s: string) => !q || s.toLowerCase().includes(q);
+  const showUnrestrictedRow = pickerFilter !== 'github' && matchesQuery('unrestricted');
+  const nixreFiltered =
+    pickerFilter === 'github' ? [] : repos.filter(r => matchesQuery(r.path));
+  const ghFiltered =
+    pickerFilter === 'nixre'
+      ? []
+      : ghRepos.filter(r => r.full_name && matchesQuery(r.full_name));
+  const firstChoice = showUnrestrictedRow
+    ? UNRESTRICTED_PATH
+    : nixreFiltered.length > 0
+      ? nixreFiltered[0].path
+      : ghFiltered.length > 0
+        ? ghFiltered[0].full_name
+        : null;
+  const pickerHasResults =
+    showUnrestrictedRow || nixreFiltered.length > 0 || ghFiltered.length > 0 ||
+    ghState === 'loading' || (ghState === 'error' && pickerFilter !== 'nixre');
+
+  const pickTarget = (target: string | null) => {
+    if (!target) return;
+    setRepoOpen(false);
+    if (target !== activeRepo) changeRepo(target);
+  };
+
+  const kindDot = (kind: 'nixre' | 'github' | 'unrestricted') =>
+    `w-1.5 h-1.5 rounded-full shrink-0 ${
+      kind === 'github' ? 'bg-violet-400' : kind === 'unrestricted' ? 'bg-amber-400' : 'bg-sky-400'
+    }`;
+
+  const repoRow = (
+    key: string,
+    value: string,
+    kind: 'nixre' | 'github',
+    opts: { selected: boolean; trailing?: React.ReactNode } ,
+  ) => (
+    <button
+      key={key}
+      type="button"
+      onClick={() => pickTarget(value)}
+      title={value}
+      className={`w-full flex items-center gap-2 text-left pl-3 pr-2 py-2.5 text-[12px] transition min-h-11 ${
+        opts.selected ? 'bg-surface-subtle text-txt-primary' : 'text-txt-secondary hover:bg-surface-subtle'
+      }`}
+    >
+      <span className={kindDot(kind)} />
+      <span className="font-mono truncate flex-1">{value}</span>
+      {opts.trailing}
+    </button>
+  );
+
+  const sectionHeader = (label: string, icon: React.ReactNode) => (
+    <div className="flex items-center gap-1.5 px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-[0.1em] text-txt-tertiary">
+      {icon}
+      <span>{label}</span>
     </div>
   );
+
+  const repoPickerDropdown = (dropUp: boolean) =>
+    repoOpen && (
+      <div
+        className={`absolute left-1/2 -translate-x-1/2 ${menuPos(dropUp)} w-[min(22rem,calc(100vw_-_2rem))] z-40`}
+      >
+        <div className="rounded-xl border border-border-subtle bg-surface-canvas shadow-2xl overflow-hidden animate-pop">
+          {/* Search + source filter */}
+          <div className="px-3 pt-3 pb-2.5 border-b border-border-subtle">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-txt-tertiary pointer-events-none" />
+              <input
+                autoFocus
+                value={pickerQuery}
+                onChange={e => setPickerQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    pickTarget(firstChoice);
+                  } else if (e.key === 'Escape') {
+                    setRepoOpen(false);
+                  }
+                }}
+                placeholder="Search repositories…"
+                className="w-full h-9 pl-8 pr-3 rounded-lg bg-surface-subtle border border-border-subtle text-[12px] font-mono text-txt-primary outline-none focus:border-border-mid placeholder:text-txt-tertiary placeholder:font-sans"
+              />
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-1">
+              {(['all', 'nixre', 'github'] as const).map(f => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setPickerFilter(f)}
+                  className={`text-[11px] py-1.5 rounded-md border capitalize transition ${
+                    f === pickerFilter
+                      ? 'border-border-mid bg-surface-subtle text-txt-primary'
+                      : 'border-transparent text-txt-tertiary hover:text-txt-secondary hover:bg-surface-subtle'
+                  }`}
+                >
+                  {f === 'all' ? 'All sources' : f === 'nixre' ? 'Nixre' : 'GitHub'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Results */}
+          <div className="max-h-72 overflow-y-auto pb-1.5 pt-0.5">
+            {showUnrestrictedRow && (
+              <button
+                key={UNRESTRICTED_PATH}
+                type="button"
+                onClick={() => pickTarget(UNRESTRICTED_PATH)}
+                className={`w-full flex items-center gap-2 text-left pl-3 pr-2 py-2.5 text-[12px] transition min-h-11 ${
+                  activeKind === 'unrestricted'
+                    ? 'bg-surface-subtle text-txt-primary'
+                    : 'text-txt-secondary hover:bg-surface-subtle'
+                }`}
+              >
+                <span className={kindDot('unrestricted')} />
+                <span className="flex-1 truncate">Unrestricted</span>
+                <span className="text-[10px] text-txt-tertiary shrink-0">free-form</span>
+              </button>
+            )}
+
+            {pickerFilter !== 'github' && (
+              <>
+                {nixreFiltered.length > 0 &&
+                  sectionHeader('Nixre forge', <FolderGit2 className="w-3 h-3 shrink-0 opacity-70" />)}
+                {nixreFiltered.map(r =>
+                  repoRow(r.path, r.path, 'nixre', { selected: r.path === activeRepo }),
+                )}
+              </>
+            )}
+
+            {pickerFilter !== 'nixre' && (
+              <>
+                {ghState === 'idle' || ghState === 'loading' ? (
+                  <p className="flex items-center gap-2 px-3 py-2.5 text-[11px] text-txt-tertiary">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Loading github.com repositories…
+                  </p>
+                ) : ghState === 'ok' ? (
+                  <>
+                    {ghFiltered.length > 0 &&
+                      sectionHeader('GitHub', <GithubMark className="w-3 h-3 shrink-0 opacity-70" />)}
+                    {ghFiltered.map(r =>
+                      repoRow(`gh:${r.full_name}`, r.full_name, 'github', {
+                        selected: r.full_name === activeRepo,
+                        trailing: r.private ? (
+                          <Lock className="w-3 h-3 text-txt-tertiary shrink-0" />
+                        ) : undefined,
+                      }),
+                    )}
+                    {ghFiltered.length === 0 && (
+                      <p className="px-3 py-2.5 text-[11px] text-txt-tertiary">No matching GitHub repositories.</p>
+                    )}
+                  </>
+                ) : (
+                  <div className="mx-2 mt-1 rounded-lg border border-border-subtle bg-surface-subtle px-3 py-2 text-[11px] text-txt-tertiary leading-relaxed space-y-1">
+                    <p>{ghMessage}</p>
+                    {ghSubState === 'no-pat' && (
+                      <Link to="/settings" onClick={() => setRepoOpen(false)} className="inline-block text-txt-brand hover:underline">
+                        Add a token under Settings → GitHub
+                      </Link>
+                    )}
+                    {ghSubState === 'invalid' && (
+                      <Link to="/settings" onClick={() => setRepoOpen(false)} className="inline-block text-txt-brand hover:underline">
+                        Update the token in Settings → GitHub
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {!pickerHasResults && (
+              <p className="px-3 py-2.5 text-[11px] text-txt-tertiary">No repositories match.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
 
   const modePickerDropdown = (dropUp: boolean) =>
     modeOpen && (
@@ -1039,14 +1233,20 @@ export const AgentWorkspace: React.FC = () => {
         <button
           type="button"
           onClick={() => {
-            setRepoOpen(o => !o);
+            const willOpen = !repoOpen;
+            setRepoOpen(willOpen);
+            if (willOpen) {
+              setPickerQuery('');
+              void loadGithubRepos();
+            }
             setModelOpen(false);
             setModeOpen(false);
           }}
-          className="flex items-center gap-1 px-2 py-2 rounded-md hover:bg-surface-subtle hover:text-txt-secondary transition min-h-11"
+          className="flex items-center gap-1.5 px-2 py-2 rounded-md hover:bg-surface-subtle hover:text-txt-secondary transition min-h-11"
         >
+          <span className={`inline-block ${kindDot(activeKind)}`} />
           <span className="font-mono text-txt-secondary truncate max-w-[10rem] sm:max-w-none">
-            {activeRepo || 'pick a repo'}
+            {workspaceLabel(activeRepo) || 'pick a repo'}
           </span>
           <ChevronDown className="w-3 h-3 shrink-0" />
         </button>
@@ -1107,7 +1307,7 @@ export const AgentWorkspace: React.FC = () => {
                   {allConversations.find(c => c.id === currentId)?.title || 'Agent'}
                 </p>
                 <p className="text-[11px] text-txt-tertiary truncate font-mono">
-                  {activeRepo} · {getMode(mode).label}
+                  {workspaceLabel(activeRepo)} · {getMode(mode).label}
                 </p>
               </div>
             </div>
@@ -1135,7 +1335,7 @@ export const AgentWorkspace: React.FC = () => {
                   <Download className="w-3.5 h-3.5" />
                 </button>
               )}
-              {activeRepo.includes('/') && (
+              {activeKind === 'nixre' && (
                 <Link
                   to={`/${activeRepo}/assistant`}
                   className="text-[11px] px-2.5 py-1 rounded-md text-txt-tertiary hover:text-txt-secondary hover:bg-surface-subtle transition"
@@ -1240,6 +1440,13 @@ export const AgentWorkspace: React.FC = () => {
     </div>
   );
 };
+
+/** GitHub brand mark — this lucide version dropped brand icons. */
+const GithubMark: React.FC<{ className?: string }> = ({ className }) => (
+  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" className={className}>
+    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+  </svg>
+);
 
 /** Live activity line under the transcript while a turn is running. */
 const AgentWorkingLine: React.FC<{ messages: ChatMessage[]; queued: number }> = ({

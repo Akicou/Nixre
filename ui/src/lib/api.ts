@@ -236,6 +236,20 @@ export interface UserSecret {
   key_mask?: string | null;
 }
 
+export interface GithubRepoInfo {
+  full_name: string;
+  private: boolean;
+  description: string;
+  updated_at: string;
+}
+
+export interface GithubReposResult {
+  configured: boolean;
+  valid: boolean;
+  repos: GithubRepoInfo[];
+  message?: string;
+}
+
 export interface UserStt {
   configured: boolean;
   base_url: string | null;
@@ -693,6 +707,13 @@ class ApiClient {
 
   async deleteGithubSecret(): Promise<void> {
     await this.request('/user/secrets/github', { method: 'DELETE' });
+  }
+
+  // The user's github.com repositories, via their stored PAT. The backend
+  // answers 200 with an envelope so an invalid PAT never trips the global
+  // 401 handler in request().
+  async listGithubRepos(): Promise<GithubReposResult> {
+    return this.request<GithubReposResult>('/ai/github/repos');
   }
 
   async getStt(): Promise<UserStt> {

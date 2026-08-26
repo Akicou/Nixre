@@ -6,6 +6,12 @@ import { decryptSecret, PROVIDERS, streamChat } from './ai.js';
 import { TOOL_SCHEMAS, executeTool } from './agentTools.js';
 import { touchSandbox } from './agentSandbox.js';
 import { getMode } from './assistantModes.js';
+import {
+  resolveWorkspace,
+  parseWorkspacePath,
+  workspaceContextBlock,
+  workspaceGitDir,
+} from './workspaces.js';
 import { runAgentLoop } from './agentLoop.js';
 import { listSkills, formatSkillCatalog, expandMentions } from './agentSkills.js';
 import {
@@ -275,15 +281,19 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     throw new Error('No API key configured for the assistant provider.');
   }
 
-  const slash = job.repoPath.indexOf('/');
-  const space = slash > 0 ? job.repoPath.slice(0, slash) : '';
-  const repo = slash > 0 ? job.repoPath.slice(slash + 1) : job.repoPath;
+  // Workspace resolution can hit the network (first GitHub clone) and fail
+  // with a user-facing message — surface it instead of running the turn blind.
+  const ws = await resolveWorkspace(pool, job.userId, job.repoPath);
+  const info = parseWorkspacePath(job.repoPath);
+  const space = info.space;
+  const repo = info.repo;
   const permissions = await loadPermissions(pool, job.userId, job.repoPath);
   const toolCtx = {
     userId: job.userId,
     user: job.user,
     conversationId: job.conversationId,
     repoPath: job.repoPath,
+    workspace: ws,
   };
   const exec = async (name, args) => {
     if (name === 'submit_env_feedback') {
@@ -302,8 +312,13 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
   const mode = getMode(job.mode);
   const turnKind = jobKind || job.kind || 'chat';
   const agentMode = job.mode === 'agent' || job.mode === 'debug' || turnKind === 'env_audit';
-  const skills = await listSkills(space, repo).catch(() => []);
+  // Skills live on HEAD of the working tree source: hosted bare for nixre,
+  // the local mirror for GitHub targets.
+  const skillsDir = ws.kind === 'github' ? workspaceGitDir(ws) : undefined;
+  const skills = await listSkills(space, repo, skillsDir).catch(() => []);
   const extras = [];
+  // Workspace target first: the <workspace> block grounds every later context.
+  extras.push(workspaceContextBlock(ws));
   if (job.extraContext) extras.push(job.extraContext);
   const catalog = formatSkillCatalog(skills);
   if (catalog) extras.push(catalog);

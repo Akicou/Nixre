@@ -29,6 +29,11 @@ import {
   isJobLive,
 } from '../lib/agentJobs.js';
 import { listEnvFeedback } from '../lib/envFeedback.js';
+import {
+  parseWorkspacePath,
+  resolveWorkspace,
+} from '../lib/workspaces.js';
+import { getDecryptedSecret } from '../lib/userSecrets.js';
 
 const MODEL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const MAX_MSG = 64_000;
@@ -528,9 +533,11 @@ export function aiRoutes(pool, authenticate) {
   // --- agent tool execution ---------------------------------------------------
 
   // POST /ai/tools {repoPath, tool, args, conversationId?} — runs one assistant
-  // tool against the repo on disk. Read-only tools are available to everyone;
-  // run_command is on by default and can be turned off in the per-repo access
-  // profile. When conversationId is set, run_command uses the Docker sandbox.
+  // tool against the workspace target on disk (Nixre repo, GitHub mirror or a
+  // free-form scratch in unrestricted mode). Read-only tools are available to
+  // everyone; run_command is on by default and can be turned off in the
+  // per-repo access profile. When conversationId is set, run_command uses the
+  // Docker sandbox.
   api.post('/ai/tools', auth, async (req, res) => {
     const uid = req.auth.user.uid;
     const repoPath = String(req.body?.repoPath || '');
@@ -538,13 +545,21 @@ export function aiRoutes(pool, authenticate) {
     const conversationId = String(req.body?.conversationId || '');
     const args = req.body?.args && typeof req.body.args === 'object' ? req.body.args : {};
 
-    const slash = repoPath.indexOf('/');
-    if (slash <= 0 || slash === repoPath.length - 1) {
-      res.status(400).json({ message: 'repoPath must be space/repo' });
+    const info = parseWorkspacePath(repoPath);
+    if (info.kind === 'invalid') {
+      res.status(400).json({ message: 'repoPath must be space/repo, github/owner/repo or unrestricted' });
       return;
     }
-    const space = repoPath.slice(0, slash);
-    const repo = repoPath.slice(slash + 1);
+    const space = info.space;
+    const repo = info.repo;
+
+    let workspace = null;
+    try {
+      workspace = await resolveWorkspace(pool, uid, repoPath);
+    } catch (err) {
+      res.status(err.status || 400).json({ message: err.message });
+      return;
+    }
 
     let permissions = {};
     try {
@@ -568,6 +583,7 @@ export function aiRoutes(pool, authenticate) {
         },
         conversationId: conversationId || undefined,
         repoPath,
+        workspace,
       });
       res.json(result);
     } catch (err) {
@@ -580,21 +596,23 @@ export function aiRoutes(pool, authenticate) {
     const uid = req.auth.user.uid;
     const repoPath = String(req.body?.repoPath || '');
     const conversationId = String(req.body?.conversationId || '');
-    const slash = repoPath.indexOf('/');
-    if (slash <= 0 || slash === repoPath.length - 1 || !conversationId) {
+    if (!repoPath || !conversationId) {
       res.status(400).json({ message: 'repoPath and conversationId required' });
       return;
     }
-    const space = repoPath.slice(0, slash);
-    const repo = repoPath.slice(slash + 1);
+    if (parseWorkspacePath(repoPath).kind === 'invalid') {
+      res.status(400).json({ message: `Invalid workspace target '${repoPath}'` });
+      return;
+    }
+    const info = parseWorkspacePath(repoPath);
     try {
       await touchSandbox({
         userId: uid,
         user: { uid, name: req.auth.user.display_name, email: req.auth.user.email },
         conversationId,
         repoPath,
-        space,
-        repo,
+        space: info.space,
+        repo: info.repo,
       });
       res.json({ ok: true });
     } catch (err) {
@@ -611,6 +629,70 @@ export function aiRoutes(pool, authenticate) {
       res.json(result);
     } catch (err) {
       res.status(err.status || 502).json({ message: err.message || 'Transcription failed' });
+    }
+  });
+
+  // --- github.com workspace targets ----------------------------------------------
+
+  // GET /ai/github/repos — the authenticated user's repositories on github.com,
+  // resolved via their stored PAT (Settings → GitHub). Always responds 200 with
+  // an envelope so an invalid PAT never trips the client's global 401 handler:
+  //   { configured, valid, repos: [{full_name, private, description, updated_at}], message? }
+  api.get('/ai/github/repos', auth, async (req, res) => {
+    const uid = req.auth.user.uid;
+    const pat = await getDecryptedSecret(uid, 'github').catch(() => null);
+    if (!pat) {
+      res.json({
+        configured: false,
+        valid: false,
+        repos: [],
+        message: 'No GitHub personal access token configured. Add one under Settings → GitHub.',
+      });
+      return;
+    }
+    const headers = {
+      Authorization: `Bearer ${pat}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'Nixre-Agent',
+    };
+    try {
+      const repos = [];
+      for (let page = 1; page <= 5; page++) {
+        const url = new URL('/user/repos', process.env.GITHUB_API_URL || 'https://api.github.com');
+        url.searchParams.set('per_page', '100');
+        url.searchParams.set('page', String(page));
+        url.searchParams.set('sort', 'updated');
+        url.searchParams.set('visibility', 'all');
+        url.searchParams.set('affiliation', 'owner,collaborator,organization_member');
+        const resp = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+        if (resp.status === 401 || resp.status === 403) {
+          res.json({
+            configured: true,
+            valid: false,
+            repos: [],
+            message: 'The stored GitHub token was rejected or lacks repo access. Update it in Settings → GitHub.',
+          });
+          return;
+        }
+        if (!resp.ok) {
+          throw new Error(`GitHub API ${resp.status}`);
+        }
+        const rows = await resp.json();
+        for (const r of Array.isArray(rows) ? rows : []) {
+          repos.push({
+            full_name: r.full_name,
+            private: Boolean(r.private),
+            description: typeof r.description === 'string' ? r.description : '',
+            updated_at: r.updated_at || '',
+          });
+        }
+        if (!Array.isArray(rows) || rows.length < 100) break;
+      }
+      res.json({ configured: true, valid: true, repos });
+    } catch (err) {
+      console.error('[ai] github repo list failed:', err.message);
+      res.status(502).json({ message: 'Could not reach github.com to list repositories.' });
     }
   });
 

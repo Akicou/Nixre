@@ -229,6 +229,9 @@ function handleAi(path: string, method: string, body: any): Response | null {
   if (!/^\/ai\//.test(path)) return null;
 
   if (path === '/ai/profile' && method === 'GET') return json(200, aiMockProfile());
+  if (path === '/ai/github/repos' && method === 'GET') {
+    return json(200, { configured: true, valid: true, repos: [] });
+  }
   if (path === '/ai/profile' && method === 'PUT') {
     // Legacy single-profile shape: routes into the active provider.
     if (aiMockProviders.length === 0) return json(200, { ...aiMockProfile(), validated: false });
