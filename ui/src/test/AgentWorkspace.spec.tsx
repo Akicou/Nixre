@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AgentWorkspace } from '../pages/AgentWorkspace';
-import { installSyncFetchMock, syncMockReset, lastAiJobBody } from './syncMock';
+import { installSyncFetchMock, syncMockReset, syncMockDb, lastAiJobBody } from './syncMock';
 
 installSyncFetchMock();
 
@@ -95,6 +95,29 @@ describe('AgentWorkspace', () => {
     await waitFor(() => {
       expect(screen.getByText('acme/website')).toBeInTheDocument();
     });
+  });
+
+  it('auto-reattaches to a running session on load', async () => {
+    syncMockDb.conversations.push({
+      id: 'conv_run',
+      repoPath: 'acme/website',
+      title: 'running task',
+      messages: [{ id: 'u1', role: 'user', content: 'carry on', createdAt: 1 }],
+      updatedAt: Date.now(),
+      run_status: 'running',
+      run_queue: [],
+    });
+    render(
+      <MemoryRouter initialEntries={['/agent']}>
+        <AgentWorkspace />
+      </MemoryRouter>,
+    );
+
+    // Cold-load resume: the running session is opened and followed with no
+    // user interaction — the transcript replaces the empty hero.
+    await waitFor(() => expect(screen.getByText(/carry on/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/15 tests passing/i)).toBeInTheDocument());
+    expect(screen.queryByText('Plan a feature')).not.toBeInTheDocument();
   });
 
   it('does not stop the server job when the workspace unmounts', async () => {

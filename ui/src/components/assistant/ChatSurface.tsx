@@ -18,7 +18,8 @@ import {
   Settings2,
   FolderGit2,
   ArrowUpRight,
-  MessageSquareWarning
+  MessageSquareWarning,
+  TriangleAlert
 } from 'lucide-react';
 import { getPlugin } from '../../lib/plugins';
 import { isRealAi, type AssistantProviderProfile } from '../../lib/assistantProfiles';
@@ -114,6 +115,9 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   const [input, setInput] = useState('');
   const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
   const [streaming, setStreaming] = useState(false);
+  // Server-recorded failure for this conversation (run_error) — surfaced with
+  // a Continue affordance so dead turns aren't silent.
+  const [runError, setRunError] = useState<string | null>(null);
   const [workingModel, setWorkingModel] = useState(profile.model);
   const [workingReasoning, setWorkingReasoning] = useState(profile.reasoningLevel);
   const [mode, setMode] = useState<ModeId>('ask');
@@ -191,9 +195,23 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     pendingConvRef.current = null;
     setConversations([]);
     setCurrentId(null);
+    currentIdRef.current = null;
     setMessages([]);
-    listConversations(repoPath || undefined).then(setConversations).catch(() => setConversations([]));
+    // Cold-load resume: server-side turns survive browser death, so a
+    // conversation may still be running for this repo — reopen it instead of
+    // showing an empty surface with no trace of the run.
+    listConversations(repoPath || undefined)
+      .then(list => {
+        setConversations(list);
+        if (currentIdRef.current || pendingConvRef.current) return;
+        const running = list.find(
+          c => c.runStatus === 'running' || c.runStatus === 'stopping',
+        );
+        if (running) loadConversation(running);
+      })
+      .catch(() => setConversations([]));
     if (variant === 'workspace') listConversations().then(setAllConversations).catch(() => setAllConversations([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoPath, variant]);
 
   useEffect(() => {
@@ -214,11 +232,13 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
       messagesRef.current = next;
       setMessages(next);
       setStreaming(ev.conversation.run_status === 'running' || ev.conversation.run_status === 'stopping');
+      setRunError(ev.conversation.run_error ?? null);
       return;
     }
     if (ev.type === 'status') {
       const running = ev.run_status === 'running' || ev.run_status === 'stopping';
       setStreaming(running);
+      setRunError(ev.error ?? null);
       if (!running) refreshConversations();
       return;
     }
@@ -237,16 +257,25 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     const ac = new AbortController();
     followAbortRef.current = ac;
     setStreaming(true);
+    // Permanent reconnect loop — same contract as the agent workspace:
+    // while the DB says the turn is running, keep resubscribing no matter
+    // how many times the connection drops.
     const follow = async () => {
-      try {
-        await subscribeAgentJob(id, applyStreamEvent, ac.signal);
-      } catch (err: unknown) {
-        if ((err as Error)?.name === 'AbortError') return;
-      }
-      if (ac.signal.aborted) return;
+      let pollMs = 2000;
       while (!ac.signal.aborted) {
+        try {
+          await subscribeAgentJob(id, applyStreamEvent, ac.signal);
+        } catch (err: unknown) {
+          if ((err as Error)?.name === 'AbortError') return;
+        }
+        if (ac.signal.aborted) return;
+        await new Promise(r => setTimeout(r, pollMs));
+        if (ac.signal.aborted) return;
         const conv = await getConversation(id).catch(() => undefined);
-        if (!conv) break;
+        if (!conv) {
+          pollMs = Math.min(pollMs * 2, 15000);
+          continue;
+        }
         setMessages(conv.messages);
         const running = conv.runStatus === 'running' || conv.runStatus === 'stopping';
         setStreaming(running);
@@ -254,13 +283,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           refreshConversations();
           return;
         }
-        await new Promise(r => setTimeout(r, 2000));
-        try {
-          await subscribeAgentJob(id, applyStreamEvent, ac.signal);
-          return;
-        } catch (err: unknown) {
-          if ((err as Error)?.name === 'AbortError') return;
-        }
+        pollMs = 2000;
       }
     };
     void follow();
@@ -295,6 +318,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     setInput('');
     setPendingImages([]);
     setStreaming(false);
+    setRunError(null);
   };
 
   const loadConversation = (conv: Conversation) => {
@@ -303,6 +327,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     currentIdRef.current = conv.id;
     setMessages(conv.messages);
     setInput('');
+    setRunError(conv.runError ?? null);
     attachFollow(conv.id);
   };
 
@@ -319,6 +344,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
   const sendToJob = async (prompt: string, images: ChatImage[] = [], opts: { kind?: 'env_audit' } = {}) => {
     if (!realAi) return;
     setStreaming(true);
+    setRunError(null);
     try {
       const result = await startAgentJob({
         conversationId: currentIdRef.current,
@@ -490,6 +516,13 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
 
   const workspace = variant === 'workspace';
   const heroMode = workspace && realAi && messages.length === 0;
+
+  // Dead-turn surfacing, same as the agent workspace.
+  const bannerError = !streaming ? runError ?? current?.runError ?? null : null;
+  const continueRun = () => {
+    setRunError(null);
+    void sendToJob('Continue');
+  };
 
   const effortBadge = (r: string) =>
     r === 'none' ? '—' : r.charAt(0).toUpperCase() + r.slice(1);
@@ -988,6 +1021,24 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           )}
           </div>
         </div>
+
+        {/* Dead-run banner — the server recorded why this turn ended */}
+        {bannerError && (
+          <div className="flex items-center gap-2 px-3 sm:px-4 py-2 border-b border-border-subtle bg-feedback-error-bg text-feedback-error-text">
+            <TriangleAlert className="w-3.5 h-3.5 shrink-0" />
+            <span className="flex-1 min-w-0 truncate text-[11px]" title={bannerError}>
+              {bannerError}
+            </span>
+            <button
+              type="button"
+              onClick={continueRun}
+              title="Start a new turn from where this one left off"
+              className="shrink-0 text-[11px] px-2.5 py-1 rounded-md border border-feedback-error-border hover:bg-surface-subtle transition min-h-9"
+            >
+              Continue
+            </button>
+          </div>
+        )}
 
         {/* Messages */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto">

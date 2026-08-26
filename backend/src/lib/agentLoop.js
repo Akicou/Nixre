@@ -64,7 +64,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
 
   let errored = null;
   let aborted = false;
-  let afterTools = false;
+  let lastRoundAttempts = 1;
 
   const streamStep = () =>
     new Promise(resolve => {
@@ -177,7 +177,10 @@ export async function runAgentLoop(opts, emit, deps = {}) {
       ({ calls, text } = await streamStep());
       if (aborted) break;
       if (!errored) break;
-      if (afterTools && attempt < MAX_POST_TOOL_RETRIES) {
+      // Every round may retry, not just post-tool ones: provider streams fail
+      // transiently on the opening request too (stalls, dropped connections),
+      // and one bad round must not silently end the whole turn.
+      if (attempt < MAX_POST_TOOL_RETRIES) {
         attempt++;
         emit({ type: 'stream_retry' });
         continue;
@@ -185,7 +188,9 @@ export async function runAgentLoop(opts, emit, deps = {}) {
       break;
     }
 
-    if (aborted || errored) break;
+    if (aborted) break;
+    lastRoundAttempts = attempt + 1;
+    if (errored) break;
     if (!useTools || calls.length === 0) break;
 
     thread.push({
@@ -241,14 +246,12 @@ export async function runAgentLoop(opts, emit, deps = {}) {
         ...(steer.images && steer.images.length > 0 ? { images: steer.images } : {}),
       });
     }
-    afterTools = true;
   }
 
   if (errored) {
-    const err = new Error(
-      afterTools ? `${errored} (failed after ${MAX_POST_TOOL_RETRIES + 1} attempts)` : errored,
+    throw new Error(
+      lastRoundAttempts > 1 ? `${errored} (failed after ${lastRoundAttempts} attempts)` : errored,
     );
-    throw err;
   }
   if (aborted) {
     const err = new Error('Turn stopped');

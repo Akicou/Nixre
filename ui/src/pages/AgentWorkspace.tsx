@@ -23,6 +23,7 @@ import {
   Pencil,
   Undo2,
   MessageSquareWarning,
+  TriangleAlert,
 } from 'lucide-react';
 import { api, type GithubRepoInfo } from '../lib/api';
 import { classifyWorkspacePath, workspaceLabel, UNRESTRICTED_PATH } from '../lib/workspaces';
@@ -131,6 +132,9 @@ export const AgentWorkspace: React.FC = () => {
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const [trace, setTrace] = useState<SessionTraceEntry[]>([]);
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
+  // Last failure recorded by the server for this conversation (run_error).
+  // Rendered with a Continue affordance — without it a dead turn is invisible.
+  const [runError, setRunError] = useState<string | null>(null);
 
   // Repo picker: search + source filter + lazily loaded GitHub repos.
   type PickerFilter = 'all' | 'nixre' | 'github';
@@ -350,6 +354,27 @@ export const AgentWorkspace: React.FC = () => {
     refreshSessions();
   }, [refreshSessions]);
 
+  // Cold-load resume: a server-side turn keeps running after the browser dies,
+  // but nothing here used to reattach to it — the page rendered the empty
+  // hero as if nothing was started. On first load, jump into the newest
+  // running session so it is visible and live-followed again.
+  const autoResumedRef = useRef(false);
+  useEffect(() => {
+    listConversations()
+      .then(convs => {
+        setAllConversations(convs);
+        if (autoResumedRef.current || currentIdRef.current) return;
+        const running = convs.find(
+          c => c.runStatus === 'running' || c.runStatus === 'stopping',
+        );
+        if (!running) return;
+        autoResumedRef.current = true;
+        openConversation(running);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const applyStreamEvent = useCallback((ev: JobStreamEvent) => {
     if (ev.type === 'heartbeat' || ev.type === 'usage') return;
     if (ev.type === 'snapshot') {
@@ -364,6 +389,7 @@ export const AgentWorkspace: React.FC = () => {
       const running =
         ev.conversation.run_status === 'running' || ev.conversation.run_status === 'stopping';
       setStreaming(running);
+      setRunError(ev.conversation.run_error ?? null);
       messagesRef.current = next;
       return;
     }
@@ -376,6 +402,7 @@ export const AgentWorkspace: React.FC = () => {
     if (ev.type === 'status') {
       const running = ev.run_status === 'running' || ev.run_status === 'stopping';
       setStreaming(running);
+      setRunError(ev.error ?? null);
       if (!running) refreshSessions();
       return;
     }
@@ -396,16 +423,27 @@ export const AgentWorkspace: React.FC = () => {
     const ac = new AbortController();
     followAbortRef.current = ac;
     setStreaming(true);
+    // Permanent reconnect loop: while the DB says the turn is still running,
+    // never stop resubscribing — mobile wakes, Brave restarts and flaky
+    // networks must not strand a live agent as a frozen spinner.
     const follow = async () => {
-      try {
-        await subscribeAgentJob(id, applyStreamEvent, ac.signal);
-      } catch (err: unknown) {
-        if ((err as Error)?.name === 'AbortError') return;
-      }
-      if (ac.signal.aborted) return;
+      let pollMs = 2000;
       while (!ac.signal.aborted) {
+        try {
+          await subscribeAgentJob(id, applyStreamEvent, ac.signal);
+        } catch (err: unknown) {
+          if ((err as Error)?.name === 'AbortError') return;
+        }
+        if (ac.signal.aborted) return;
+        // Stream ended — either the turn finished or the connection did.
+        await new Promise(r => setTimeout(r, pollMs));
+        if (ac.signal.aborted) return;
         const conv = await getConversation(id).catch(() => undefined);
-        if (!conv) break;
+        if (!conv) {
+          // Unreachable right now (network flap) — back off and retry forever.
+          pollMs = Math.min(pollMs * 2, 15000);
+          continue;
+        }
         setMessages(conv.messages);
         const running = conv.runStatus === 'running' || conv.runStatus === 'stopping';
         setStreaming(running);
@@ -413,13 +451,7 @@ export const AgentWorkspace: React.FC = () => {
           refreshSessions();
           return;
         }
-        await new Promise(r => setTimeout(r, 2000));
-        try {
-          await subscribeAgentJob(id, applyStreamEvent, ac.signal);
-          return;
-        } catch (err: unknown) {
-          if ((err as Error)?.name === 'AbortError') return;
-        }
+        pollMs = 2000;
       }
     };
     void follow();
@@ -477,10 +509,22 @@ export const AgentWorkspace: React.FC = () => {
     : modelOptions[0] ?? workingModel;
   const empty = messages.length === 0 && !currentId;
 
+  // Dead-turn surfacing: a stored server-side failure for this conversation
+  // ("Job lost on core restart", provider stall, …). Hidden while streaming —
+  // a fresh successful turn supersedes an old failure.
+  const currentRunError =
+    runError ?? allConversations.find(c => c.id === currentId)?.runError ?? null;
+  const bannerError = !streaming && !empty ? currentRunError : null;
+  const continueRun = () => {
+    setRunError(null);
+    void sendToJob('Continue');
+  };
+
   // --- turn loop -----------------------------------------------------------
   const sendToJob = async (prompt: string, images: ChatImage[] = [], opts: { kind?: 'env_audit' } = {}) => {
     if (!realAi || !profile || !activeRepo) return;
     setStreaming(true);
+    setRunError(null);
     try {
       const result = await startAgentJob({
         conversationId: currentIdRef.current,
@@ -634,6 +678,7 @@ export const AgentWorkspace: React.FC = () => {
     setQueued([]);
     queuedRef.current = [];
     setStreaming(false);
+    setRunError(null);
     setTimeout(() => textareaRef.current?.focus(), 50);
   };
 
@@ -650,6 +695,7 @@ export const AgentWorkspace: React.FC = () => {
     setInput('');
     setQueued([]);
     queuedRef.current = [];
+    setRunError(c.runError ?? null);
     attachFollow(c.id);
   };
 
@@ -1351,6 +1397,25 @@ export const AgentWorkspace: React.FC = () => {
                 New
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Dead-run banner — the server recorded why this turn ended */}
+        {bannerError && (
+          <div className="flex items-center gap-2 px-3 sm:px-5 py-2 border-b border-border-subtle bg-feedback-error-bg text-feedback-error-text">
+            <TriangleAlert className="w-3.5 h-3.5 shrink-0" />
+            <span className="flex-1 min-w-0 truncate text-[11px]" title={bannerError}>
+              {bannerError}
+            </span>
+            <button
+              type="button"
+              onClick={continueRun}
+              disabled={!activeRepo}
+              title="Start a new turn from where this one left off"
+              className="shrink-0 text-[11px] px-2.5 py-1 rounded-md border border-feedback-error-border hover:bg-surface-subtle transition disabled:opacity-40 min-h-9"
+            >
+              Continue
+            </button>
           </div>
         )}
 

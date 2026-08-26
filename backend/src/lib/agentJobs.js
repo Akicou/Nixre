@@ -30,7 +30,6 @@ import {
 } from './chatApply.js';
 
 const jobs = new Map();
-const PERSIST_DEBOUNCE_MS = 500;
 
 function queueId() {
   return uid('q');
@@ -159,14 +158,20 @@ function flushPersist(pool, job, extra) {
   });
 }
 
-function debouncePersist(pool, job) {
-  if (job.persistTimer) clearTimeout(job.persistTimer);
+// Streaming text/reasoning checkpoints. A fixed cadence instead of a trailing
+// debounce: a debounce timer that resets on every token can postpone the write
+// for a whole uninterrupted stream, so a hard core death loses minutes of
+// transcript. With this cadence at most ~500ms of progress is ever unflushed.
+const PERSIST_CADENCE_MS = 500;
+
+function checkpointPersist(pool, job) {
+  if (job.persistTimer) return;
   job.persistTimer = setTimeout(() => {
     job.persistTimer = null;
     persistMessages(pool, job).catch(err => {
       console.error('[agentJobs] persist failed:', err.message);
     });
-  }, PERSIST_DEBOUNCE_MS);
+  }, PERSIST_CADENCE_MS);
 }
 
 function emitJob(pool, job, ev) {
@@ -185,7 +190,7 @@ function emitJob(pool, job, ev) {
     'stream_retry',
   ]);
   if (immediate.has(ev.type)) flushPersist(pool, job);
-  else if (ev.type === 'message_text' || ev.type === 'reasoning') debouncePersist(pool, job);
+  else if (ev.type === 'message_text' || ev.type === 'reasoning') checkpointPersist(pool, job);
 }
 
 async function popQueueKind(pool, job, kind) {
