@@ -218,7 +218,7 @@ const aiMockProfile = () => {
   return {
     ...active,
     model: active.defaultModel,
-    models: active.enabledModels.length > 0 ? active.enabledModels : active.models,
+    models: active.enabledModels,
     providers: aiMockProviders,
     reasoningLevel: (active as any).reasoningLevel ?? 'none',
     interleavedReasoning: (active as any).interleavedReasoning ?? false,

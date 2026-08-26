@@ -102,21 +102,26 @@ async function loadPermissions(pool, userId, repoPath) {
   return {};
 }
 
+// The provider row a job runs on: the one whose enabled/default models
+// contain the requested model, or the active provider when no model was
+// requested. A requested model that no provider enables is rejected instead
+// of silently executing on whatever provider happens to be active.
 async function loadProvider(pool, userId, model) {
   const { rows } = await pool.query(
     'SELECT * FROM ai_providers WHERE user_uid = $1 ORDER BY created',
     [userId],
   );
   if (rows.length === 0) return null;
-  if (model) {
-    const owner = rows.find(
-      r =>
-        (Array.isArray(r.enabled_models) && r.enabled_models.includes(model)) ||
-        r.default_model === model,
-    );
-    if (owner) return owner;
+  if (!model) return rows.find(r => r.is_default) ?? rows[0];
+  const owner = rows.find(
+    r =>
+      (Array.isArray(r.enabled_models) && r.enabled_models.includes(model)) ||
+      r.default_model === model,
+  );
+  if (!owner) {
+    throw new Error(`'${model}' is not enabled on any AI provider. Enable it under Plugins → Nixre Assistant.`);
   }
-  return rows.find(r => r.is_default) ?? rows[0];
+  return owner;
 }
 
 function broadcast(job, evt) {

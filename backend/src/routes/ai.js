@@ -85,6 +85,15 @@ function rowToProvider(row) {
   };
 }
 
+// Sensible first selection for a new provider row: the default model plus
+// the first few cached ones, deduped and capped.
+function seedEnabled(defaultModel, cache) {
+  return [defaultModel, ...(Array.isArray(cache) ? cache : [])]
+    .filter(m => typeof m === 'string' && m)
+    .filter((m, i, all) => all.indexOf(m) === i)
+    .slice(0, 5);
+}
+
 async function listRows(pool, uid) {
   const { rows } = await pool.query(
     'SELECT * FROM ai_providers WHERE user_uid = $1 ORDER BY created',
@@ -110,12 +119,13 @@ async function migrateLegacy(pool, uid) {
 
   const def = PROVIDERS[legacy.provider] ?? PROVIDERS.custom;
   const cache = Array.isArray(legacy.model_cache) ? legacy.model_cache : [];
+  const enabled = seedEnabled(legacy.model, cache);
   const now = Date.now();
   await pool.query(
     `INSERT INTO ai_providers
        (user_uid, label, provider, base_url, api_key_enc, key_mask, validated_at,
         default_model, model_cache, model_cache_at, enabled_models, is_default, created, updated)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$9::jsonb,TRUE,$11,$11)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb,TRUE,$12,$12)`,
     [
       uid,
       def.label || legacy.provider,
@@ -127,25 +137,30 @@ async function migrateLegacy(pool, uid) {
       legacy.model,
       JSON.stringify(cache),
       legacy.model_cache_at,
+      JSON.stringify(enabled),
       now,
     ],
   );
 }
 
-// Resolve the provider row a chat request should use: the default, or the
-// one whose enabled/default models contain the requested model.
+// Resolve the provider row a chat request should use: the one whose enabled/
+// default models contain the requested model, or just the active provider when
+// no model is given. Returns { row } on success or { error } — a requested
+// model that no provider enables must be rejected, not silently executed by
+// whatever provider happens to be active.
 async function resolveForChat(pool, uid, model) {
   const rows = await listRows(pool, uid);
-  if (rows.length === 0) return null;
-  if (model) {
-    const owner = rows.find(
-      r =>
-        (Array.isArray(r.enabled_models) && r.enabled_models.includes(model)) ||
-        r.default_model === model,
-    );
-    if (owner) return owner;
+  if (rows.length === 0) {
+    return { error: 'No AI provider configured. Add one in Plugins.' };
   }
-  return rows.find(r => r.is_default) ?? rows[0];
+  if (!model) return { row: rows.find(r => r.is_default) ?? rows[0] };
+  const owner = rows.find(
+    r =>
+      (Array.isArray(r.enabled_models) && r.enabled_models.includes(model)) ||
+      r.default_model === model,
+  );
+  if (owner) return { row: owner };
+  return { error: `'${model}' is not enabled on any AI provider. Enable it under Plugins → Nixre Assistant.` };
 }
 
 async function fetchAndCacheModels(pool, row, apiKey) {
@@ -236,7 +251,7 @@ export function aiRoutes(pool, authenticate) {
         validatedAt,
         String(req.body?.defaultModel || modelCache[0] || ''),
         JSON.stringify(modelCache), now,
-        JSON.stringify(modelCache.slice(0, 5)), // sensible initial subset
+        JSON.stringify(seedEnabled(req.body?.defaultModel || modelCache[0], modelCache)),
         isDefault, now,
       ],
     );
@@ -386,7 +401,7 @@ export function aiRoutes(pool, authenticate) {
     res.json({
       ...p,
       model: p.defaultModel,
-      models: p.enabledModels.length > 0 ? p.enabledModels : p.models,
+      models: p.enabledModels,
       providers: rows.map(rowToProvider),
     });
   });
@@ -423,7 +438,9 @@ export function aiRoutes(pool, authenticate) {
           apiKey ? maskSecret(apiKey) : null, now,
           String(req.body?.model || modelCache[0] || ''),
           JSON.stringify(modelCache), now,
-          JSON.stringify(Array.isArray(req.body?.models) && req.body.models.length > 0 ? req.body.models : modelCache.slice(0, 5)),
+          JSON.stringify(Array.isArray(req.body?.models) && req.body.models.length > 0
+            ? req.body.models.filter(m => typeof m === 'string')
+            : seedEnabled(req.body?.model || modelCache[0], modelCache)),
           now],
       );
       const p = rowToProvider(created[0]);
@@ -445,7 +462,7 @@ export function aiRoutes(pool, authenticate) {
     res.json({
       ...p,
       model: p.defaultModel,
-      models: p.enabledModels.length > 0 ? p.enabledModels : p.models,
+      models: p.enabledModels,
       validated: p.validatedAt != null,
     });
   });
@@ -456,11 +473,12 @@ export function aiRoutes(pool, authenticate) {
     const uid = req.auth.user.uid;
     await migrateLegacy(pool, uid);
     const model = String(req.body?.model || '');
-    const row = await resolveForChat(pool, uid, model);
-    if (!row) {
-      res.status(400).json({ message: 'No AI provider configured. Add one in Plugins.' });
+    const resolved = await resolveForChat(pool, uid, model);
+    if (resolved.error) {
+      res.status(400).json({ message: resolved.error });
       return;
     }
+    const row = resolved.row;
     const key = row.api_key_enc ? decryptSecret(row.api_key_enc) : null;
     const def = PROVIDERS[row.provider];
     if (!key && def?.local !== true) {
