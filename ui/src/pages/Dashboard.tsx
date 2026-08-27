@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { api, Repository, Space, User } from '../lib/api';
 import { Avatar } from '../components/Avatar';
+import { DeploymentsOverview } from '../components/DeploymentsOverview';
 
 interface DashboardProps {
   user: User | null;
@@ -92,6 +93,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
               className="w-full pl-9 pr-4 py-2 rounded-md bg-surface-canvas border border-border-subtle text-txt-primary placeholder:text-txt-tertiary text-sm focus:border-brand transition"
             />
           </div>
+
+          <DeploymentsOverview />
 
           {loading ? (
             <div className="py-16 text-center text-sm text-txt-tertiary">Loading repositories...</div>

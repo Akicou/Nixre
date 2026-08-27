@@ -15,6 +15,7 @@ import {
   Pencil,
   ArrowLeft,
   FileCode,
+  Rocket,
   Settings
 } from 'lucide-react';
 import { api, Repository, TreeEntry, Commit, Branch, PullRequest, CommitDetail } from '../lib/api';
@@ -321,6 +322,14 @@ export const RepoView: React.FC = () => {
           <GitBranch className="w-4 h-4" />
           <span>Branches ({branches.length})</span>
         </button>
+
+        <Link
+          to={`/${space}/${repoUid}/deployments`}
+          className="flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 border-transparent text-txt-secondary hover:text-txt-primary -mb-px shrink-0 whitespace-nowrap transition"
+        >
+          <Rocket className="w-4 h-4" />
+          <span>Deployments</span>
+        </Link>
 
         <button
           onClick={() => { setSearchParams({ tab: 'settings' }); }}

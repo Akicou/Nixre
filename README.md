@@ -15,6 +15,7 @@ Nixre runs its own backend (nixre-core, Node + PostgreSQL), its own git storage 
 - **Spaces**: multi-tenant workspaces with membership-based access control.
 - **Personal access tokens and SSH keys**: mint PATs (returned once, stored hashed) and manage SSH public keys with fingerprints.
 - **Plugin system**: bundled plugins stay inert until enabled. The Nixre Assistant is an AI engineering copilot. Plugin state is account-scoped and server-persisted.
+- **Deployments**: ship any root-directory of a repo as a Docker service (you bring the Dockerfile — Nixre never invents the build). Push-to-branch auto-deploys with automatic fallback to the last healthy release, live build/deploy logs over SSE, Railway-style encrypted env vars, per-service CPU/RAM limits with live usage bars, HTTP request logs that preserve failures by status code by default, uptime/downtime charts, and custom domains routed through a central proxy port (`:3003`) with copy-paste DNS guidance for host Caddy/Nginx or Cloudflare Tunnel.
 
 Plugins are gated twice: the operator enables a plugin for the instance, and each user toggles it on from **Plugins** (`/plugins`). Every plugin is disabled by default.
 
@@ -122,6 +123,53 @@ git.yourdomain.com {
 ```
 
 Restart Caddy (`sudo systemctl restart caddy`). It completes the ACME HTTP-01 challenge through the Sunrise box and serves a trusted certificate automatically.
+
+## Deployments (Docker apps from your repos)
+
+Deploy any subdirectory of a hosted repo as a long-running service. **You bring the Dockerfile** — Nixre only detects and builds what you point it at, so a monorepo can ship many services from one repository.
+
+### How it works
+
+1. Open a repo → **Deployments** tab → *New service*.
+2. Pick the **root directory**, hit **Detect Dockerfiles**, choose one, set the container port, CPU/RAM limits, and env vars.
+3. Every push to the watched branch auto-deploys (`auto_deploy` per service), or deploy manually at any ref/sha.
+4. Builds stream live over SSE; releases are blue/green — the new container must answer health probes before it receives traffic. **A failed build/release never touches the serving container**: traffic keeps flowing on the previous release while a red banner warns you about the failure. From history you can inspect logs, redeploy, roll back to an older healthy release, or delete records.
+5. On restart (server reboot included) nixre-core reconciles state and recreates service containers from their stored images — `restart: unless-stopped` plus a boot sweep mean deployments come back up with Nixre itself.
+
+### Routing public traffic
+
+App containers are never port-published. They sit on core's docker network behind a central reverse proxy inside nixre-core on `DEPLOY_PROXY_PORT` (**3003** default, published to loopback in compose). Route your edge to it:
+
+- **Host Caddy / Nginx** — add a DNS A record `app.example.com → <server-ip>`, then a host block like
+  ```
+  app.example.com {
+      reverse_proxy 127.0.0.1:3003
+  }
+  ```
+  (TLS terminates at your host Caddy with automatic Let's Encrypt.)
+- **Cloudflare Tunnel** — run the optional profile:
+  ```
+  CLOUDFLARE_TUNNEL_TOKEN=... docker compose --profile tunnels up -d nixre-tunnel
+  ```
+  then map a public hostname to `http://nixre-core:3003`. The UI generates exact CNAME/ingress snippets per domain; every domain card also ships plain-registrar DNS tables.
+
+If you set `DEPLOY_BASE_DOMAIN`, services additionally get automatic addresses: `<name>.<base>` (when unique) and `svc-<id>.<base>`. HTTP request logs are captured at this central hop for every routed response.
+
+### Observability defaults
+
+- **HTTP logs**: method/path/status/duration per request. Failures ≥ `preserve_status_min` (default **400**) are kept 7 days by default; other responses 24 hours — all tunable per service.
+- **Resources**: hard caps via container `NanoCpus`/`Memory`; live CPU % of limit and working-set memory bars sample `docker stats` every ~10s.
+- **Uptime**: an internal prober hits each running service every ~30s and charts green/red buckets (24h/7d/30d views). The dashboard shows the most active deployments across all visible spaces with fleet uptime lanes.
+
+### Configuration knobs
+
+| Env | Default | Purpose |
+|---|---|---|
+| `DEPLOY_PROXY_PORT` | `3003` | Central app-traffic listener (set `0` to disable) |
+| `DEPLOY_PROXY_BIND` | `127.0.0.1` | Compose publish binding for the proxy port |
+| `DEPLOY_BASE_DOMAIN` | — | Enables `<name>` / `svc-<id>` automatic routing |
+| `DEPLOY_HEALTH_TIMEOUT_MS` | `30000` | Max wait for a new release to answer |
+| `DEPLOY_PROBE_MS` / `DEPLOY_METRICS_MS` / `DEPLOY_SWEEP_MS` | `30s` / `10s` / `60s` | Uptime probe, stats sampling, reconcile sweeps |
 
 ## Plugins
 

@@ -11,6 +11,7 @@ import { AdminView } from './pages/AdminView';
 import { Plugins } from './pages/Plugins';
 import { AssistantPage } from './pages/AssistantPage';
 import { AgentWorkspace } from './pages/AgentWorkspace';
+import { DeploymentsPage } from './pages/DeploymentsPage';
 import { Login } from './pages/Login';
 import { Register } from './pages/Register';
 import { api, User } from './lib/api';
@@ -80,6 +81,7 @@ const AppShell: React.FC<{
           <Route path="/plugins" element={currentUser ? <Plugins /> : <Navigate to="/login" />} />
           <Route path="/agent" element={currentUser ? <AgentWorkspace /> : <Navigate to="/login" />} />
           <Route path="/:space/:repo/assistant" element={currentUser ? <AssistantPage /> : <Navigate to="/login" />} />
+          <Route path="/:space/:repo/deployments" element={currentUser ? <DeploymentsPage /> : <Navigate to="/login" />} />
 
           <Route path="/login" element={currentUser ? <Navigate to="/" /> : <Login onLoginSuccess={setCurrentUser} />} />
           <Route path="/register" element={currentUser ? <Navigate to="/" /> : <Register onRegisterSuccess={setCurrentUser} />} />

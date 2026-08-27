@@ -36,6 +36,12 @@ services:
       # Server-side signup kill switch: "true" makes POST /api/v1/register
       # return 403. Toggle via .env + `docker compose up -d nixre-core`.
       NIXRE_REGISTRATION_CLOSED: ${NIXRE_REGISTRATION_CLOSED:-false}
+      # --- Deployments -------------------------------------------------
+      # Central reverse proxy for deployed apps. Public traffic path:
+      #   your edge (host Caddy / Cloudflare Tunnel) -> this port -> container.
+      DEPLOY_PROXY_PORT: ${DEPLOY_PROXY_PORT:-3003}
+      DEPLOY_BASE_DOMAIN: ${DEPLOY_BASE_DOMAIN:-}
+      DEPLOY_HEALTH_TIMEOUT_MS: ${DEPLOY_HEALTH_TIMEOUT_MS:-30000}
     group_add:
       - ${DOCKER_GID:-999}
     volumes:
@@ -44,6 +50,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "127.0.0.1:3002:3002"
+      # App deployments arrive here from your edge (host Caddy block or
+      # Cloudflare Tunnel). 127.0.0.1 keeps it private by default; when the
+      # edge runs on another host, publish it publicly instead.
+      - "${DEPLOY_PROXY_BIND:-127.0.0.1}:${DEPLOY_PROXY_PORT:-3003}:${DEPLOY_PROXY_PORT:-3003}"
     depends_on:
       nixre-db:
         condition: service_healthy
@@ -75,5 +85,20 @@ services:
     volumes:
       - ./ui/dist:/usr/share/caddy
       - ./Caddyfile:/etc/caddy/Caddyfile
+    depends_on:
+      - nixre-core
+
+  # Optional Cloudflare Tunnel for routed deployed apps (and/or the panel):
+  #   docker compose --profile tunnels up -d nixre-tunnel
+  # Set CLOUDFLARE_TUNNEL_TOKEN from the Zero Trust dashboard, then map public
+  # hostnames to http://nixre-core:<DEPLOY_PROXY_PORT> (apps) or the panel.
+  nixre-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: nixre-tunnel
+    profiles: ["tunnels"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       - nixre-core

@@ -1,0 +1,285 @@
+// Deployments UI — wizard flow, failure warning, HTTP log filters, domain
+// guidance, and the dashboard overview section. All hermetic: the api module
+// is mocked wholesale, matching the other page specs.
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+
+const { api } = vi.hoisted(() => ({
+  api: {
+    // dashboard surface (DeploymentsOverview self-hides unless provided)
+    deploymentsOverview: vi.fn(),
+    serviceUptime: vi.fn(),
+    listSpaces: vi.fn(),
+    listRepos: vi.fn(),
+    // deployments page surface
+    getRepo: vi.fn(),
+    listDeployServices: vi.fn(),
+    detectDockerfiles: vi.fn(),
+    createDeployService: vi.fn(),
+    patchDeployService: vi.fn(),
+    deleteDeployService: vi.fn(),
+    listEnvVars: vi.fn(),
+    setEnvVars: vi.fn(),
+    removeEnvVar: vi.fn(),
+    revealEnvVar: vi.fn(),
+    deployService: vi.fn(),
+    cancelDeploymentRun: vi.fn(),
+    listDeployments: vi.fn(),
+    getDeployment: vi.fn(),
+    redeployDeployment: vi.fn(),
+    rollbackDeployment: vi.fn(),
+    deleteDeploymentRecord: vi.fn(),
+    httpLogs: vi.fn(),
+    serviceStats: vi.fn(),
+    listDomains: vi.fn(),
+    addDomain: vi.fn(),
+    removeDomain: vi.fn(),
+  },
+}));
+vi.mock('../lib/api', () => ({ api }));
+vi.mock('../lib/deployEvents', () => ({
+  subscribeDeployEvents: () => () => {},
+}));
+
+import { DeploymentsPage } from '../pages/DeploymentsPage';
+import { DeploymentsOverview } from '../components/DeploymentsOverview';
+
+function mountPage() {
+  return render(
+    <MemoryRouter initialEntries={['/acme/webshop/deployments']}>
+      <Routes>
+        <Route path="/:space/:repo/deployments" element={<DeploymentsPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+const baseService = {
+  id: 12,
+  name: 'web',
+  root_dir: 'apps/web',
+  dockerfile_path: 'Dockerfile',
+  branch: 'main',
+  auto_deploy: true,
+  container_port: 3000,
+  cpu_nano_cpus: 1e9,
+  memory_bytes: 536870912,
+  desired_state: 'running' as const,
+  status: 'running' as const,
+  current_deployment_id: 77,
+  last_failed_deployment_id: null as number | null,
+  preserve_status_min: 400,
+  success_retention_hours: 24,
+  failure_retention_hours: 168,
+  created: 1,
+  updated: 1,
+  current: {
+    id: 77,
+    ref: 'main',
+    sha: 'deadbeef00',
+    short_sha: 'deadbee',
+    message: 'add feature',
+    status: 'live',
+    trigger: 'push',
+    started: 1,
+    finished: 2,
+  },
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.getRepo.mockResolvedValue({ default_branch: 'main' });
+  api.listDeployServices.mockResolvedValue([baseService]);
+  api.serviceStats.mockResolvedValue({
+    limits: { cpu_nano_cpus: 1e9, memory_bytes: 536870912 },
+    latest: null,
+    series: [],
+  });
+  api.serviceUptime.mockResolvedValue({
+    range: '24h',
+    bucket_ms: 900_000,
+    buckets: Array.from({ length: 96 }, (_, i) => ({
+      start: i,
+      state: i === 5 ? 'down' : 'up',
+      latency_ms: 10,
+    })),
+    uptime_pct: 98.9,
+    checks_total: 100,
+  });
+});
+
+describe('DeploymentsPage', () => {
+  it('lists services with live status and opens detail on click', async () => {
+    mountPage();
+    const card = await screen.findByTestId('service-card-web');
+    expect(card.textContent).toContain('deadbee');
+    expect(screen.getAllByTestId(/service-card/)).toHaveLength(1);
+    // Opening detail surfaces live metrics without failure noise
+    fireEvent.click(screen.getByText('web'));
+    expect(await screen.findByText('CPU (of limit)')).toBeInTheDocument();
+    expect(screen.queryByTestId('failure-banner')).toBeNull();
+  });
+
+  it('wizard detects Dockerfiles before offering creation', async () => {
+    api.listDeployServices.mockResolvedValue([]);
+    api.detectDockerfiles.mockResolvedValue({
+      ref: 'main',
+      root_dir: 'apps/web',
+      dockerfiles: [
+        { path: 'apps/web/Dockerfile', file: 'Dockerfile' },
+        { path: 'apps/web/Dockerfile.dev', file: 'Dockerfile.dev' },
+      ],
+    });
+    mountPage();
+    fireEvent.click(await screen.findByText(/Create your first service/i));
+    const rootInput = await screen.findByPlaceholderText('apps/web or .');
+    fireEvent.change(rootInput, { target: { value: 'apps/web' } });
+    fireEvent.click(screen.getByRole('button', { name: /Detect Dockerfiles/i }));
+    const select = await screen.findByRole('combobox');
+    expect(select).toBeInTheDocument();
+    expect(api.detectDockerfiles).toHaveBeenCalledWith('acme', 'webshop', 'apps/web', 'main');
+    expect((select as HTMLSelectElement).value).toBe('Dockerfile');
+  });
+
+  it('blares a failure banner and still shows the serving release', async () => {
+    api.listDeployServices.mockResolvedValue([
+      {
+        ...baseService,
+        last_failed_deployment_id: 90,
+      },
+    ]);
+    mountPage();
+    fireEvent.click(await screen.findByText('web'));
+    const banner = await screen.findByTestId('failure-banner');
+    expect(banner.textContent).toContain('deployment #90 failed');
+    expect(banner.textContent).toContain('#77');
+  });
+
+  it('http log filter chips drive query params and mark failures', async () => {
+    api.httpLogs.mockResolvedValue({
+      logs: [
+        { id: 1, method: 'GET', path: '/ok', status_code: 200, duration_ms: 4, ts: Date.now() },
+        { id: 2, method: 'POST', path: '/boom', status_code: 502, duration_ms: 900, ts: Date.now() },
+      ],
+      counts_24h: { '2xx': 800, '3xx': 3, '4xx': 21, '5xx': 7, none: 1 },
+      preserve: { preserve_status_min: 400, success_retention_hours: 24, failure_retention_hours: 168 },
+    });
+    mountPage();
+    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click(await screen.findByRole('button', { name: 'logs' }));
+
+    // default focus is failures-class 4xx per panel state; assert the call
+    await waitFor(() => expect(api.httpLogs).toHaveBeenCalled());
+
+    const boom = await screen.findByText('/boom');
+    expect(boom.closest('tr')).toHaveClass('bg-red-500/[0.04]');
+    expect(screen.getByText('502')).toBeInTheDocument();
+    const chip5xx = screen.getByRole('button', { name: /5xx · 7/ });
+    fireEvent.click(chip5xx);
+    await waitFor(() =>
+      expect(api.httpLogs).toHaveBeenCalledWith(
+        'acme',
+        'webshop',
+        12,
+        expect.objectContaining({ class: '5xx' }),
+      ),
+    );
+  });
+
+  it('env values are masked until explicitly revealed', async () => {
+    api.listEnvVars.mockResolvedValue([{ key: 'API_TOKEN', updated: 1 }]);
+    api.revealEnvVar.mockResolvedValue({ key: 'API_TOKEN', value: 's3cr3t-value' });
+    mountPage();
+    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click(await screen.findByRole('button', { name: 'env' }));
+    const input = await screen.findByPlaceholderText('••••••••');
+    expect(input).toHaveAttribute('type', 'password');
+    fireEvent.click(screen.getByTitle('Reveal'));
+    await waitFor(() => {
+      expect(api.revealEnvVar).toHaveBeenCalledWith('acme', 'webshop', 12, 'API_TOKEN');
+      expect((screen.getByDisplayValue('s3cr3t-value') as HTMLInputElement).type).toBe('text');
+    });
+  });
+
+  it('domain cards present registrar-ready DNS guidance', async () => {
+    api.listDomains.mockResolvedValue([
+      {
+        id: 3,
+        kind: 'caddy',
+        domain: 'shop.acme.dev',
+        created: 1,
+        guidance: {
+          dns: [{ type: 'A', name: '@', target: '<THIS-SERVER-IP>' }],
+          notes: ['Forward requests for shop.acme.dev to port 3003.'],
+          caddy_snippet: 'shop.acme.dev {\n  reverse_proxy 127.0.0.1:3003\n}',
+        },
+      },
+    ]);
+    mountPage();
+    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click(await screen.findByRole('button', { name: 'domains' }));
+    expect(await screen.findByTestId('domain-card')).toBeInTheDocument();
+    expect(screen.getAllByText(/THIS-SERVER-IP/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/reverse_proxy 127\.0\.0\.1:3003/).length).toBeGreaterThan(0);
+  });
+
+  it('deleting an env var hits the surgical endpoint, not full-replace PUT', async () => {
+    api.listEnvVars
+      .mockResolvedValueOnce([{ key: 'A', updated: 1 }, { key: 'B', updated: 1 }])
+      .mockResolvedValue([{ key: 'B', updated: 1 }]);
+    mountPage();
+    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click(await screen.findByRole('button', { name: 'env' }));
+    await screen.findByText('A');
+    const buttons = screen.getAllByTitle('Delete variable');
+    fireEvent.click(buttons[0]);
+    await waitFor(() => expect(api.removeEnvVar).toHaveBeenCalledWith('acme', 'webshop', 12, 'A'));
+    expect(api.setEnvVars).not.toHaveBeenCalled();
+  });
+});
+
+describe('Dashboard deployments overview', () => {
+  it('shows most active services with fleet counters and uptime lanes', async () => {
+    api.deploymentsOverview.mockResolvedValue([
+      {
+        ...baseService,
+        requests_24h: 1520,
+        alert: false,
+        live: true,
+        space: 'acme',
+        repo_uid: 'webshop',
+      },
+      {
+        ...baseService,
+        id: 13,
+        name: 'api',
+        requests_24h: 40,
+        alert: true,
+        live: false,
+        space: 'acme',
+        repo_uid: 'platform',
+      },
+    ]);
+    render(
+      <MemoryRouter>
+        <DeploymentsOverview />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByTestId('deployments-overview')).toBeInTheDocument();
+    expect(screen.getByTestId('fleet-serving').textContent).toContain('1/2 live');
+    expect(screen.getByTestId('fleet-alerts').textContent).toContain('1 failed deploy');
+    expect(screen.getByText(/1[,.\s]?520 req/)).toBeInTheDocument();
+    expect(screen.getAllByText('acme/platform').length).toBeGreaterThan(0);
+  });
+
+  it('hides itself entirely when the overview endpoint errors out', async () => {
+    api.deploymentsOverview.mockRejectedValue(new Error('nope'));
+    const { container } = render(
+      <MemoryRouter>
+        <DeploymentsOverview />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(container.querySelector('[data-testid="deployments-overview"]')).toBeNull());
+  });
+});
