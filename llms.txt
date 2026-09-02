@@ -164,5 +164,6 @@ Instruct the user to open `http://192.168.1.1` in their browser and add:
 
 - **GitHub Repository:** https://github.com/Akicou/Nixre
 - **Landing Page:** https://nixre.dev
-- **Sample Instance:** https://git.nayhein.com
+- **Live Instance:** https://git.nixre.dev (personal: owner + invited collaborators only, registration closed)
+- **Hosting:** behind a Cloudflare Tunnel (no port forwarding); web/API on `git.nixre.dev`, git SSH on `ssh.nixre.dev` via `cloudflared access ssh` ProxyCommand
 - **License:** MIT

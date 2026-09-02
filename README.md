@@ -1,6 +1,6 @@
 # Nixre
 
-A self-hosted Git forge. Official site: [nixre.dev](https://nixre.dev). Live instance: [git.nayhein.com](https://git.nayhein.com).
+A self-hosted Git forge. Official site: [nixre.dev](https://nixre.dev). Live instance: [git.nixre.dev](https://git.nixre.dev) — a **personal instance**, not an open registration service: it hosts the owner's projects and accounts for invited friends only (registration is closed, see [Closing registrations](#closing-registrations) for the kill switch).
 
 Nixre runs its own backend (nixre-core, Node + PostgreSQL), its own git storage (bare repositories on disk with Smart HTTP transport), and its own auth (argon2 + sessions + passkeys + PATs). It does not depend on Gitness or any other forge.
 
@@ -61,6 +61,15 @@ Alternatively, clone over SSH with a registered key — no prompts, no expiry:
 git clone ssh://git@<host>:3022/<space>/<repo>.git
 ```
 
+If the instance is exposed through a **Cloudflare Tunnel** (the `git.nixre.dev` setup — no port forwarding), port 3022 is not directly reachable. Install `cloudflared` on the client machine and add this to `~/.ssh/config`:
+
+```sshconfig
+Host git.nixre.dev
+    ProxyCommand cloudflared access ssh --hostname ssh.nixre.dev
+```
+
+Then clone as usual: `git clone git@git.nixre.dev:<space>/<repo>.git`.
+
 ### Webhooks
 
 Create one via the API (`POST /api/v1/repos/<space>/<repo>/+/webhooks` with `{url, events}`). The response contains the signing secret, shown once. Deliveries post JSON with `X-Nixre-Event` and `X-Nixre-Signature: sha256=…` (HMAC-SHA256 of the raw body, keyed by the secret) and retry with backoff up to 5 attempts. Inspect history at `GET …/webhooks/<id>/deliveries`.
@@ -73,9 +82,85 @@ node scripts/migrate-from-gitness.js http://old-gitness:3000 <admin-token>
 
 Spaces and repositories migrate with full git history via `clone --mirror`. Users re-register with the same uid to re-own content. PR history and CI pipelines do not migrate.
 
-## Self-hosting guide (custom subdomain + Sunrise Connect Box 3)
+## Self-hosting guide
 
-This section covers exposing Nixre on a custom subdomain (for example `git.yourdomain.com`) behind a Sunrise Connect Box 3 (or a standard ISP router) with automatic Let's Encrypt certificates using Caddy.
+Two ways to expose an instance publicly. **Option A (Cloudflare Tunnel)** is what `git.nixre.dev` uses: no port forwarding and no public IP needed, TLS is handled by Cloudflare, and it works behind any NAT / CGNAT or a router with no forwarding support. **Option B** is the classic setup: A record + port forwarding + Caddy ACME.
+
+### Option A: Cloudflare Tunnel (no port forwarding)
+
+1. **Create the tunnel** (on the Nixre host):
+
+   ```bash
+   cloudflared tunnel login          # browser flow: authorise your Cloudflare account/zone
+   cloudflared tunnel create nixre   # writes ~/.cloudflared/<tunnel-id>.json
+   ```
+
+2. **Ingress config** — `~/.cloudflared/config-nixre.yml`:
+
+   ```yaml
+   tunnel: <tunnel-id>
+   credentials-file: /home/<user>/.cloudflared/<tunnel-id>.json
+
+   ingress:
+     - hostname: git.nixre.dev
+       service: http://localhost:3000
+     - hostname: ssh.nixre.dev
+       service: ssh://localhost:3022
+     - service: http_status:404
+   ```
+
+   `localhost:3000` is the Caddy entrypoint (SPA + `/api/*` and `/git/*` proxied to nixre-core); `localhost:3022` is nixre-ssh.
+
+3. **DNS records.** Either let cloudflared create them:
+
+   ```bash
+   cloudflared tunnel route dns nixre git.nixre.dev
+   cloudflared tunnel route dns nixre ssh.nixre.dev
+   ```
+
+   or add them manually in the Cloudflare dashboard (needed when the login token cannot edit the zone's DNS):
+
+   | Type | Name | Target | Proxy |
+   | --- | --- | --- | --- |
+   | CNAME | `git` | `<tunnel-id>.cfargotunnel.com` | Proxied |
+   | CNAME | `ssh` | `<tunnel-id>.cfargotunnel.com` | Proxied |
+
+4. **Run as a service** — user-level unit `~/.config/systemd/user/cloudflared-nixre.service` (enable linger with `sudo loginctl enable-linger $USER` so it survives logout and starts at boot):
+
+   ```ini
+   [Unit]
+   Description=cloudflared tunnel for nixre.dev
+   After=network-online.target
+   Wants=network-online.target
+
+   [Service]
+   ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config %h/.cloudflared/config-nixre.yml tunnel run
+   Restart=on-failure
+   RestartSec=5
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now cloudflared-nixre
+   ```
+
+5. **SSH clients through the tunnel.** Each client needs `cloudflared` plus this in `~/.ssh/config` (see [Cloning](#cloning)):
+
+   ```sshconfig
+   Host git.nixre.dev
+       ProxyCommand cloudflared access ssh --hostname ssh.nixre.dev
+   ```
+
+6. **Cloudflare SSL/TLS mode:** **Full** is enough — the tunnel authenticates the origin with its credentials, no origin certificate required.
+
+Note: after adding the proxied records, stale local/resolver caches can keep returning NXDOMAIN for a few minutes (TTL is 300s); `ipconfig /flushdns` (Windows) or a browser restart clears it.
+
+### Option B: Direct exposure (port forwarding + Sunrise Connect Box 3)
+
+This section covers exposing Nixre on a custom subdomain (for example `git.yourdomain.com`) behind a Sunrise Connect Box 3 (or a standard ISP router) with automatic Let's Encrypt certificates using Caddy. Skip this if you use Option A.
 
 ### 1. DNS configuration
 
