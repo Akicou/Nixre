@@ -1014,10 +1014,17 @@ class ApiClient {
     repo: string,
     serviceId: number,
     domainId: number,
-  ): Promise<void> {
+  ): Promise<{ ok: boolean; dns?: { removed: boolean; error?: string } }> {
     return this.request(
       `/repos/${space}/${repo}/+/deployments/services/${serviceId}/domains/${domainId}`,
       { method: 'DELETE' },
+    );
+  }
+
+  retryDomainDns(space: string, repo: string, serviceId: number, domainId: number): Promise<DomainEntry> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/domains/${domainId}/dns`,
+      { method: 'POST' },
     );
   }
 
@@ -1151,11 +1158,21 @@ export interface DomainGuidanceDns {
   note?: string;
 }
 
+export interface DomainDnsStatus {
+  auto: boolean;
+  status: 'created' | 'failed' | 'pending' | 'manual';
+  target?: string;
+  zone?: string;
+  existed?: boolean;
+  error?: string;
+}
+
 export interface DomainEntry {
   id: number;
   kind: 'caddy' | 'tunnel';
   domain: string;
   created: number;
+  dns?: DomainDnsStatus;
   guidance: {
     dns: DomainGuidanceDns[];
     notes: string[];

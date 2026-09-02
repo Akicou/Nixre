@@ -475,6 +475,29 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
     }
   };
 
+  const remove = async (d: DomainEntry) => {
+    setErr('');
+    try {
+      const res = await api.removeDomain(space!, repoUid!, service.id, d.id);
+      if (res?.dns && !res.dns.removed && res.dns.error) {
+        setErr(`Domain detached, but its Cloudflare DNS record could not be removed: ${res.dns.error}`);
+      }
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+
+  const retryDns = async (d: DomainEntry) => {
+    setErr('');
+    try {
+      await api.retryDomainDns(space!, repoUid!, service.id, d.id);
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
@@ -503,65 +526,110 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
         </p>
       )}
 
-      {domains.map(d => (
+      {domains.map(d => {
+        const dns = d.dns || { auto: false, status: 'manual' as const };
+        const autoCreated = dns.auto && dns.status === 'created';
+        return (
         <div key={d.id} className="border border-border-subtle rounded-lg p-4 space-y-3" data-testid="domain-card">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Globe className="w-4 h-4 text-brand" />
               <span className="font-mono text-sm text-txt-primary">{d.domain}</span>
               <span className="text-[10px] uppercase tracking-wide font-mono text-txt-tertiary border border-border-subtle rounded px-1.5 py-0.5">{d.kind}</span>
+              {dns.auto && dns.status === 'created' && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-green-500 border border-green-500/30 bg-green-500/10 rounded px-1.5 py-0.5" data-testid="dns-auto-badge">
+                  <Check className="w-3 h-3" /> DNS record auto-managed
+                </span>
+              )}
+              {dns.auto && dns.status === 'failed' && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-red-400 border border-red-400/30 bg-red-400/10 rounded px-1.5 py-0.5">
+                  <AlertTriangle className="w-3 h-3" /> DNS creation failed
+                </span>
+              )}
+              {dns.auto && dns.status === 'pending' && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 border border-amber-400/30 bg-amber-400/10 rounded px-1.5 py-0.5">
+                  <AlertTriangle className="w-3 h-3" /> DNS record pending
+                </span>
+              )}
             </div>
-            <button
-              onClick={async () => {
-                await api.removeDomain(space!, repoUid!, service.id, d.id);
-                load();
-              }}
-              className="text-txt-tertiary hover:text-red-400"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1.5">
+              {dns.auto && (dns.status === 'failed' || dns.status === 'pending') && (
+                <button
+                  onClick={() => retryDns(d)}
+                  className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-border-subtle text-txt-secondary hover:text-txt-primary hover:border-txt-tertiary"
+                >
+                  <RotateCcw className="w-3 h-3" /> Retry DNS
+                </button>
+              )}
+              <button
+                onClick={() => remove(d)}
+                className="text-txt-tertiary hover:text-red-400"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
-          <div>
-            <p className="text-[11px] font-medium text-txt-secondary uppercase tracking-wide mb-1.5">Add these records at your DNS registrar</p>
-            <table className="w-full text-xs font-mono border border-border-subtle rounded divide-y divide-border-subtle">
-              <tbody>
-                {d.guidance.dns.map((rec, i) => (
-                  <tr key={i}>
-                    <td className="px-2.5 py-1.5 text-txt-secondary">{rec.type}</td>
-                    <td className="px-2.5 py-1.5">{rec.name}</td>
-                    <td className="px-2.5 py-1.5 text-txt-secondary">
-                      → {rec.target}
-                      <CopyButton text={rec.target} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {d.guidance.notes?.length ? (
-            <ul className="list-disc pl-5 text-[11px] text-txt-tertiary space-y-0.5">
-              {d.guidance.notes.map((n, i) => (
-                <li key={i} className="whitespace-pre-wrap font-mono">{n}</li>
-              ))}
-            </ul>
-          ) : null}
-
-          {d.guidance.cloudflared_ingress && (
-            <pre className="bg-surface-subtle rounded p-2.5 text-[11px] font-mono overflow-x-auto text-txt-secondary">
-              {JSON.stringify(d.guidance.cloudflared_ingress, null, 2)}
-              <CopyButton text={JSON.stringify(d.guidance.cloudflared_ingress, null, 2)} />
-            </pre>
+          {dns.auto && dns.status === 'failed' && dns.error && (
+            <p className="text-xs text-red-400 font-mono" role="alert">{dns.error}</p>
           )}
-          {d.guidance.caddy_snippet && (
-            <pre className="bg-surface-subtle rounded p-2.5 text-[11px] font-mono overflow-x-auto text-txt-secondary">
-              {d.guidance.caddy_snippet}{' '}
-              <CopyButton text={d.guidance.caddy_snippet} />
-            </pre>
+
+          {autoCreated ? (
+            <div className="text-xs space-y-1" data-testid="dns-auto-note">
+              <p className="text-green-500">
+                CNAME <span className="font-mono">{d.domain}</span> → <span className="font-mono">{dns.target}</span>{' '}
+                (proxied) was created automatically via the Cloudflare API
+                {dns.zone ? ` in zone ${dns.zone}` : ''}{dns.existed ? ' — reused the existing record' : ''}. Nothing to do at your registrar.
+              </p>
+              <p className="text-[11px] text-txt-tertiary">
+                Deleting this domain removes the record again. New records can take ~1 minute to become active on Cloudflare's edge.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div>
+                <p className="text-[11px] font-medium text-txt-secondary uppercase tracking-wide mb-1.5">Add these records at your DNS registrar</p>
+                <table className="w-full text-xs font-mono border border-border-subtle rounded divide-y divide-border-subtle">
+                  <tbody>
+                    {d.guidance.dns.map((rec, i) => (
+                      <tr key={i}>
+                        <td className="px-2.5 py-1.5 text-txt-secondary">{rec.type}</td>
+                        <td className="px-2.5 py-1.5">{rec.name}</td>
+                        <td className="px-2.5 py-1.5 text-txt-secondary">
+                          → {rec.target}
+                          <CopyButton text={rec.target} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {d.guidance.notes?.length ? (
+                <ul className="list-disc pl-5 text-[11px] text-txt-tertiary space-y-0.5">
+                  {d.guidance.notes.map((n, i) => (
+                    <li key={i} className="whitespace-pre-wrap font-mono">{n}</li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {d.guidance.cloudflared_ingress && (
+                <pre className="bg-surface-subtle rounded p-2.5 text-[11px] font-mono overflow-x-auto text-txt-secondary">
+                  {JSON.stringify(d.guidance.cloudflared_ingress, null, 2)}
+                  <CopyButton text={JSON.stringify(d.guidance.cloudflared_ingress, null, 2)} />
+                </pre>
+              )}
+              {d.guidance.caddy_snippet && (
+                <pre className="bg-surface-subtle rounded p-2.5 text-[11px] font-mono overflow-x-auto text-txt-secondary">
+                  {d.guidance.caddy_snippet}{' '}
+                  <CopyButton text={d.guidance.caddy_snippet} />
+                </pre>
+              )}
+            </>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 };

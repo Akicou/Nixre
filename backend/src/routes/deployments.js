@@ -14,6 +14,12 @@ import {
   sanitizeServiceName,
   shortSha,
 } from '../lib/deployPure.js';
+import {
+  cloudflareConfigured,
+  createTunnelCname,
+  deleteDnsRecord,
+  tunnelCnameTarget,
+} from '../lib/cloudflareDns.js';
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DOMAIN_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
@@ -719,12 +725,14 @@ export function deploymentRoutes(pool, authenticate) {
           {
             type: 'CNAME',
             name: domain.split('.').slice(0, domain.endsWith('.cfargotunnel.com') ? 0 : 1).join('.') || '@',
-            target: '<TUNNEL-ID>.cfargotunnel.com',
+            target: cloudflareConfigured() ? tunnelCnameTarget() : '<TUNNEL-ID>.cfargotunnel.com',
             proxied: true,
           },
         ],
         notes: [
-          'Create a Cloudflare Tunnel (Zero Trust → Networks → Tunnels) or run one with compose profile "tunnels".',
+          cloudflareConfigured()
+            ? 'This record is created/removed automatically via the Cloudflare API — no manual step needed.'
+            : 'Create a Cloudflare Tunnel (Zero Trust → Networks → Tunnels) or run one with compose profile "tunnels".',
           'Add a public hostname mapping this domain to http://nixre-core:' + proxyPort + '.',
           'Point DNS at the tunnel with the CNAME shown.',
         ],
@@ -752,11 +760,45 @@ export function deploymentRoutes(pool, authenticate) {
     };
   }
 
+  // DNS status blob for a deploy_domains row. `auto` + status drive the UI
+  // badge; `guidance` stays for manual setups and operator reference.
+  function dnsStatus(row) {
+    if (row.kind !== 'tunnel') return { auto: false, status: 'manual' };
+    if (row.cf_record_id) {
+      return { auto: true, status: 'created', target: tunnelCnameTarget() };
+    }
+    if (cloudflareConfigured()) return { auto: true, status: 'pending', target: tunnelCnameTarget() };
+    return { auto: false, status: 'manual' };
+  }
+
+  // Best-effort: create the proxied CNAME for a tunnel domain via the
+  // Cloudflare API and persist the record ids. Never throws — failures come
+  // back as { auto: true, status: 'failed', error } so the UI can offer retry.
+  async function provisionDns(row, domain) {
+    if (!cloudflareConfigured()) return { auto: false, status: 'manual' };
+    try {
+      const result = await createTunnelCname(domain);
+      await pool.query(
+        'UPDATE deploy_domains SET cf_zone_id = $1, cf_record_id = $2 WHERE id = $3',
+        [result.zoneId, result.recordId, row.id],
+      );
+      return {
+        auto: true,
+        status: 'created',
+        target: tunnelCnameTarget(),
+        zone: result.zoneName,
+        existed: result.existed,
+      };
+    } catch (err) {
+      return { auto: true, status: 'failed', target: tunnelCnameTarget(), error: String(err.message || err) };
+    }
+  }
+
   api.get('/repos/:space/:repo/\\+/deployments/services/:id/domains', auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
     const { rows } = await pool.query(
-      'SELECT id, kind, domain, created FROM deploy_domains WHERE service_id = $1 ORDER BY created',
+      'SELECT id, kind, domain, cf_zone_id, cf_record_id, created FROM deploy_domains WHERE service_id = $1 ORDER BY created',
       [ctx.service.id],
     );
     res.json(rows.map(r => ({
@@ -764,6 +806,7 @@ export function deploymentRoutes(pool, authenticate) {
       kind: r.kind,
       domain: r.domain,
       created: Number(r.created),
+      dns: dnsStatus(r),
       guidance: domainGuidance(r.domain, r.kind),
     })));
   }));
@@ -789,24 +832,74 @@ export function deploymentRoutes(pool, authenticate) {
       'INSERT INTO deploy_domains (service_id, kind, domain, created) VALUES ($1,$2,$3,$4) RETURNING id',
       [ctx.service.id, kind, domain, Date.now()],
     );
+    const row = { id: rows[0].id, kind, domain };
+    const dns = await provisionDns(row, domain);
     await proxyInvalidate();
     res.status(201).json({
       id: Number(rows[0].id),
       kind,
       domain,
+      dns,
       guidance: domainGuidance(domain, kind),
     });
+  }));
+
+  // Retry Cloudflare record creation for a tunnel domain whose first attempt
+  // failed (expired token, zone not visible yet, transient API error, …).
+  api.post('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId/dns', auth, guard(async (req, res) => {
+    const ctx = await requireServiceWriter(req, res);
+    if (!ctx) return;
+    const { rows } = await pool.query(
+      'SELECT id, kind, domain, cf_zone_id, cf_record_id FROM deploy_domains WHERE id = $1 AND service_id = $2',
+      [Number(req.params.domainId), ctx.service.id],
+    );
+    const row = rows[0];
+    if (!row) {
+      res.status(404).json({ message: 'Domain not found' });
+      return;
+    }
+    if (row.kind !== 'tunnel') {
+      res.status(400).json({ message: 'DNS automation only applies to Cloudflare Tunnel domains' });
+      return;
+    }
+    if (!cloudflareConfigured()) {
+      res.status(400).json({ message: 'Cloudflare DNS automation is not configured on this instance' });
+      return;
+    }
+    const dns = await provisionDns(row, row.domain);
+    await proxyInvalidate();
+    res.json({ id: Number(row.id), domain: row.domain, dns, guidance: domainGuidance(row.domain, row.kind) });
   }));
 
   api.delete('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId', auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
+    const { rows } = await pool.query(
+      'SELECT id, kind, domain, cf_zone_id, cf_record_id FROM deploy_domains WHERE id = $1 AND service_id = $2',
+      [Number(req.params.domainId), ctx.service.id],
+    );
+    const row = rows[0];
+    if (!row) {
+      res.status(404).json({ message: 'Domain not found' });
+      return;
+    }
     await pool.query('DELETE FROM deploy_domains WHERE id = $1 AND service_id = $2', [
       Number(req.params.domainId),
       ctx.service.id,
     ]);
     await proxyInvalidate();
-    res.json({ ok: true });
+    // Clean up the Cloudflare record we created. Best effort — the row is
+    // already gone, so a failed delete only surfaces as a warning field.
+    let dns = { removed: false };
+    if (row.cf_zone_id && row.cf_record_id) {
+      try {
+        await deleteDnsRecord(row.cf_zone_id, row.cf_record_id);
+        dns = { removed: true };
+      } catch (err) {
+        dns = { removed: false, error: String(err.message || err) };
+      }
+    }
+    res.json({ ok: true, dns });
   }));
 
   // -------------------------------------------------------------------------

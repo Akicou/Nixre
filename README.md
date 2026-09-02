@@ -1,6 +1,6 @@
 # Nixre
 
-A self-hosted Git forge. Official site: [nixre.dev](https://nixre.dev). Live instance: [git.nayhein.com](https://git.nayhein.com).
+A self-hosted Git forge. Official site: [nixre.dev](https://nixre.dev). Live instance: [git.nixre.dev](https://git.nixre.dev) — a **personal instance**, not an open registration service: it hosts the owner's projects and accounts for invited friends only (registration is closed).
 
 Nixre runs its own backend (nixre-core, Node + PostgreSQL), its own git storage (bare repositories on disk with Smart HTTP transport), and its own auth (argon2 + sessions + passkeys + PATs). It does not depend on Gitness or any other forge.
 
@@ -140,20 +140,16 @@ Deploy any subdirectory of a hosted repo as a long-running service. **You bring 
 
 App containers are never port-published. They sit on core's docker network behind a central reverse proxy inside nixre-core on `DEPLOY_PROXY_PORT` (**3003** default, published to loopback in compose). Route your edge to it:
 
+- **Cloudflare Tunnel (used by git.nixre.dev)** — the tunnel's catch-all ingress forwards every unmatched hostname to the deploy proxy, which routes by Host header. Attach a domain in the repo's **Deployments → Domains** tab and pick *Cloudflare Tunnel*: when `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_TUNNEL_ID` are configured, nixre-core **creates the proxied CNAME (`<domain>` → `<tunnel-id>.cfargotunnel.com`) automatically via the Cloudflare API** and removes it again when the domain is detached. The UI shows the DNS status per domain (auto-managed / failed with retry / manual guidance). The API token needs `Zone:Read` + `DNS:Edit` on every zone users may attach domains from — domains can live in any zone the token can see, there is no base-domain restriction.
 - **Host Caddy / Nginx** — add a DNS A record `app.example.com → <server-ip>`, then a host block like
   ```
   app.example.com {
       reverse_proxy 127.0.0.1:3003
   }
   ```
-  (TLS terminates at your host Caddy with automatic Let's Encrypt.)
-- **Cloudflare Tunnel** — run the optional profile:
-  ```
-  CLOUDFLARE_TUNNEL_TOKEN=... docker compose --profile tunnels up -d nixre-tunnel
-  ```
-  then map a public hostname to `http://nixre-core:3003`. The UI generates exact CNAME/ingress snippets per domain; every domain card also ships plain-registrar DNS tables.
+  (TLS terminates at your host Caddy with automatic Let's Encrypt.) The UI generates the exact DNS table and snippet per domain.
 
-If you set `DEPLOY_BASE_DOMAIN`, services additionally get automatic addresses: `<name>.<base>` (when unique) and `svc-<id>.<base>`. HTTP request logs are captured at this central hop for every routed response.
+The compose file also ships an optional token-based `nixre-tunnel` service (`--profile tunnels`) as an alternative to a host-level cloudflared — not needed when the operator already runs cloudflared directly.
 
 ### Observability defaults
 

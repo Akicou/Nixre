@@ -42,6 +42,13 @@ services:
       DEPLOY_PROXY_PORT: ${DEPLOY_PROXY_PORT:-3003}
       DEPLOY_BASE_DOMAIN: ${DEPLOY_BASE_DOMAIN:-}
       DEPLOY_HEALTH_TIMEOUT_MS: ${DEPLOY_HEALTH_TIMEOUT_MS:-30000}
+      # --- Cloudflare DNS automation -----------------------------------
+      # When set, tunnel-kind custom domains get their proxied CNAME
+      # (<domain> -> <CLOUDFLARE_TUNNEL_ID>.cfargotunnel.com) created/removed
+      # automatically via the Cloudflare API. Token needs Zone:Read + DNS:Edit
+      # on the zones users attach domains from.
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      CLOUDFLARE_TUNNEL_ID: ${CLOUDFLARE_TUNNEL_ID:-}
     group_add:
       - ${DOCKER_GID:-999}
     volumes:
@@ -49,7 +56,7 @@ services:
       - ./data/repos:/data/repos:z
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "127.0.0.1:3002:3002"
+      - "127.0.0.1:3001:3002"
       # App deployments arrive here from your edge (host Caddy block or
       # Cloudflare Tunnel). 127.0.0.1 keeps it private by default; when the
       # edge runs on another host, publish it publicly instead.
