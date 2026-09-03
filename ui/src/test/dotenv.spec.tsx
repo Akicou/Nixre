@@ -42,7 +42,7 @@ describe('parseDotenv', () => {
   it('enforces the 64-var limit', () => {
     const text = Array.from({ length: MAX_ENV_VARS + 1 }, (_, i) => `K${i}=v`).join('\n');
     const { errors } = parseDotenv(text);
-    expect(errors.some(e => e.includes('At most 64'))).toBe(true);
+    expect(errors.some(e => e.includes('At most 100'))).toBe(true);
   });
 
   it('keeps empty values and values with # inside', () => {

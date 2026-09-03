@@ -373,8 +373,8 @@ export function deploymentRoutes(pool, authenticate) {
       return;
     }
     const keys = Object.keys(vars);
-    if (keys.length > 64) {
-      res.status(400).json({ message: 'At most 64 env vars per service' });
+    if (keys.length > 100) {
+      res.status(400).json({ message: 'At most 100 env vars per service' });
       return;
     }
     for (const k of keys) {

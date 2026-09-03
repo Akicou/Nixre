@@ -1,11 +1,11 @@
 // dotenv.ts — parse/serialize .env-style text for the deployments env editor.
 //
 // Same validation rules as the backend (backend/src/routes/deployments.js):
-// keys match /^[A-Za-z_][A-Za-z0-9_]*$/, values are strings, at most 64 vars
+// keys match /^[A-Za-z_][A-Za-z0-9_]*$/, values are strings, at most 100 vars
 // per service. Comments (#) and blank lines are cosmetic and not stored.
 
 export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-export const MAX_ENV_VARS = 64;
+export const MAX_ENV_VARS = 100;
 
 export interface DotenvParseResult {
   vars: Record<string, string>;
