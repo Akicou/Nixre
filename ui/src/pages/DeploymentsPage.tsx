@@ -76,12 +76,12 @@ export const UptimeStrip: React.FC<{
   buckets: { state: string; latency_ms?: number | null }[];
   className?: string;
 }> = ({ buckets, className = '' }) => (
-  <div className={`flex gap-[2px] items-stretch h-5 ${className}`} aria-label="uptime strip">
+  <div className={`flex gap-[2px] items-stretch h-5 min-w-0 max-w-full overflow-hidden ${className}`} aria-label="uptime strip">
     {buckets.map((b, i) => (
       <div
         key={i}
         title={`${b.state}${b.latency_ms != null ? ` · ${b.latency_ms}ms` : ''}`}
-        className={`flex-1 rounded-[2px] min-w-[3px] ${
+        className={`flex-1 rounded-[2px] min-w-0 ${
           b.state === 'up'
             ? 'bg-emerald-500/80'
             : b.state === 'down'
@@ -429,9 +429,9 @@ const EnvPairEditor: React.FC<{
         </div>
       </div>
       {pairs.map((pair, i) => (
-        <div key={i} className="flex gap-2 items-center">
-          <input className={input} placeholder="KEY" value={pair.key} onChange={e => { const next = [...pairs]; next[i] = { ...next[i], key: e.target.value }; onChange(next); }} />
-          <input className={input} placeholder="value" type="password" value={pair.value} onChange={e => { const next = [...pairs]; next[i] = { ...next[i], value: e.target.value }; onChange(next); }} />
+        <div key={i} className="flex flex-wrap items-center gap-2">
+          <input className={`${input} flex-1 min-w-[110px]`} placeholder="KEY" value={pair.key} onChange={e => { const next = [...pairs]; next[i] = { ...next[i], key: e.target.value }; onChange(next); }} />
+          <input className={`${input} flex-1 min-w-[180px]`} placeholder="value" type="password" value={pair.value} onChange={e => { const next = [...pairs]; next[i] = { ...next[i], value: e.target.value }; onChange(next); }} />
           <button type="button" onClick={() => onChange(pairs.filter((_, j) => j !== i))} className="text-txt-tertiary hover:text-red-400 shrink-0">
             <X className="w-3.5 h-3.5" />
           </button>
@@ -1107,7 +1107,7 @@ const OverviewTab: React.FC<{ service: DeployService }> = ({ service }) => {
           <span className="flex items-center gap-1.5 text-txt-secondary"><Activity className="w-3.5 h-3.5" /> Uptime — last 24h</span>
           <span className="font-mono">{uptime?.uptime_pct != null ? `${uptime.uptime_pct.toFixed(1)}%` : '—'}</span>
         </div>
-        <UptimeStrip buckets={uptime?.buckets || []} />
+        <UptimeStrip buckets={uptime?.buckets || []} className="min-w-0" />
         <p className="text-[11px] text-txt-tertiary">Green buckets answered health probes every ~30s; red means the app missed them.</p>
       </div>
     </div>
@@ -1142,6 +1142,7 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   const [mode, setMode] = useState<'rows' | 'file'>('rows');
   const [fileText, setFileText] = useState('');
   const [fileLoaded, setFileLoaded] = useState(false);
+  const [fileLoading, setFileLoading] = useState(false);
   const parsed = useMemo(() => (mode === 'file' ? parseDotenv(fileText) : { vars: {}, errors: [] }), [mode, fileText]);
 
   const load = useCallback(() => {
@@ -1153,33 +1154,52 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   }, [space, repoUid, service.id]);
   useEffect(load, [load]);
 
-  // Entering .env mode pulls every secret once so the textarea is the truth;
-  // keys whose reveal fails stay empty with a marker comment.
+  // Entering .env mode pulls every secret once so the textarea is the truth.
+  // Reveals run in parallel (77+ secrets were sequential and left the buffer
+  // empty for seconds); anything already viewed/edited this visit is seeded
+  // first so the textarea never appears blank, and a fetch error keeps the
+  // buffer rather than wiping it.
   const enterFileMode = useCallback(async () => {
     setMode('file');
     setMsg('');
     setErr('');
-    if (fileLoaded) return;
-    const current = api.listEnvVars(space!, repoUid!, service.id);
-    const out: Record<string, string> = {};
-    const missing: string[] = [];
+    const seeded: Record<string, string> = {};
+    for (const [k, v] of Object.entries(drafts)) {
+      const name = k.startsWith('NEW_') ? k.slice(4) : k;
+      if (name) seeded[name] = v ?? '';
+    }
+    for (const k of keys) {
+      if (seeded[k.key] === undefined && revealed[k.key] && values[k.key] !== undefined) seeded[k.key] = values[k.key];
+    }
+    if (fileLoaded) {
+      setFileText(old => serializeDotenv({ ...parseDotenv(old).vars, ...seeded }));
+      return;
+    }
+    setFileLoading(true);
     try {
-      const list = await current;
-      for (const k of list) {
-        try {
-          const v = await api.revealEnvVar(space!, repoUid!, service.id, k.key);
-          out[k.key] = v.value;
-        } catch {
-          out[k.key] = '';
-          missing.push(k.key);
+      const list = await api.listEnvVars(space!, repoUid!, service.id);
+      const results = await Promise.allSettled(
+        list.map(k => api.revealEnvVar(space!, repoUid!, service.id, k.key).then(v => ({ key: k.key, value: v.value }))),
+      );
+      const out: Record<string, string> = { ...seeded };
+      const missing: string[] = [];
+      results.forEach((r, i) => {
+        const k = list[i].key;
+        if (r.status === 'fulfilled') out[k] = r.value.value;
+        else {
+          if (out[k] === undefined) out[k] = '';
+          missing.push(k);
         }
-      }
+      });
       setFileText(serializeDotenv(out) + (missing.length ? `\n# NOTE: could not read: ${missing.join(', ')} (empty below)\n` : ''));
       setFileLoaded(true);
+      setFileLoading(false);
     } catch {
-      setErr('Could not load variables.');
+      setFileText(serializeDotenv(seeded));
+      setFileLoading(false);
+      setErr('Could not load encrypted values from the server — showing what was already loaded.');
     }
-  }, [space, repoUid, service.id, fileLoaded]);
+  }, [space, repoUid, service.id, fileLoaded, drafts, keys, revealed, values]);
 
   const saveFile = async () => {
     if (parsed.errors.length) return;
@@ -1284,6 +1304,11 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
 
       {mode === 'file' ? (
         <div className="space-y-2" data-testid="env-file-editor">
+          {fileLoading ? (
+            <p className="text-[11px] text-txt-tertiary flex items-center gap-1.5">
+              <Loader2 className="w-3 h-3 animate-spin" /> Loading encrypted values…
+            </p>
+          ) : null}
           <textarea
             value={fileText}
             onChange={e => setFileText(e.target.value)}
@@ -1319,8 +1344,8 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
         {allKeys.map(key => {
           const isNew = key.startsWith('NEW_');
           return (
-            <div key={key} className="flex items-center gap-2 px-3 py-2">
-              <span className="font-mono text-xs text-txt-primary w-56 truncate" title={key}>{isNew ? '' : key}</span>
+            <div key={key} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
+              <span className="font-mono text-xs text-txt-primary w-full sm:w-44 md:w-56 truncate" title={key}>{isNew ? '' : key}</span>
               {isNew ? (
                 <input
                   autoFocus
@@ -1333,10 +1358,10 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
                     else next[e.target.value] = '';
                     setDrafts(next);
                   }}
-                  className="bg-surface-base border border-border-subtle rounded px-2 py-1 text-xs font-mono w-52 text-txt-primary"
+                  className="bg-surface-base border border-border-subtle rounded px-2 py-1 text-xs font-mono w-full sm:max-w-[13rem] text-txt-primary"
                 />
               ) : null}
-              <div className="flex-1 flex items-center gap-1.5">
+              <div className="flex-1 min-w-[180px] sm:min-w-0 flex items-center gap-1.5">
                 {editing === key ? (
                   <>
                     <input
@@ -1491,7 +1516,7 @@ const ServiceCard: React.FC<{ svc: DeployService; onOpen: () => void; onChanged:
   }, [space, repoUid, svc.id]);
 
   return (
-    <div className="border border-border-subtle rounded-lg p-4 space-y-3 hover:border-brand/40 transition cursor-pointer" onClick={onOpen} data-testid={`service-card-${svc.name}`}>
+    <div className="border border-border-subtle rounded-lg p-4 space-y-3 hover:border-brand/40 transition cursor-pointer min-w-0" onClick={onOpen} data-testid={`service-card-${svc.name}`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <Rocket className="w-4 h-4 text-brand shrink-0" />

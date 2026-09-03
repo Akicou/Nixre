@@ -234,6 +234,24 @@ describe('DeploymentsPage', () => {
     );
   });
 
+  it('the .env file editor pre-fills with existing secrets', async () => {
+    api.listEnvVars.mockResolvedValue([
+      { key: 'API_TOKEN', updated: 1 },
+      { key: 'LOG_LEVEL', updated: 1 },
+    ]);
+    api.revealEnvVar.mockImplementation(async (_s, _r, _i, k: string) => ({ key: k, value: k === 'API_TOKEN' ? 's3cr3t' : 'info' }));
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'env' }));
+    fireEvent.click(screen.getByRole('button', { name: '.env file' }));
+    const editor = await screen.findByTestId('env-file-editor');
+    const ta = editor.querySelector('textarea') as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(ta.value).toContain('API_TOKEN=s3cr3t');
+      expect(ta.value).toContain('LOG_LEVEL=info');
+    });
+  });
+
   it('env values are masked until explicitly revealed', async () => {
     api.listEnvVars.mockResolvedValue([{ key: 'API_TOKEN', updated: 1 }]);
     api.revealEnvVar.mockResolvedValue({ key: 'API_TOKEN', value: 's3cr3t-value' });
