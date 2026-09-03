@@ -131,7 +131,7 @@ Deploy any subdirectory of a hosted repo as a long-running service. **You bring 
 ### How it works
 
 0. **Organization board:** the space's **Deployments** tab shows every service in the space as a Railway-style card (status, domain, last deploy time/trigger) with a live Activity feed — the fastest way to see everything an organization is shipping. Cards open the service in its repo.
-1. Open a repo → Deployments (sidebar or `?deploys=1`) → *New service*.
+1. Open a repo → Deployments (sidebar or `?deploys=1`) → *New service*. A repo can host **multiple services** — same Dockerfile with different env vars, ports, or branches. **Duplicate…** clones an existing service's config and secrets into the wizard; just rename and adjust.
 2. Pick the **root directory**, hit **Detect Dockerfiles**, choose one, set the container port, CPU/RAM limits, and env vars.
 3. Every push to the watched branch auto-deploys (`auto_deploy` per service), or deploy manually at any ref/sha.
 4. Builds stream live over SSE; releases are blue/green — the new container must answer health probes before it receives traffic. **A failed build/release never touches the serving container**: traffic keeps flowing on the previous release while a red banner warns you about the failure. From history you can inspect logs, redeploy, roll back to an older healthy release, or delete records.
