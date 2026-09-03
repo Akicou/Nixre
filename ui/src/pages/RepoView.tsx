@@ -15,6 +15,7 @@ import {
   Pencil,
   ArrowLeft,
   FileCode,
+  FolderGit2,
   Rocket,
   Settings
 } from 'lucide-react';
@@ -196,30 +197,107 @@ export const RepoView: React.FC = () => {
   const pathParts = currentPath ? currentPath.split('/').filter(Boolean) : [];
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6 w-full min-w-0">
-      {/* Repo Top Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border-subtle pb-6 min-w-0">
-        <div className="space-y-1 min-w-0">
-          <div className="flex items-center gap-2 text-base font-mono flex-wrap min-w-0">
-            <Link to={`/${space}`} className="text-txt-brand hover:underline font-medium">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 w-full min-w-0">
+      {/* Tabs — same pattern as user/org profile views */}
+      <nav className="border-b border-border-subtle flex items-end gap-1 -mb-px overflow-x-auto">
+        <button
+          onClick={() => { setSearchParams({ tab: 'code', branch: currentBranch, type: 'tree' }); }}
+          className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
+            activeTab === 'code' ? 'border-brand text-txt-primary' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
+        >
+          <FileCode className="w-4 h-4" />
+          <span>Code</span>
+        </button>
+
+        <button
+          onClick={() => { setSearchParams({ tab: 'commits', branch: currentBranch }); }}
+          className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
+            activeTab === 'commits' ? 'border-brand text-txt-primary' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
+        >
+          <GitCommit className="w-4 h-4" />
+          <span>Commits</span>
+        </button>
+
+        <button
+          onClick={() => { setSearchParams({ tab: 'pulls' }); }}
+          className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
+            activeTab === 'pulls' ? 'border-brand text-txt-primary' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
+        >
+          <GitPullRequest className="w-4 h-4" />
+          <span>Pull Requests</span>
+          {repo.num_open_pulls > 0 && (
+            <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-surface-open text-txt-open">
+              {repo.num_open_pulls}
+            </span>
+          )}
+        </button>
+
+        <button
+          onClick={() => { setSearchParams({ tab: 'branches' }); }}
+          className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
+            activeTab === 'branches' ? 'border-brand text-txt-primary' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
+        >
+          <GitBranch className="w-4 h-4" />
+          <span>Branches</span>
+          <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-surface-subtle text-txt-tertiary">
+            {branches.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => { setSearchParams({ tab: 'settings' }); }}
+          className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
+            activeTab === 'settings' ? 'border-brand text-txt-primary' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
+        >
+          <Settings className="w-4 h-4" />
+          <span>Settings</span>
+        </button>
+      </nav>
+
+      <div className="py-6 grid grid-cols-1 lg:grid-cols-[296px_minmax(0,1fr)] gap-8">
+        {/* Sidebar — mirrors the profile layout */}
+        <aside className="min-w-0 space-y-4">
+          <div className="relative w-20 h-20 lg:w-[296px] lg:h-[296px]">
+            <Avatar
+              name={space}
+              url={`/api/v1/avatars/space/${encodeURIComponent(space)}`}
+              fill
+              shape="square"
+            />
+            <div className="absolute -bottom-2 -right-2 p-2.5 rounded-xl bg-surface-canvas border border-border-subtle">
+              <FolderGit2 className="w-5 h-5 text-txt-tertiary" />
+            </div>
+          </div>
+
+          <div className="min-w-0 space-y-1">
+            <h1 className="text-2xl font-bold text-txt-primary leading-tight break-words font-mono">{repo.uid}</h1>
+            <Link to={`/${space}`} className="text-lg text-txt-tertiary leading-tight hover:text-txt-brand transition break-words">
               {space}
             </Link>
-            <span className="text-txt-tertiary">/</span>
-            <span className="font-semibold text-txt-primary">{repo.uid}</span>
-            <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-border-subtle text-txt-tertiary ml-2">
-              {repo.is_public ? 'Public' : 'Private'}
-            </span>
+            <div className="flex items-center gap-2 pt-1">
+              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-border-subtle text-txt-tertiary">
+                {repo.is_public ? 'Public' : 'Private'}
+              </span>
+              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-border-subtle text-txt-tertiary">
+                Repository
+              </span>
+            </div>
           </div>
+
           {repo.description && (
-            <p className="text-xs text-txt-secondary">{repo.description}</p>
+            <p className="text-sm text-txt-primary whitespace-pre-wrap">{repo.description}</p>
           )}
-        </div>
 
         {/* Clone Button & Dropdown */}
         <div className="relative" ref={cloneMenuRef}>
           <button
             onClick={() => setCloneDropdownOpen(!cloneDropdownOpen)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-brand text-white hover:bg-brand-hover text-xs font-medium transition shadow-sm"
+            className="flex items-center justify-center gap-2 w-full px-3 py-1.5 rounded-md bg-brand text-white hover:bg-brand-hover text-xs font-medium transition shadow-sm"
           >
             <Download className="w-3.5 h-3.5" />
             <span>Clone Repo</span>
@@ -227,7 +305,7 @@ export const RepoView: React.FC = () => {
           </button>
 
           {cloneDropdownOpen && (
-            <div className="absolute right-0 mt-2 w-80 rounded-md bg-surface-canvas border border-border-mid shadow-xl p-3 z-50 animate-pop">
+            <div className="absolute left-0 mt-2 w-80 max-w-[85vw] rounded-md bg-surface-canvas border border-border-mid shadow-xl p-3 z-50 animate-pop">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-txt-primary">Clone with Git</span>
                 <div className="flex items-center rounded border border-border-subtle bg-surface-base p-0.5 text-[11px] font-mono">
@@ -285,66 +363,26 @@ export const RepoView: React.FC = () => {
             </div>
           )}
         </div>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-border-subtle overflow-x-auto flex-nowrap scrollbar-thin w-full min-w-0 -mx-4 px-4 sm:mx-0 sm:px-0">
-        <button
-          onClick={() => { setSearchParams({ tab: 'code', branch: currentBranch, type: 'tree' }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
-            activeTab === 'code' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
-          }`}
-        >
-          <FileCode className="w-4 h-4" />
-          <span>Code</span>
-        </button>
+        {/* Meta */}
+        <div className="space-y-1.5 pt-1 text-xs text-txt-tertiary">
+          <div className="flex items-center gap-2">
+            <GitBranch className="w-3.5 h-3.5 shrink-0" />
+            <span>default branch <span className="font-mono text-txt-secondary">{repo.default_branch}</span></span>
+          </div>
+          <div className="flex items-center gap-2">
+            <GitPullRequest className="w-3.5 h-3.5 shrink-0" />
+            <span>{repo.num_open_pulls} open pull request{repo.num_open_pulls === 1 ? '' : 's'}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <FolderGit2 className="w-3.5 h-3.5 shrink-0" />
+            <span>{branches.length} branch{branches.length === 1 ? '' : 'es'}</span>
+          </div>
+        </div>
+      </aside>
 
-        <button
-          onClick={() => { setSearchParams({ tab: 'commits', branch: currentBranch }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
-            activeTab === 'commits' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
-          }`}
-        >
-          <GitCommit className="w-4 h-4" />
-          <span>Commits</span>
-        </button>
-
-        <button
-          onClick={() => { setSearchParams({ tab: 'pulls' }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
-            activeTab === 'pulls' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
-          }`}
-        >
-          <GitPullRequest className="w-4 h-4" />
-          <span>Pull Requests</span>
-          {repo.num_open_pulls > 0 && (
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-surface-open text-txt-open">
-              {repo.num_open_pulls}
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => { setSearchParams({ tab: 'branches' }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
-            activeTab === 'branches' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
-          }`}
-        >
-          <GitBranch className="w-4 h-4" />
-          <span>Branches ({branches.length})</span>
-        </button>
-
-        <button
-          onClick={() => { setSearchParams({ tab: 'settings' }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
-            activeTab === 'settings' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
-          }`}
-        >
-          <Settings className="w-4 h-4" />
-          <span>Settings</span>
-        </button>
-      </div>
-
+      {/* Content column */}
+      <div className="min-w-0 space-y-6">
       {/* TAB CONTENT: CODE */}
       {activeTab === 'code' && (
         <div className="space-y-6">
@@ -757,6 +795,8 @@ export const RepoView: React.FC = () => {
           onUpdated={setRepo}
         />
       )}
+      </div>
+      </div>
     </div>
   );
 };
