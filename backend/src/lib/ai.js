@@ -109,23 +109,36 @@ function isOpenRouterBase(base) {
 }
 
 // Read reasoning from any OpenAI-compatible delta field (vLLM, DeepSeek, etc.).
-function extractReasoningTexts(src) {
+// Dedupes identical text within one source: gateways like OpenRouter send the
+// same delta under BOTH `reasoning` and `reasoning_details`, and some vLLM /
+// Qwen builds send it under `thinking` and `reasoning_content`. Emitting both
+// made every reasoning token append twice — the interleaved "LetLet me solve..."
+// bug in the transcript and UI.
+export function extractReasoningTexts(src) {
   const out = [];
+  const seen = new Set();
+  const push = t => {
+    if (typeof t !== 'string' || !t) return;
+    const key = t.trim();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(t);
+  };
   if (!src || typeof src !== 'object') return out;
-  if (typeof src.thinking === 'string' && src.thinking) out.push(src.thinking);
+  if (typeof src.thinking === 'string' && src.thinking) push(src.thinking);
   if (typeof src.reasoning_content === 'string' && src.reasoning_content) {
-    out.push(src.reasoning_content);
+    push(src.reasoning_content);
   }
   const r = src.reasoning;
-  if (typeof r === 'string' && r) out.push(r);
+  if (typeof r === 'string' && r) push(r);
   else if (r && typeof r === 'object') {
-    if (typeof r.content === 'string' && r.content) out.push(r.content);
-    else if (typeof r.text === 'string' && r.text) out.push(r.text);
+    if (typeof r.content === 'string' && r.content) push(r.content);
+    else if (typeof r.text === 'string' && r.text) push(r.text);
   }
   if (Array.isArray(src.reasoning_details)) {
     for (const d of src.reasoning_details) {
-      if (typeof d === 'string' && d) out.push(d);
-      else if (typeof d?.text === 'string' && d.text) out.push(d.text);
+      if (typeof d === 'string' && d) push(d);
+      else if (typeof d?.text === 'string' && d.text) push(d.text);
     }
   }
   return out;
@@ -292,6 +305,7 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
     }
 
     const thinkTagState = { inside: false, endTag: '' };
+    let sawReasoning = false;
     await parseSSE(r, async (payload) => {
     if (payload === '[DONE]') return;
     let evt;
@@ -332,13 +346,27 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
     // in <think>…</think> inside `content`.
     const src = delta || {};
     const message = evt.choices?.[0]?.message;
+    // Dedupe identical reasoning within one chunk: many gateways send the same
+    // delta under BOTH `reasoning` and `reasoning_details` (OpenRouter) or
+    // `thinking` and `reasoning_content` (vLLM/Qwen). Emitting both appended
+    // every reasoning token twice — the interleaved "LetLet me solve..." bug in
+    // the transcript and UI.
     const reasoningTexts = extractReasoningTexts(src);
-    if (reasoningTexts.length === 0 && message) {
-      reasoningTexts.push(...extractReasoningTexts(message));
+    // Only fall back to the whole `message` when the stream has produced no
+    // reasoning yet — some gateways attach the full reasoning block on the
+    // final chunk; emitting it after streamed deltas doubles everything.
+    const useMessageFallback = reasoningTexts.length === 0 && message && !sawReasoning;
+    let pending = Promise.resolve();
+    const emitReasoning = text => {
+      if (!text) return;
+      sawReasoning = true;
+      pending = pending.then(() => send({ type: 'reasoning', text }));
+    };
+    for (const text of reasoningTexts) emitReasoning(text);
+    if (useMessageFallback) {
+      for (const text of extractReasoningTexts(message)) emitReasoning(text);
     }
-    for (const text of reasoningTexts) {
-      if (text) await send({ type: 'reasoning', text });
-    }
+    await pending;
     if (src.content) {
       const parts = splitThinkTags(src.content, thinkTagState);
       for (const part of parts) {
