@@ -77,7 +77,7 @@ export const DeploymentsOverview: React.FC = () => {
           return (
             <Link
               key={svc.id}
-              to={svc.space && svc.repo_uid ? `/${svc.space}/${svc.repo_uid}/deployments` : '#'}
+              to={svc.space && svc.repo_uid ? `/${svc.space}/${svc.repo_uid}?tab=deployments` : '#'}
               className="flex items-center gap-4 px-4 py-2.5 hover:bg-surface-subtle/50 transition"
             >
               <span

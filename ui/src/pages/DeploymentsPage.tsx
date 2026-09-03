@@ -39,6 +39,7 @@ import {
   UptimeResponse,
 } from '../lib/api';
 import { DeployEvent, subscribeDeployEvents } from '../lib/deployEvents';
+import { ENV_KEY_RE, MAX_ENV_VARS, parseDotenv, serializeDotenv } from '../lib/dotenv';
 
 // ---------------------------------------------------------------------------
 // Small shared pieces
@@ -152,9 +153,10 @@ const fmtDur = (ms: number | null | undefined): string =>
 interface WizardProps {
   onCreated: (svc: DeployService) => void;
   defaultBranch: string;
+  onCancel?: () => void;
 }
 
-const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch }) => {
+const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch, onCancel }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
   const [name, setName] = useState('');
   const [rootDir, setRootDir] = useState('.');
@@ -284,6 +286,16 @@ const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch }) => {
       {error && <p className="text-xs text-red-400 break-words" role="alert">{error}</p>}
 
       <div className="flex justify-end gap-2 pt-2">
+        {onCancel && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onCancel}
+            className="px-4 py-2 text-sm rounded-md border border-border-subtle text-txt-secondary hover:text-txt-primary"
+          >
+            Cancel
+          </button>
+        )}
         <button
           type="button"
           disabled={busy || !dockerfile}
@@ -779,12 +791,15 @@ const LogViewer: React.FC<{ detail: DeploymentDetail; onClose: () => void }> = (
 
 type Tab = 'overview' | 'deploys' | 'logs' | 'env' | 'domains';
 
-const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; onDeleted: () => void }> = ({
+const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; onDeleted: () => void; onBack: () => void }> = ({
   service,
   onChanged,
   onDeleted,
+  onBack,
 }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
+  // 'dtab' (not 'tab') so embedded-in-RepoView sub-tabs never fight with the
+  // repo view's own ?tab= param.
   const [tab, setTab] = useSearchParamsTabDefault();
 
   const triggerRefresh = onChanged;
@@ -798,9 +813,9 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
 
   return (
     <div className="space-y-5 mt-6">
-      <Link to={`/${space}/${repoUid}/deployments`} className="inline-flex items-center gap-1 text-xs text-txt-secondary hover:text-txt-primary">
+      <button onClick={onBack} className="inline-flex items-center gap-1 text-xs text-txt-secondary hover:text-txt-primary">
         <ChevronLeft className="w-3.5 h-3.5" /> All services
-      </Link>
+      </button>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
@@ -881,10 +896,10 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
 
 function useSearchParamsTabDefault(): [string, (t: Tab) => void] {
   const [params, setParams] = useSearchParams();
-  const tab = (params.get('tab') as Tab) || 'overview';
+  const tab = (params.get('dtab') as Tab) || 'overview';
   const set = (t: Tab) => setParams(prev => {
     const next = new URLSearchParams(prev);
-    next.set('tab', t);
+    next.set('dtab', t);
     return next;
   });
   return [tab, set];
@@ -975,6 +990,12 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   const [values, setValues] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
   const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  // .env file editor state
+  const [mode, setMode] = useState<'rows' | 'file'>('rows');
+  const [fileText, setFileText] = useState('');
+  const [fileLoaded, setFileLoaded] = useState(false);
+  const parsed = useMemo(() => (mode === 'file' ? parseDotenv(fileText) : { vars: {}, errors: [] }), [mode, fileText]);
 
   const load = useCallback(() => {
     api.listEnvVars(space!, repoUid!, service.id).then(k => {
@@ -984,6 +1005,48 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
     });
   }, [space, repoUid, service.id]);
   useEffect(load, [load]);
+
+  // Entering .env mode pulls every secret once so the textarea is the truth;
+  // keys whose reveal fails stay empty with a marker comment.
+  const enterFileMode = useCallback(async () => {
+    setMode('file');
+    setMsg('');
+    setErr('');
+    if (fileLoaded) return;
+    const current = api.listEnvVars(space!, repoUid!, service.id);
+    const out: Record<string, string> = {};
+    const missing: string[] = [];
+    try {
+      const list = await current;
+      for (const k of list) {
+        try {
+          const v = await api.revealEnvVar(space!, repoUid!, service.id, k.key);
+          out[k.key] = v.value;
+        } catch {
+          out[k.key] = '';
+          missing.push(k.key);
+        }
+      }
+      setFileText(serializeDotenv(out) + (missing.length ? `\n# NOTE: could not read: ${missing.join(', ')} (empty below)\n` : ''));
+      setFileLoaded(true);
+    } catch {
+      setErr('Could not load variables.');
+    }
+  }, [space, repoUid, service.id, fileLoaded]);
+
+  const saveFile = async () => {
+    if (parsed.errors.length) return;
+    setErr('');
+    try {
+      await api.setEnvVars(space!, repoUid!, service.id, parsed.vars);
+      setMsg('Saved — takes effect on the next deploy.');
+      setFileLoaded(false);
+      load();
+      onChanged();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
 
   const reveal = async (key: string) => {
     if (revealed[key]) {
@@ -1013,6 +1076,10 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
       setMsg('Nothing changed.');
       return;
     }
+    if (Object.keys(explicit).length > MAX_ENV_VARS) {
+      setErr(`At most ${MAX_ENV_VARS} variables per service.`);
+      return;
+    }
     await api.setEnvVars(space!, repoUid!, service.id, explicit);
     setDrafts({});
     setMsg('Saved — takes effect on the next deploy.');
@@ -1021,18 +1088,78 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   };
 
   const allKeys = [...new Set([...keys.map(k => k.key), ...Object.keys(drafts)])];
+  // Client-side guard mirroring the backend: invalid/duplicate names are
+  // rejected before hitting the API.
+  const newRowInvalid = Object.keys(drafts)
+    .filter(k => k.startsWith('NEW_') && drafts[k] !== undefined)
+    .map(k => k.slice(4))
+    .filter(Boolean);
+  const rowErrors: string[] = [];
+  for (const k of Object.keys(drafts)) {
+    if (!k.startsWith('NEW_')) continue;
+    const name = k.slice(4);
+    if (name && !ENV_KEY_RE.test(name)) rowErrors.push(`'${name || '(empty)'}' is not a valid name — use [A-Za-z_][A-Za-z0-9_]*`);
+    else if (name && keys.some(x => x.key === name)) rowErrors.push(`'${name}' already exists`);
+  }
 
   return (
     <div className="space-y-3 max-w-2xl" data-testid="env-panel">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-txt-tertiary">Encrypted at rest · injected at container start · Railway-style groups.</p>
-        <button
-          onClick={() => setDrafts(d => ({ ...d, [`NEW_${Date.now()}`]: '' }))}
-          className="text-xs text-brand hover:underline flex items-center gap-1"
-        >
-          <Plus className="w-3 h-3" /> Add variable
-        </button>
+        <div className="inline-flex rounded-md border border-border-subtle overflow-hidden">
+          {(['rows', 'file'] as const).map(m => (
+            <button
+              key={m}
+              onClick={() => { if (m === 'file') enterFileMode(); else setMode('rows'); }}
+              className={`px-3 py-1.5 text-xs font-medium transition ${mode === m ? 'bg-brand/10 text-brand' : 'text-txt-secondary hover:text-txt-primary'}`}
+            >
+              {m === 'rows' ? 'Variables' : '.env file'}
+            </button>
+          ))}
+        </div>
+        {mode === 'rows' && (
+          <button
+            onClick={() => setDrafts(d => ({ ...d, [`NEW_${Date.now()}`]: '' }))}
+            className="text-xs text-brand hover:underline flex items-center gap-1"
+          >
+            <Plus className="w-3 h-3" /> Add variable
+          </button>
+        )}
       </div>
+      <p className="text-xs text-txt-tertiary">Encrypted at rest · injected at container start · takes effect on the next deploy.</p>
+
+      {mode === 'file' ? (
+        <div className="space-y-2" data-testid="env-file-editor">
+          <textarea
+            value={fileText}
+            onChange={e => setFileText(e.target.value)}
+            spellCheck={false}
+            rows={Math.max(8, fileText.split('\n').length + 1)}
+            placeholder={'KEY=value\n# comments and blank lines are ignored\nDATABASE_URL=postgres://…'}
+            className="w-full bg-surface-base border border-border-subtle rounded-md px-3 py-2 text-xs font-mono text-txt-primary leading-relaxed"
+          />
+          {parsed.errors.length > 0 && (
+            <div className="text-xs text-red-400 space-y-0.5" role="alert" data-testid="env-file-errors">
+              {parsed.errors.map((e, i) => <p key={i}>{e}</p>)}
+            </div>
+          )}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={saveFile}
+              disabled={parsed.errors.length > 0 || !fileText.trim()}
+              className="px-3 py-1.5 text-xs font-medium rounded-md bg-brand text-white hover:opacity-90 disabled:opacity-40"
+            >
+              Save {Object.keys(parsed.vars).length} variable{Object.keys(parsed.vars).length === 1 ? '' : 's'}
+            </button>
+            <span className="text-[11px] text-txt-tertiary">Full replace — comments and blank lines are not stored.</span>
+          </div>
+        </div>
+      ) : (
+        <>
+          {rowErrors.length > 0 && (
+            <div className="text-xs text-red-400 space-y-0.5" role="alert" data-testid="env-row-errors">
+              {rowErrors.map((e, i) => <p key={i}>{e}</p>)}
+            </div>
+          )}
       <div className="divide-y divide-border-subtle border border-border-subtle rounded-lg">
         {allKeys.map(key => {
           const isNew = key.startsWith('NEW_');
@@ -1100,6 +1227,9 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
         {msg && <span className="text-xs text-txt-secondary">{msg}</span>}
         {dirty && !msg && <span className="text-xs text-amber-400">Unsaved edits</span>}
       </div>
+        </>
+      )}
+      {err && <p className="text-xs text-red-400" role="alert">{err}</p>}
     </div>
   );
 };
@@ -1191,7 +1321,10 @@ const SettingsIconActions: React.FC<{ name: string; onOpen: () => void }> = ({ n
 // Page shell
 // ---------------------------------------------------------------------------
 
-export const DeploymentsPage: React.FC = () => {
+// DeploymentsSection — the full deployments UI (services list, creation
+// wizard, service detail). Embedded as a tab inside RepoView (`?tab=deployments`),
+// so no standalone route: useParams supplies space/repo from the repo route.
+export const DeploymentsSection: React.FC = () => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
   const [services, setServices] = useState<DeployService[] | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -1223,19 +1356,16 @@ export const DeploymentsPage: React.FC = () => {
   const selected = services?.find(s => s.id === selectedId) || null;
 
   const header = (
-    <div className="mb-6 border-b border-border-subtle pb-5 flex items-start justify-between gap-4">
+    <div className="mb-5 flex items-start justify-between gap-4">
       <div>
-        <Link to={`/${space}/${repoUid}`} className="text-xs text-txt-secondary hover:text-txt-primary inline-flex items-center gap-1 mb-1.5">
-          <ChevronLeft className="w-3.5 h-3.5" /> Back to repository
-        </Link>
-        <h1 className="text-2xl font-bold text-txt-primary flex items-center gap-2.5">
-          <Rocket className="w-6 h-6 text-brand" />
+        <h2 className="text-lg font-bold text-txt-primary flex items-center gap-2">
+          <Rocket className="w-5 h-5 text-brand" />
           Deployments
           <span className="text-xs px-2 py-0.5 rounded-full bg-surface-subtle text-txt-secondary font-mono border border-border-subtle font-normal">
             {services?.length ?? 0} services
           </span>
-        </h1>
-        <p className="text-sm text-txt-secondary mt-1">
+        </h2>
+        <p className="text-sm text-txt-secondary mt-0.5">
           Ship any root-directory with its own Dockerfile. Pushes to a watched branch auto-deploy; failures fall back to the last healthy release.
         </p>
       </div>
@@ -1248,7 +1378,7 @@ export const DeploymentsPage: React.FC = () => {
   );
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 w-full min-w-0">
+    <div className="w-full min-w-0">
       {header}
       {services === null ? (
         <div className="py-16 text-center text-txt-tertiary"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading…</div>
@@ -1260,9 +1390,10 @@ export const DeploymentsPage: React.FC = () => {
             setSelectedId(svc.id);
             bump();
           }}
+          onCancel={() => setCreating(false)}
         />
       ) : selected ? (
-        <ServiceDetail service={selected} onChanged={bump} onDeleted={() => { setSelectedId(null); bump(); }} />
+        <ServiceDetail service={selected} onChanged={bump} onBack={() => setSelectedId(null)} onDeleted={() => { setSelectedId(null); bump(); }} />
       ) : services.length === 0 ? (
         <div className="text-center py-14 space-y-3">
           <p className="text-txt-secondary">No deployment services on this repository yet.</p>

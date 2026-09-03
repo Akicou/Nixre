@@ -136,6 +136,8 @@ Deploy any subdirectory of a hosted repo as a long-running service. **You bring 
 4. Builds stream live over SSE; releases are blue/green — the new container must answer health probes before it receives traffic. **A failed build/release never touches the serving container**: traffic keeps flowing on the previous release while a red banner warns you about the failure. From history you can inspect logs, redeploy, roll back to an older healthy release, or delete records.
 5. On restart (server reboot included) nixre-core reconciles state and recreates service containers from their stored images — `restart: unless-stopped` plus a boot sweep mean deployments come back up with Nixre itself.
 
+Environment variables are editable either as individual variables or as a whole `.env` file: the Deployments → env tab has a **.env file** editor with client-side validation (valid names `[A-Za-z_][A-Za-z0-9_]*`, no duplicates, ≤64 vars, `KEY=value` with optional `export` prefix, quotes stripped, `#` comments and blank lines allowed but not stored) before anything reaches the API; the backend re-validates on `PUT …/env`. Saving is a full replace and takes effect on the next deploy. Deployments live as a tab of the repo view (`/{space}/{repo}?tab=deployments`) — there is no separate page.
+
 ### Routing public traffic
 
 App containers are never port-published. They sit on core's docker network behind a central reverse proxy inside nixre-core on `DEPLOY_PROXY_PORT` (**3003** default, published to loopback in compose). Route your edge to it:

@@ -27,6 +27,7 @@ import { RepoSettingsPanel } from '../components/RepoSettingsPanel';
 import { FileEditor } from '../components/FileEditor';
 import { Markdown, isMarkdownFile } from '../components/Markdown';
 import { Avatar } from '../components/Avatar';
+import { DeploymentsSection } from '../pages/DeploymentsPage';
 export const RepoView: React.FC = () => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -323,13 +324,15 @@ export const RepoView: React.FC = () => {
           <span>Branches ({branches.length})</span>
         </button>
 
-        <Link
-          to={`/${space}/${repoUid}/deployments`}
-          className="flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 border-transparent text-txt-secondary hover:text-txt-primary -mb-px shrink-0 whitespace-nowrap transition"
+        <button
+          onClick={() => { setSearchParams({ tab: 'deployments' }); }}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
+            activeTab === 'deployments' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
         >
           <Rocket className="w-4 h-4" />
           <span>Deployments</span>
-        </Link>
+        </button>
 
         <button
           onClick={() => { setSearchParams({ tab: 'settings' }); }}
@@ -730,6 +733,8 @@ export const RepoView: React.FC = () => {
       )}
 
       {/* TAB CONTENT: SETTINGS */}
+      {activeTab === 'deployments' && <DeploymentsSection />}
+
       {activeTab === 'settings' && space && (
         <RepoSettingsPanel
           repo={repo}

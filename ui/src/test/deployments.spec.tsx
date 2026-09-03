@@ -42,14 +42,14 @@ vi.mock('../lib/deployEvents', () => ({
   subscribeDeployEvents: () => () => {},
 }));
 
-import { DeploymentsPage } from '../pages/DeploymentsPage';
+import { DeploymentsSection } from '../pages/DeploymentsPage';
 import { DeploymentsOverview } from '../components/DeploymentsOverview';
 
-function mountPage() {
+function mountPage(initialEntry = '/acme/webshop') {
   return render(
-    <MemoryRouter initialEntries={['/acme/webshop/deployments']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/:space/:repo/deployments" element={<DeploymentsPage />} />
+        <Route path="/:space/:repo" element={<DeploymentsSection />} />
       </Routes>
     </MemoryRouter>,
   );
