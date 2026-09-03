@@ -1546,7 +1546,6 @@ const SettingsIconActions: React.FC<{ name: string; onOpen: () => void }> = ({ n
 // useParams supplies space/repo from the repo route.
 export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCollapse }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
-  const [searchParams] = useSearchParams();
   const [services, setServices] = useState<DeployService[] | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
@@ -1561,13 +1560,22 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
   }, [space, repoUid]);
 
   // ?svc=<id> deep link (space deployments board) opens that service directly.
+  // Applied once, then consumed: leaving it in the URL made every services
+  // refresh (each SSE status event bumps the list) snap selection back to the
+  // deep-linked service, overriding whatever the user opened afterwards.
+  const [searchParams, setSearchParams] = useSearchParams();
   const svcParam = searchParams.get('svc');
   useEffect(() => {
-    if (svcParam && services) {
-      const id = Number(svcParam);
-      if (services.some(s => s.id === id)) setSelectedId(id);
-    }
-  }, [svcParam, services]);
+    if (!svcParam || !services) return;
+    const id = Number(svcParam);
+    if (services.some(s => s.id === id)) setSelectedId(id);
+    // Consume: remove ?svc= so later refreshes keep the manual selection.
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.delete('svc');
+      return next;
+    }, { replace: true });
+  }, [svcParam, services, setSearchParams]);
 
   useEffect(() => {
     let alive = true;

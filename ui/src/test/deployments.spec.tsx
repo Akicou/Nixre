@@ -121,6 +121,19 @@ describe('DeploymentsPage', () => {
     expect(screen.queryByTestId('failure-banner')).toBeNull();
   });
 
+  it('deep-links ?svc= apply once and never yank back after a later refresh', async () => {
+    const second = { ...baseService, id: 99, name: 'second' };
+    api.listDeployServices.mockResolvedValue([baseService, second]);
+    mountPage('/acme/webshop?deploys=1&svc=99');
+    // Both cards render, then the deep-linked one is auto-selected
+    expect((await screen.findAllByTestId(/service-card/)).length).toBe(2);
+    await waitFor(() => {
+      // Detail view replaces the grid: 'All services' back button appears
+      expect(screen.getByText('All services')).toBeInTheDocument();
+    });
+    expect(api.listDeployServices).toHaveBeenCalled();
+  });
+
   it('wizard detects Dockerfiles before offering creation', async () => {
     api.listDeployServices.mockResolvedValue([]);
     api.detectDockerfiles.mockResolvedValue({
