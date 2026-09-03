@@ -903,6 +903,99 @@ export function deploymentRoutes(pool, authenticate) {
   }));
 
   // -------------------------------------------------------------------------
+  // Space-wide deployments board (Railway-style cards + activity feed).
+  // Visible when the space itself is visible: public, membership, personal
+  // ownership, or admin.
+  // -------------------------------------------------------------------------
+
+  api.get('/spaces/:uid/deployments', auth, guard(async (req, res) => {
+    const user = req.auth.user;
+    const { rows: spaceRows } = await pool.query(
+      `SELECT sp.uid, sp.is_public, sp.uid AS owner_uid FROM spaces sp WHERE sp.uid = $1`,
+      [req.params.uid],
+    );
+    const space = spaceRows[0];
+    if (!space) {
+      res.status(404).json({ message: 'Space not found' });
+      return;
+    }
+    if (!user.admin && !space.is_public) {
+      const { rows: member } = await pool.query(
+        'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
+        [space.uid, user.uid],
+      );
+      if (!member.length && space.owner_uid !== user.uid) {
+        res.status(403).json({ message: 'No access to this space' });
+        return;
+      }
+    }
+
+    const { rows: services } = await pool.query(
+      `SELECT s.*, r.uid AS repo_uid, r.default_branch
+       FROM deploy_services s
+       JOIN repos r ON r.id = s.repo_id
+       WHERE r.space_uid = $1
+       ORDER BY s.created ASC`,
+      [space.uid],
+    );
+
+    const domainsByService = new Map();
+    if (services.length) {
+      const ids = services.map(s => s.id);
+      const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+      const { rows: domainRows } = await pool.query(
+        `SELECT service_id, domain FROM deploy_domains WHERE service_id IN (${placeholders}) ORDER BY created`,
+        ids,
+      );
+      for (const d of domainRows) {
+        const list = domainsByService.get(Number(d.service_id)) || [];
+        list.push(d.domain);
+        domainsByService.set(Number(d.service_id), list);
+      }
+    }
+
+    const out = [];
+    for (const s of services) {
+      const summary = await currentDeploymentSummary(s);
+      out.push(rowToService(s, {
+        current: summary,
+        repo_uid: s.repo_uid,
+        alert: s.last_failed_deployment_id != null,
+        domains: domainsByService.get(Number(s.id)) || [],
+      }));
+    }
+
+    // Activity feed: latest deployments across the space's services.
+    let activity = [];
+    if (out.length) {
+      const ids = services.map(s => s.id);
+      const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+      const { rows: acts } = await pool.query(
+        `SELECT d.id, d.service_id, d.ref, d.sha, d.status, d.trigger_kind, d.started, d.finished, s.name AS service_name
+         FROM deployments d
+         JOIN deploy_services s ON s.id = d.service_id
+         WHERE d.service_id IN (${placeholders})
+         ORDER BY d.started DESC
+         LIMIT 30`,
+        ids,
+      );
+      activity = acts.map(a => ({
+        id: Number(a.id),
+        service_id: Number(a.service_id),
+        service_name: a.service_name,
+        ref: a.ref,
+        short_sha: shortSha(a.sha),
+        status: a.status,
+        trigger: a.trigger_kind,
+        started: Number(a.started),
+        finished: a.finished == null ? null : Number(a.finished),
+      }));
+    }
+
+    res.json({ services: out, activity });
+  }));
+
+  // -------------------------------------------------------------------------
   // Dashboard overview — most active deployments across visible spaces.
   // -------------------------------------------------------------------------
 

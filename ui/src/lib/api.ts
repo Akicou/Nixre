@@ -1031,6 +1031,10 @@ class ApiClient {
   deploymentsOverview(): Promise<DeployService[]> {
     return this.request('/deployments/overview');
   }
+
+  spaceDeployments(space: string): Promise<SpaceDeploymentsBoard> {
+    return this.request(`/spaces/${encodeURIComponent(space)}/deployments`);
+  }
 }
 
 export const api = new ApiClient();
@@ -1049,6 +1053,23 @@ export interface DeploymentSummary {
   trigger: string;
   started: number;
   finished: number | null;
+}
+
+export interface DeployActivityEntry {
+  id: number;
+  service_id: number;
+  service_name: string;
+  ref: string;
+  short_sha: string;
+  status: string;
+  trigger: string;
+  started: number;
+  finished: number | null;
+}
+
+export interface SpaceDeploymentsBoard {
+  services: DeployService[];
+  activity: DeployActivityEntry[];
 }
 
 export interface DeployService {
@@ -1077,6 +1098,8 @@ export interface DeployService {
   live?: boolean;
   space?: string;
   repo_uid?: string;
+  // Space-board-only fields:
+  domains?: string[];
 }
 
 export interface DockerfileCandidate {

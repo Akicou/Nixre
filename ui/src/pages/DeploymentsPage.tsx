@@ -1388,6 +1388,7 @@ const SettingsIconActions: React.FC<{ name: string; onOpen: () => void }> = ({ n
 // useParams supplies space/repo from the repo route.
 export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCollapse }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
+  const [searchParams] = useSearchParams();
   const [services, setServices] = useState<DeployService[] | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
@@ -1400,6 +1401,15 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
     api.getRepo(`${space}/${repoUid}`).then(r => setDefaultBranch(r.default_branch || 'main')).catch(() => {});
   }, [space, repoUid]);
 
+  // ?svc=<id> deep link (space deployments board) opens that service directly.
+  const svcParam = searchParams.get('svc');
+  useEffect(() => {
+    if (svcParam && services) {
+      const id = Number(svcParam);
+      if (services.some(s => s.id === id)) setSelectedId(id);
+    }
+  }, [svcParam, services]);
+
   useEffect(() => {
     let alive = true;
     api
@@ -1409,7 +1419,9 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
         setServices(s);
         setSelectedId(id => (id != null && s.some(x => x.id === id) ? id : null));
       })
-      .catch(() => alive && setServices([]));
+      .catch(() => {
+        if (alive) setServices([]);
+      });
     return () => {
       alive = false;
     };
