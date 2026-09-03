@@ -378,11 +378,29 @@ export const RepoView: React.FC = () => {
             <FolderGit2 className="w-3.5 h-3.5 shrink-0" />
             <span>{branches.length} branch{branches.length === 1 ? '' : 'es'}</span>
           </div>
+          <button
+            type="button"
+            onClick={() => setDeploysOpen(!deploysOpen)}
+            data-testid="deployments-sidebar-toggle"
+            className={`w-full flex items-center gap-2 rounded-md px-2 py-1.5 -mx-2 text-left transition ${
+              deploysOpen
+                ? 'bg-brand/10 text-brand'
+                : 'text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle'
+            }`}
+          >
+            <Rocket className="w-3.5 h-3.5 shrink-0" />
+            <span className={deploysOpen ? 'font-medium' : ''}>Deployments</span>
+            <ChevronDown className={`w-3.5 h-3.5 ml-auto transition-transform ${deploysOpen ? 'rotate-180' : ''}`} />
+          </button>
         </div>
       </aside>
 
       {/* Content column */}
       <div className="min-w-0 space-y-6">
+      {/* Deployments — embedded section, toggled from the sidebar; renders at
+          the top of the content column when open */}
+      {deploysOpen && <DeploymentsSection onCollapse={() => setDeploysOpen(false)} />}
+
       {/* TAB CONTENT: CODE */}
       {activeTab === 'code' && (
         <div className="space-y-6">
@@ -615,22 +633,6 @@ export const RepoView: React.FC = () => {
                 <Markdown content={readmeContent} />
               </div>
             </div>
-          )}
-
-          {/* Deployments — embedded section (collapsible), part of the code view */}
-          {deploysOpen ? (
-            <DeploymentsSection onCollapse={() => setDeploysOpen(false)} />
-          ) : (
-            <button
-              onClick={() => setDeploysOpen(true)}
-              data-testid="deployments-collapsed"
-              className="mt-6 w-full flex items-center gap-2 px-4 py-3 border border-border-subtle rounded-lg bg-surface-canvas hover:bg-surface-subtle transition text-left"
-            >
-              <Rocket className="w-4 h-4 text-brand" />
-              <span className="text-xs font-semibold text-txt-primary">Deployments</span>
-              <span className="text-[11px] text-txt-tertiary">Docker apps from this repo</span>
-              <ChevronDown className="w-3.5 h-3.5 text-txt-tertiary ml-auto" />
-            </button>
           )}
         </div>
       )}
