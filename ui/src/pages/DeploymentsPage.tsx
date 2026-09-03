@@ -18,6 +18,7 @@ import {
   KeyRound,
   Loader2,
   MemoryStick,
+  Pencil,
   Play,
   Plus,
   RotateCcw,
@@ -1052,6 +1053,7 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   const [dirty, setDirty] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [editing, setEditing] = useState<string | null>(null);
   // .env file editor state
   const [mode, setMode] = useState<'rows' | 'file'>('rows');
   const [fileText, setFileText] = useState('');
@@ -1124,14 +1126,20 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   };
 
   const saveAll = async () => {
-    const merged: Record<string, string> = {};
-    for (const k of keys) merged[k.key] = revealed[k.key] ? values[k.key] : values[k.key] ?? '';
-    for (const [k, v] of Object.entries(drafts)) if (!(k in merged)) merged[k] = v;
-    // Only send keys whose values are known plaintext; masked-unmodified ones are re-fetched server-side via reveal flow.
+    // Build the explicit var set: anything the user touched in rows mode or
+    // the .env editor (values pulled via reveal) — including values that were
+    // loaded for editing and left untouched.
     const explicit: Record<string, string> = {};
+    for (const [k, v] of Object.entries(drafts)) {
+      if (k.startsWith('NEW_')) continue; // transient new-row placeholder
+      explicit[k] = v;
+    }
     for (const k of keys) {
-      if (drafts[k.key] !== undefined) explicit[k.key] = drafts[k.key];
-      else if (values[k.key] !== undefined) explicit[k.key] = values[k.key];
+      if (explicit[k.key] !== undefined) continue;
+      // Values previously revealed (view or edit) are known plaintext and are
+      // included so a save round-trips them; masked ones are skipped — the
+      // backend keeps them untouched (partial merge via PATCH env).
+      if (revealed[k.key] && values[k.key] !== undefined) explicit[k.key] = values[k.key];
     }
     if (Object.keys(explicit).length === 0) {
       setMsg('Nothing changed.');
@@ -1141,7 +1149,9 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
       setErr(`At most ${MAX_ENV_VARS} variables per service.`);
       return;
     }
-    await api.setEnvVars(space!, repoUid!, service.id, explicit);
+    // Partial merge: only the explicit keys are written; secrets left masked
+    // (never revealed/edited) stay untouched on the server.
+    await api.patchDeployService(space!, repoUid!, service.id, { env: explicit });
     setDrafts({});
     setMsg('Saved — takes effect on the next deploy.');
     load();
@@ -1243,20 +1253,63 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
                 />
               ) : null}
               <div className="flex-1 flex items-center gap-1.5">
-                <input
-                  type={revealed[key] ? 'text' : 'password'}
-                  placeholder="••••••••"
-                  value={drafts[key] ?? (revealed[key] ? values[key] || '' : '')}
-                  onChange={e => {
-                    setDrafts(d => ({ ...d, [key]: e.target.value }));
-                    setDirty(true);
-                  }}
-                  className="bg-surface-base border border-border-subtle rounded px-2 py-1 text-xs font-mono w-full text-txt-primary"
-                />
-                {!isNew && (
-                  <button onClick={() => reveal(key)} className="text-txt-tertiary hover:text-txt-primary shrink-0" title={revealed[key] ? 'Hide' : 'Reveal'}>
-                    {revealed[key] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
+                {editing === key ? (
+                  <>
+                    <input
+                      autoFocus
+                      type="text"
+                      value={drafts[key] ?? ''}
+                      onChange={e => {
+                        setDrafts(d => ({ ...d, [key]: e.target.value }));
+                        setDirty(true);
+                      }}
+                      onKeyDown={e => { if (e.key === 'Escape') setEditing(null); }}
+                      placeholder="new value"
+                      className="bg-surface-base border border-brand/50 rounded px-2 py-1 text-xs font-mono w-full text-txt-primary"
+                    />
+                    <button
+                      onClick={() => {
+                        setEditing(null);
+                        setRevealed(r => ({ ...r, [key]: false }));
+                      }}
+                      className="text-txt-tertiary hover:text-txt-primary shrink-0"
+                      title="Done (value saved with Save changes; re-masks)"
+                    >
+                      <Check className="w-3.5 h-3.5 text-green-500" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      type={revealed[key] ? 'text' : 'password'}
+                      placeholder="••••••••"
+                      value={drafts[key] ?? (revealed[key] ? values[key] || '' : '')}
+                      onChange={e => {
+                        setDrafts(d => ({ ...d, [key]: e.target.value }));
+                        setDirty(true);
+                      }}
+                      className="bg-surface-base border border-border-subtle rounded px-2 py-1 text-xs font-mono w-full text-txt-primary"
+                    />
+                    {!isNew && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            const out = await api.revealEnvVar(space!, repoUid!, service.id, key);
+                            setValues(v => ({ ...v, [key]: out.value }));
+                            setRevealed(r => ({ ...r, [key]: true }));
+                            setDrafts(d => ({ ...d, [key]: out.value }));
+                            setEditing(key);
+                          } catch {
+                            /* permission */
+                          }
+                        }}
+                        className="text-txt-tertiary hover:text-txt-primary shrink-0"
+                        title="Edit value"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </>
                 )}
                 <button
                   onClick={async () => {

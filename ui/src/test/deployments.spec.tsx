@@ -229,11 +229,15 @@ describe('DeploymentsPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'env' }));
     const input = await screen.findByPlaceholderText('••••••••');
     expect(input).toHaveAttribute('type', 'password');
-    fireEvent.click(screen.getByTitle('Reveal'));
+    fireEvent.click(screen.getByTitle('Edit value'));
     await waitFor(() => {
       expect(api.revealEnvVar).toHaveBeenCalledWith('acme', 'webshop', 12, 'API_TOKEN');
-      expect((screen.getByDisplayValue('s3cr3t-value') as HTMLInputElement).type).toBe('text');
+      const editing = screen.getByDisplayValue('s3cr3t-value') as HTMLInputElement;
+      expect(editing.type).toBe('text');
     });
+    // Closing the editor keeps the row masked again
+    fireEvent.click(screen.getByTitle(/Done/));
+    expect(screen.getByPlaceholderText('••••••••')).toHaveAttribute('type', 'password');
   });
 
   it('domain cards present registrar-ready DNS guidance', async () => {

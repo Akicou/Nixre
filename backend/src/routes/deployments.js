@@ -260,6 +260,7 @@ export function deploymentRoutes(pool, authenticate) {
     'preserve_status_min',
     'success_retention_hours',
     'failure_retention_hours',
+    'env',
   ]);
 
   api.patch('/repos/:space/:repo/\\+/deployments/services/:id', auth, guard(async (req, res) => {
@@ -284,6 +285,50 @@ export function deploymentRoutes(pool, authenticate) {
       if (key === 'cpu_nano_cpus') value = Math.max(1e8, Number(value));
       if (['preserve_status_min'].includes(key)) {
         value = Math.min(600, Math.max(100, Number(value)));
+      }
+      if (key === 'env') {
+        // Partial secret update: merged into service_env_vars — keys present
+        // in the patch are upserted, keys absent are left untouched. Deleting
+        // stays on the surgical DELETE …/env/:key endpoint. An empty-string
+        // value is stored as-is; use { env: { K: null } } to delete a key.
+        const vars = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+        if (vars === null) {
+          res.status(400).json({ message: 'env must be an object of KEY -> string|null' });
+          return;
+        }
+        const keys = Object.keys(vars);
+        if (keys.length === 0) continue;
+        if (keys.length > 100) {
+          res.status(400).json({ message: 'At most 100 env vars per service' });
+          return;
+        }
+        for (const k of keys) {
+          if (!ENV_KEY_RE.test(k)) {
+            res.status(400).json({ message: `Invalid env var name '${k}'` });
+            return;
+          }
+          const v = vars[k];
+          if (v !== null && typeof v !== 'string') {
+            res.status(400).json({ message: `Env var '${k}' must be a string or null` });
+            return;
+          }
+        }
+        const nowMs = Date.now();
+        for (const k of keys) {
+          if (vars[k] === null) {
+            await pool.query('DELETE FROM service_env_vars WHERE service_id = $1 AND key = $2', [
+              service.id,
+              k,
+            ]);
+          } else {
+            await pool.query(
+              `INSERT INTO service_env_vars (service_id, key, value_enc, updated) VALUES ($1,$2,$3,$4)
+               ON CONFLICT (service_id, key) DO UPDATE SET value_enc = EXCLUDED.value_enc, updated = EXCLUDED.updated`,
+              [service.id, k, encryptSecret(String(vars[k])), nowMs],
+            );
+          }
+        }
+        continue; // handled — never reaches the column UPDATE below
       }
       sets[key] = { v: value };
     }

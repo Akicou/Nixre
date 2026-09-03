@@ -841,6 +841,8 @@ class ApiClient {
       success_retention_hours: number;
       failure_retention_hours: number;
       desired_state: 'running' | 'stopped';
+      /** Partial secret merge: KEY -> value upserts, KEY -> null deletes. */
+      env: Record<string, string | null>;
     }>,
   ): Promise<DeployService> {
     return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}`, {
