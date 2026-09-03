@@ -116,7 +116,7 @@ describe('DeploymentsPage', () => {
     expect(card.textContent).toContain('deadbee');
     expect(screen.getAllByTestId(/service-card/)).toHaveLength(1);
     // Opening detail surfaces live metrics without failure noise
-    fireEvent.click(screen.getByText('web'));
+    fireEvent.click(screen.getByTestId('service-card-web'));
     expect(await screen.findByText('CPU (of limit)')).toBeInTheDocument();
     expect(screen.queryByTestId('failure-banner')).toBeNull();
   });
@@ -184,7 +184,7 @@ describe('DeploymentsPage', () => {
       },
     ]);
     mountPage();
-    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
     const banner = await screen.findByTestId('failure-banner');
     expect(banner.textContent).toContain('deployment #90 failed');
     expect(banner.textContent).toContain('#77');
@@ -200,7 +200,7 @@ describe('DeploymentsPage', () => {
       preserve: { preserve_status_min: 400, success_retention_hours: 24, failure_retention_hours: 168 },
     });
     mountPage();
-    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
     fireEvent.click(await screen.findByRole('button', { name: 'logs' }));
 
     // default focus is failures-class 4xx per panel state; assert the call
@@ -225,7 +225,7 @@ describe('DeploymentsPage', () => {
     api.listEnvVars.mockResolvedValue([{ key: 'API_TOKEN', updated: 1 }]);
     api.revealEnvVar.mockResolvedValue({ key: 'API_TOKEN', value: 's3cr3t-value' });
     mountPage();
-    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
     fireEvent.click(await screen.findByRole('button', { name: 'env' }));
     const input = await screen.findByPlaceholderText('••••••••');
     expect(input).toHaveAttribute('type', 'password');
@@ -274,7 +274,7 @@ describe('DeploymentsPage', () => {
       },
     ]);
     mountPage();
-    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
     fireEvent.click(await screen.findByRole('button', { name: 'domains' }));
     expect((await screen.findAllByTestId('domain-card')).length).toBe(2);
     expect(screen.getAllByText(/THIS-SERVER-IP/).length).toBeGreaterThan(0);
@@ -295,12 +295,13 @@ describe('DeploymentsPage', () => {
       },
     }));
     mountPage();
-    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
     fireEvent.click(await screen.findByRole('button', { name: 'domains' }));
     const input = await screen.findByPlaceholderText('app.yourdomain.com');
     fireEvent.change(input, { target: { value: 'deep.a.b.acme.dev' } });
-    // choose tunnel kind
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'tunnel' } });
+    // choose tunnel kind (the domain-kind select inside the domains panel)
+    const kindSelect = await screen.findByRole('combobox', { name: (content: string, el: Element) => el.tagName === 'SELECT' && (el as HTMLSelectElement).options && Array.from((el as HTMLSelectElement).options).some(o => o.value === 'tunnel') } as never);
+    fireEvent.change(screen.getAllByRole('combobox').find(el => Array.from((el as HTMLSelectElement).options).some(o => o.value === 'tunnel'))!, { target: { value: 'tunnel' } });
     fireEvent.click(screen.getByRole('button', { name: /Attach domain/i }));
 
     // Confirmation panel appears instead of attaching
@@ -319,7 +320,7 @@ describe('DeploymentsPage', () => {
       .mockResolvedValueOnce([{ key: 'A', updated: 1 }, { key: 'B', updated: 1 }])
       .mockResolvedValue([{ key: 'B', updated: 1 }]);
     mountPage();
-    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
     fireEvent.click(await screen.findByRole('button', { name: 'env' }));
     await screen.findByText('A');
     const buttons = screen.getAllByTitle('Delete variable');

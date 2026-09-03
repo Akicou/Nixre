@@ -156,22 +156,50 @@ interface WizardProps {
   onCreated: (svc: DeployService) => void;
   defaultBranch: string;
   onCancel?: () => void;
+  /** Pre-fill from an existing service (Duplicate service flow). */
+  cloneFrom?: DeployService;
 }
 
-const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch, onCancel }) => {
+const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch, onCancel, cloneFrom }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
-  const [name, setName] = useState('');
-  const [rootDir, setRootDir] = useState('.');
-  const [branch, setBranch] = useState(defaultBranch);
-  const [detected, setDetected] = useState<string[] | null>(null);
-  const [dockerfile, setDockerfile] = useState('');
-  const [port, setPort] = useState('8080');
-  const [cpuCores, setCpuCores] = useState('1');
-  const [memoryMb, setMemoryMb] = useState('512');
-  const [autoDeploy, setAutoDeploy] = useState(true);
+  const [name, setName] = useState(cloneFrom ? `${cloneFrom.name}-2` : '');
+  const [rootDir, setRootDir] = useState(cloneFrom?.root_dir || '.');
+  const [branch, setBranch] = useState(cloneFrom?.branch || defaultBranch);
+  const [detected, setDetected] = useState<string[] | null>(cloneFrom ? [cloneFrom.dockerfile_path] : null);
+  const [dockerfile, setDockerfile] = useState(cloneFrom?.dockerfile_path || '');
+  const [port, setPort] = useState(String(cloneFrom?.container_port || 8080));
+  const [cpuCores, setCpuCores] = useState(String((cloneFrom?.cpu_nano_cpus ?? 1e9) / 1e9));
+  const [memoryMb, setMemoryMb] = useState(String(Math.round((cloneFrom?.memory_bytes ?? 536870912) / 1024 / 1024)));
+  const [autoDeploy, setAutoDeploy] = useState(cloneFrom?.auto_deploy ?? true);
   const [envPairs, setEnvPairs] = useState<Array<{ key: string; value: string }>>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // Duplicate flow: pull the source service's decrypted secrets into rows.
+  // A value that can't be revealed stays empty so the user notices.
+  useEffect(() => {
+    if (!cloneFrom) return;
+    let alive = true;
+    (async () => {
+      try {
+        const keys = await api.listEnvVars(space!, repoUid!, cloneFrom.id);
+        for (const k of keys) {
+          if (!alive) return;
+          try {
+            const v = await api.revealEnvVar(space!, repoUid!, cloneFrom.id, k.key);
+            if (alive) setEnvPairs(prev => [...prev, { key: k.key, value: v.value }]);
+          } catch {
+            if (alive) setEnvPairs(prev => [...prev, { key: k.key, value: '' }]);
+          }
+        }
+      } catch {
+        /* env copy is best-effort; rows stay empty */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [cloneFrom, space, repoUid]);
 
   const detect = async () => {
     setError('');
@@ -214,9 +242,21 @@ const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch, onCance
 
   return (
     <div className="border border-border-subtle rounded-lg p-6 max-w-2xl mx-auto mt-8 space-y-5">
+      {cloneFrom && (
+        <div className="flex items-start gap-2 border border-brand/30 bg-brand/[0.06] rounded-lg p-3" data-testid="wizard-clone-banner">
+          <Copy className="w-4 h-4 text-brand shrink-0 mt-0.5" />
+          <div className="min-w-0 text-xs">
+            <p className="font-medium text-txt-primary">Duplicating “{cloneFrom.name}”</p>
+            <p className="text-txt-tertiary mt-0.5">
+              Configuration and environment were copied — {envPairs.length ? `${envPairs.length} secret${envPairs.length === 1 ? '' : 's'} loaded (values that couldn't be read are blank).` : 'the source has no env vars'} —
+              give it a new name and adjust anything before creating.
+            </p>
+          </div>
+        </div>
+      )}
       <div>
         <h2 className="text-lg font-semibold text-txt-primary flex items-center gap-2">
-          <Rocket className="w-5 h-5 text-brand" /> New deployment service
+          <Rocket className="w-5 h-5 text-brand" /> {cloneFrom ? `Duplicate service` : `New deployment service`}
         </h2>
         <p className="text-xs text-txt-secondary mt-1">
           Pick a directory inside this repo (monorepo-friendly) and deploy an existing Dockerfile — Nixre never invents the build for you.
@@ -1510,6 +1550,7 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
   const [services, setServices] = useState<DeployService[] | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+  const [cloneFrom, setCloneFrom] = useState<DeployService | null>(null);
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [refresh, setRefresh] = useState(0);
 
@@ -1571,9 +1612,32 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
         </p>
       </div>
       {!creating && (
-        <button onClick={() => { setCreating(true); setSelectedId(null); }} className="px-3.5 py-2 text-sm font-medium rounded-md bg-brand text-white hover:opacity-90 inline-flex items-center gap-2 shrink-0">
-          <Plus className="w-4 h-4" /> New service
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {!creating && services && services.length > 0 && (
+            <select
+              aria-label="Duplicate an existing service"
+              value=""
+              onChange={e => {
+                const src = services.find(s => s.id === Number(e.target.value));
+                if (src) {
+                  setCloneFrom(src);
+                  setCreating(true);
+                  setSelectedId(null);
+                }
+              }}
+              data-testid="duplicate-select"
+              className="px-3 py-2 text-sm rounded-md bg-surface-canvas border border-border-subtle text-txt-secondary hover:text-txt-primary"
+            >
+              <option value="" disabled>Duplicate…</option>
+              {services.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          )}
+          <button onClick={() => { setCloneFrom(null); setCreating(true); setSelectedId(null); }} className="px-3.5 py-2 text-sm font-medium rounded-md bg-brand text-white hover:opacity-90 inline-flex items-center gap-2">
+            <Plus className="w-4 h-4" /> New service
+          </button>
+        </div>
       )}
     </div>
   );
@@ -1586,12 +1650,17 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
       ) : creating ? (
         <CreateWizard
           defaultBranch={defaultBranch}
+          cloneFrom={cloneFrom ?? undefined}
           onCreated={svc => {
             setCreating(false);
+            setCloneFrom(null);
             setSelectedId(svc.id);
             bump();
           }}
-          onCancel={() => setCreating(false)}
+          onCancel={() => {
+            setCreating(false);
+            setCloneFrom(null);
+          }}
         />
       ) : selected ? (
         <ServiceDetail service={selected} onChanged={bump} onBack={() => setSelectedId(null)} onDeleted={() => { setSelectedId(null); bump(); }} />
@@ -1601,6 +1670,7 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
           <button onClick={() => setCreating(true)} className="px-4 py-2 text-sm rounded-md bg-brand/10 text-brand border border-brand/30 hover:bg-brand/20 inline-flex items-center gap-2">
             <Plus className="w-4 h-4" /> Create your first service
           </button>
+          <p className="text-[11px] text-txt-tertiary">You can run multiple services from this repo — same Dockerfile with different env vars, ports, or branches.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

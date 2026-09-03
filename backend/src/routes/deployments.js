@@ -232,7 +232,16 @@ export function deploymentRoutes(pool, authenticate) {
         req.auth.user.uid,
         Date.now(),
       ],
-    );
+    ).catch(err => {
+      if (err.code === '23505') {
+        res.status(409).json({
+          message: `A service named '${name}' already exists on this repository — pick a different name.`,
+        });
+        return { rows: [] };
+      }
+      throw err;
+    });
+    if (!rows[0]) return;
     const service = rows[0];
 
     // Env vars may be provided at creation time.
