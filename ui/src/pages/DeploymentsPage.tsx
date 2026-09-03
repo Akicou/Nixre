@@ -317,15 +317,75 @@ const EnvPairEditor: React.FC<{
 }> = ({ pairs, onChange }) => {
   const input =
     'bg-surface-base border border-border-subtle rounded px-2 py-1.5 text-xs font-mono w-full text-txt-primary';
+  const [rawMode, setRawMode] = useState(false);
+  const [rawText, setRawText] = useState('');
+  const parsed = useMemo(() => (rawMode ? parseDotenv(rawText) : { vars: {}, errors: [] }), [rawMode, rawText]);
+
+  // Row editor -> raw text
+  const enterRaw = () => {
+    setRawText(serializeDotenv(Object.fromEntries(pairs.filter(p => p.key).map(p => [p.key, p.value] as [string, string]))));
+    setRawMode(true);
+  };
+
+  const applyRaw = () => {
+    if (parsed.errors.length) return;
+    onChange(Object.entries(parsed.vars).map(([key, value]) => ({ key, value })));
+    setRawMode(false);
+  };
+
+  if (rawMode) {
+    return (
+      <div className="space-y-1" data-testid="wizard-env-raw">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-txt-secondary flex items-center gap-1.5">
+            <KeyRound className="w-3.5 h-3.5" /> Environment variables — .env paste
+          </span>
+          <button type="button" onClick={() => setRawMode(false)} className="text-xs text-txt-secondary hover:text-txt-primary">
+            Back to rows
+          </button>
+        </div>
+        <textarea
+          value={rawText}
+          onChange={e => setRawText(e.target.value)}
+          spellCheck={false}
+          rows={Math.max(6, rawText.split('\n').length + 1)}
+          placeholder={'KEY=value\n# comments and blank lines are ignored\nDATABASE_URL=postgres://…'}
+          className="w-full bg-surface-base border border-border-subtle rounded px-2 py-1.5 text-xs font-mono text-txt-primary leading-relaxed"
+        />
+        {parsed.errors.length > 0 && (
+          <div className="text-xs text-red-400 space-y-0.5" role="alert" data-testid="wizard-env-raw-errors">
+            {parsed.errors.map((e, i) => <p key={i}>{e}</p>)}
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={applyRaw}
+            disabled={parsed.errors.length > 0}
+            className="px-3 py-1.5 text-xs font-medium rounded-md bg-brand text-white hover:opacity-90 disabled:opacity-40"
+          >
+            Apply {Object.keys(parsed.vars).length} variable{Object.keys(parsed.vars).length === 1 ? '' : 's'}
+          </button>
+          <span className="text-[11px] text-txt-tertiary">Values are masked in the row view after applying.</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-txt-secondary flex items-center gap-1.5">
           <KeyRound className="w-3.5 h-3.5" /> Environment variables
         </span>
-        <button type="button" onClick={() => onChange([...pairs, { key: '', value: '' }])} className="text-xs text-brand hover:underline flex items-center gap-1">
-          <Plus className="w-3 h-3" /> Add
-        </button>
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={enterRaw} className="text-xs text-brand hover:underline" data-testid="wizard-env-raw-toggle">
+            Paste .env
+          </button>
+          <button type="button" onClick={() => onChange([...pairs, { key: '', value: '' }])} className="text-xs text-brand hover:underline flex items-center gap-1">
+            <Plus className="w-3 h-3" /> Add
+          </button>
+        </div>
       </div>
       {pairs.map((pair, i) => (
         <div key={i} className="flex gap-2 items-center">
@@ -336,7 +396,7 @@ const EnvPairEditor: React.FC<{
           </button>
         </div>
       ))}
-      {pairs.length === 0 && <p className="text-[11px] text-txt-tertiary">Injected into the container at deploy time.</p>}
+      {pairs.length === 0 && <p className="text-[11px] text-txt-tertiary">Injected into the container at deploy time. Use “Paste .env” to add many at once.</p>}
     </div>
   );
 };

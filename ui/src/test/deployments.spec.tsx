@@ -142,6 +142,40 @@ describe('DeploymentsPage', () => {
     expect((select as HTMLSelectElement).value).toBe('Dockerfile');
   });
 
+  it('wizard env editor accepts pasted .env with validation before creating', async () => {
+    api.listDeployServices.mockResolvedValue([]);
+    api.detectDockerfiles.mockResolvedValue({
+      ref: 'main',
+      root_dir: '.',
+      dockerfiles: [{ path: 'Dockerfile', file: 'Dockerfile' }],
+    });
+    api.createDeployService.mockResolvedValue(baseService);
+    mountPage();
+    fireEvent.click(await screen.findByText(/Create your first service/i));
+    const rootInput = await screen.findByPlaceholderText('apps/web or .');
+    fireEvent.change(rootInput, { target: { value: '.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Detect Dockerfiles/i }));
+    await screen.findByRole('combobox');
+
+    // Switch to raw paste mode and type an invalid doc first
+    fireEvent.click(screen.getByTestId('wizard-env-raw-toggle'));
+    const raw = screen.getByTestId('wizard-env-raw').querySelector('textarea') as HTMLTextAreaElement;
+    fireEvent.change(raw, { target: { value: 'GOOD=1\n2BAD=x' } });
+    expect(await screen.findByTestId('wizard-env-raw-errors')).toBeInTheDocument();
+    // The apply button is disabled while validation errors exist
+    expect(screen.getByRole('button', { name: /Apply \d+ variables?/i })).toBeDisabled();
+
+    // Fix the doc -> applies into rows and reaches create with parsed vars
+    fireEvent.change(raw, { target: { value: 'API_TOKEN=s3cr3t\nLOG_LEVEL=info' } });
+    fireEvent.click(screen.getByRole('button', { name: /Apply 2 variables/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Create service/i }));
+    await waitFor(() => expect(api.createDeployService).toHaveBeenCalledWith(
+      'acme',
+      'webshop',
+      expect.objectContaining({ env: { API_TOKEN: 's3cr3t', LOG_LEVEL: 'info' } }),
+    ));
+  });
+
   it('blares a failure banner and still shows the serving release', async () => {
     api.listDeployServices.mockResolvedValue([
       {
