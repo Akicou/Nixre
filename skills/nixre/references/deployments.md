@@ -37,18 +37,18 @@ Each `deploy_service` row pins: `name` (UNIQUE per repo), `root_dir`, `dockerfil
 
 App containers are never port-published; they sit on core's docker network behind the central **deploy proxy on port 3003**, which routes by **Host header**. Route your edge to 3003:
 
-- **Cloudflare Tunnel (this instance):** the tunnel's **catch-all** ingress forwards every unmatched hostname to `http://localhost:3003`. Attach a domain in **Deployments → Domains → tunnel kind**. When `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_TUNNEL_ID` are set, core **creates the proxied CNAME (`<domain>` → `<tunnel-id>.cfargotunnel.com`) automatically via the Cloudflare API** and removes it on detach. The UI shows DNS status per domain (auto-managed / failed + retry / manual guidance).
+- **Cloudflare Tunnel:** the tunnel's **catch-all** ingress forwards every unmatched hostname to `http://localhost:3003`. Attach a domain in **Deployments → Domains → tunnel kind**. When `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_TUNNEL_ID` are set, core **creates the proxied CNAME (`<domain>` → `<tunnel-id>.cfargotunnel.com`) automatically via the Cloudflare API** and removes it on detach. The UI shows DNS status per domain (auto-managed / failed + retry / manual guidance).
 - **Host Caddy/Nginx:** add an A record then a host block `reverse_proxy 127.0.0.1:3003` (TLS at the edge). The UI generates the exact DNS table + snippet.
 
 **No `DEPLOY_BASE_DOMAIN` is used here** — users attach arbitrary domains, and there's no base-domain restriction (any zone the CF token can read works).
 
 ### TLS depth gate
 
-Universal SSL free covers the apex plus **one** level of subdomain (`nixre.dev` + `*.nixre.dev`). A multi-level name (a **dot inside a label** e.g. `a.b.nixre.dev`) fails TLS. The UI gates these behind a confirmation:
+Universal SSL free covers the apex plus **one** level of subdomain (`<your-domain>` + `*.<your-domain>`). A multi-level name (a **dot inside a label** e.g. `a.b.<your-domain>`) fails TLS. The UI gates these behind a confirmation:
 
 - `POST .../domains` returns `409 TLS_DEPTH_CONFIRMATION` (with `code`/`depth`/`zone`) when depth > 1 unless body has `confirm: true`.
 - The UI shows an amber confirmation panel; a "TLS likely broken" badge appears on such cards, and `tls_risk_domains` are surfaced on the org board.
-- **Prefer hyphenated labels** (`foo-bar.nixre.dev`), never dots.
+- **Prefer hyphenated labels** (`foo-bar.<your-domain>`), never dots.
 
 ## Observability defaults
 

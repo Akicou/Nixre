@@ -3,24 +3,24 @@
 ## Users, registration, admin
 
 - **First account = admin.** Admin endpoints: `GET/PATCH /api/v1/admin/users`, `POST /api/v1/admin/registration` (open/close self-service register).
-- **Registration is closed** on this instance: `NIXRE_REGISTRATION_CLOSED=true` in `.env` makes `POST /api/v1/register` return 403. Add users by flipping the switch (then having them register), or insert/update the user directly in the DB.
-- Admin user uid on this instance: `Lyan`. Account-level flags: `account_admin`, `account_blocked`.
+- **Registration is closed** by default: `NIXRE_REGISTRATION_CLOSED=true` in `.env` makes `POST /api/v1/register` return 403. Add users by flipping the switch (then having them register), or insert/update the user directly in the DB.
+- Account-level flags: `account_admin`, `account_blocked`.
 
 ## Updating nixre
 
-`/opt/nixre/update-nixre.sh` is the safe path:
+`update-nixre.sh` (at the repo root) is the safe path:
 
 1. `git fetch`; **fast-forward** the current branch to origin (never `reset --hard`; aborts with instructions on divergence, preserving local commits).
-2. Re-applies the host port mapping `core -> 127.0.0.1:3001`.
+2. Re-applies the host port mapping (core → `127.0.0.1:3001`) when running the host-Caddy variant.
 3. `npm install` + build the SPA (`ui/dist`).
 4. Rebuild/restart `nixre-agent-sandbox`, `nixre-db`, `nixre-core`, `nixre-ssh`.
 5. Waits for core to answer `/healthz`.
 
 ```bash
-cd /opt/nixre && ./update-nixre.sh
+./update-nixre.sh
 ```
 
-**To push your local commits:** the `feat/deployments` branch is ahead of origin. There is no shell GitHub credential on the server, so push from a machine with creds: `git push origin feat/deployments`.
+**To push your local commits:** if the host has no shell GitHub credential, push from a machine with creds: `git push origin <branch>`.
 
 ## Backups
 
@@ -36,7 +36,7 @@ The script dumps `nixre-db` (`pg_dump`) and tars `./data/repos`. Restore:
 # postgres
 docker exec -i nixre-db psql -U nixre -d nixre < backup.dump
 # repos
-tar xzf repos.tar.gz -C /opt/nixre/data/
+tar xzf repos.tar.gz -C <nixre-dir>/data/
 ```
 
 ## Logs
@@ -44,7 +44,6 @@ tar xzf repos.tar.gz -C /opt/nixre/data/
 ```bash
 docker logs -f nixre-core                 # backend logs (SSE, build, errors)
 ./scripts/nixre-logs.sh                   # same
-./scripts/nixre-logs.sh deploy            # + deploy proxy / app-routing logs
 docker logs -f nixre-ssh                  # sshd / git-shell
 ```
 
@@ -60,22 +59,21 @@ Tables of note: `users`, `sessions`, `spaces`, `repos`, `pull_requests`, `webhoo
 
 ## TLS / Cloudflare notes
 
-- Zone `nixre.dev` → `cd4a6e30734851f0b76fa6cca5afa3d7`.
-- Cloudflare token is set in `.env` (`CLOUDFLARE_API_TOKEN`). It needs **`Zone:Read` + `DNS:Edit`** on every zone users attach domains from — the first token created lacked `DNS:Edit`, which made auto-DNS fail. Remove stale/read-only tokens from the Cloudflare dashboard.
-- Universal SSL covers `nixre.dev` + `*.nixre.dev` only. Keep domain labels hyphenated (no dots).
+- Look up your Cloudflare zone ID in the Cloudflare dashboard, and set the token in `.env` (`CLOUDFLARE_API_TOKEN`). It needs **`Zone:Read` + `DNS:Edit`** on every zone users attach domains from — a read-only token makes auto-DNS fail. Remove stale/read-only tokens from the Cloudflare dashboard.
+- Universal SSL covers the apex + one level (`<your-domain>` + `*.<your-domain>`) only. Keep domain labels hyphenated (no dots).
 
 ## Frontend nuance
 
-- The SPA is served by **host Caddy** from `/opt/nixre/ui/dist`, not the `nixre-web` container.
+- The SPA is often served by **host Caddy** from `<nixre-dir>/ui/dist`, not the `nixre-web` container.
 - Cache headers in Caddy: `/index.html` → `no-cache, max-age=0`; `/assets/*` → immutable 1 year. A matcher-first header block silently no-ops if you write path-after-value; use the one-liner `header /index.html Cache-Control "..."`.
 - If the browser shows stale UI, `Ctrl+Shift+R` (hard reload) — the no-cache header prevents it mostly, but an old service worker or memory-cached page can linger.
 
 ## Service lifecycle
 
 ```bash
-cd /opt/nixre
+cd <nixre-dir>
 docker compose ps                     # status
 docker compose logs -f nixre-core     # logs
-systemctl --user status cloudflared-nixre   # tunnel
-systemctl --user restart cloudflared-nixre  # restart tunnel
+systemctl --user status cloudflared-<name>   # tunnel
+systemctl --user restart cloudflared-<name>  # restart tunnel
 ```

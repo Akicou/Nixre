@@ -1,39 +1,38 @@
-# Architecture — how this Nixre instance is deployed
+# Architecture — how a Nixre instance is deployed
 
-The source tree (`/opt/nixre`) stocks a self-contained forge: UI (React/TS SPA), backend `nixre-core` (Node + Postgres), `nixre-ssh` (sshd), and git storage as bare repos on disk. But the **live instance runs a slimmed, host-managed variant** because the router has no port forwarding.
+The source tree (this repo) stocks a self-contained forge: UI (React/TS SPA), backend `nixre-core` (Node + Postgres), `nixre-ssh` (sshd), and git storage as bare repos on disk. A live install often runs a slimmed, host-managed variant when the router has no port forwarding.
 
-## Containers (run via `docker compose`, in `/opt/nixre`)
+## Containers (run via `docker compose`, in the source directory)
 
 | Container | Runs | Host ports | Notes |
 |---|---|---|---|
 | `nixre-db` | Postgres 16 | (internal) | user/db/pass all `nixre`, volume `./data/pg` |
 | `nixre-core` | the whole backend | `127.0.0.1:3001:3002`, `127.0.0.1:3003:3003` | api+git on 3002, deploy proxy on 3003 |
 | `nixre-ssh` | sshd for git | `3022:3022` | resolves keys via core |
-| `nixre-web` | Caddy container | — | **NOT running** — host Caddy replaces it |
+| `nixre-web` | Caddy container | — | optional; a host Caddy commonly replaces it |
 | `nixre-agent-sandbox` | agent sandbox image | — | built once, idles; `entrypoint: true` |
 
 ## Request paths
 
 ```
-Internet ──Cloudflare Tunnel──▶ git.nixre.dev ──▶ host Caddy :3000 ──▶ core (127.0.0.1:3001:3002)
-                              └─ ssh.nixre.dev ──▶ nixre-ssh :3022
-                              └─ <any app domain> ──▶ deploy proxy :3003 (routes by Host)
+Internet ──edge (host Caddy or Cloudflare Tunnel)──▶ git.<your-domain> ──▶ :3000 ──▶ core (127.0.0.1:3001:3002)
+                                                 └─ ssh.<your-domain>  ──▶ nixre-ssh :3022
+                                                 └─ <any app domain>   ──▶ deploy proxy :3003 (routes by Host)
 ```
 
-- **Host Caddy** (`/etc/caddy/Caddyfile`, `:3000` block) serves the SPA from `/opt/nixre/ui/dist` and proxies `/api/*` and `/git/*` to `127.0.0.1:3001` (host) → core `:3002` (container).
-- It also has a **second block** bound to the old `git.nayhein.com` hostname — leave it; only the `:3000` block is used by the tunnel today.
+- **Host Caddy** serves the SPA from `<nixre-dir>/ui/dist` and proxies `/api/*` and `/git/*` to `127.0.0.1:3001` (host) → core `:3002` (container).
 - The **deploy proxy** inside nixre-core listens on port 3003 (published to loopback). App containers are **never port-published**; they sit on core's docker network and are reached only through this proxy.
 
-## Cloudflare Tunnel (the only public entry)
+## Cloudflare Tunnel (common public entry, no port forwarding)
 
-- Tunnel ID `5f0d7f1f-fa8c-42cf-ac2e-7f602d0f6688`, creds file `~/.cloudflared/5f0d7f1f-...json`.
-- Config `~/.cloudflared/config-nixre.yml`:
-  - `git.nixre.dev` → `http://localhost:3000`
-  - `ssh.nixre.dev` → `ssh://localhost:3022`
+- One tunnel, credentials file in `~/.cloudflared/` (e.g. `~/.cloudflared/<tunnel-id>.json`).
+- Config `~/.cloudflared/config.yml` with ingress rules:
+  - `git.<your-domain>` → `http://localhost:3000`
+  - `ssh.<your-domain>` → `ssh://localhost:3022`
   - **catch-all** → `http://localhost:3003` (deployed-app custom domains; routes by Host header)
-- Runs as a **user** systemd service `cloudflared-nixre` (enabled, with Linger) so no sudo needed. Exec: `cloudflared --no-autoupdate --config ... tunnel run`.
+- Run as a **user** systemd service (enabled, with Linger) so no sudo is needed. Exec: `cloudflared --no-autoupdate --config ~/.cloudflared/config.yml tunnel run`.
 
-## Environment knobs (`/opt/nixre/.env`, passed to nixre-core)
+## Environment knobs (`.env`, passed to nixre-core)
 
 | Var | Meaning |
 |---|---|
@@ -46,10 +45,10 @@ Internet ──Cloudflare Tunnel──▶ git.nixre.dev ──▶ host Caddy :30
 ## Backend layout (`backend/src/`)
 
 - `routes/` — auth.js, forge.js (spaces/repos/git/PRs), pullreq.js, account.js, ai.js (assistant + providers), deployments.js, webhooks.js, internal.js, sync.js.
-- `lib/` — `auth.js` (argon2, sessions, PATs), `chatApply.js` / `agentJobs.js` / `agentLoop.js` (assistant run + SSE), `ai.js` (providers + streaming), `cloudflareDns.js` (auto-DNS), deployments + deploy drivers, `dotenv.ts` (UI-side env parser).
+- `lib/` — `auth.js` (argon2, sessions, PATs), `chatApply.js` / `agentJobs.js` / `agentLoop.js` (assistant run + SSE), `ai.js` (providers + streaming), `cloudflareDns.js` (auto-DNS), deployment drivers, `dotenv.ts` (UI-side env parser).
 - `git/` — git CLI wrappers + Smart HTTP transport.
-- `db/migrations/` — SQL migrations applied on boot. Latest relevant: `022_cf_domains.sql` (CF zone/record ids), `023_tls_risk.sql` (`deploy_domains.tls_risk`).
+- `db/migrations/` — SQL migrations applied on boot. Relevant: `022_cf_domains.sql` (CF zone/record ids), `023_tls_risk.sql` (`deploy_domains.tls_risk`).
 
 ## Git object storage
 
-Bare repos on `./data/repos` volume (RH: `/data/repos`). Postgres holds metadata only — same split as Gitea/GitLab.
+Bare repos on `./data/repos` volume (mounted at `/data/repos` in core). Postgres holds metadata only — same split as Gitea/GitLab.

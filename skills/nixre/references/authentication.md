@@ -6,8 +6,7 @@ Nixre owns its own auth: **argon2 password hashes, server-side sessions, WebAuth
 
 - `POST /api/v1/login` with `{username, password}` → session cookie/token.
 - Passkeys (WebAuthn) live server-side in your account and can open a new session.
-- Sessions are stored in the `sessions` table (plaintext token id for debugging).
-- **Logout** invalidates the session.
+- Sessions are tracked server-side; **logout** invalidates the session.
 
 ## Mint a personal access token (for git over HTTPS)
 
@@ -18,46 +17,34 @@ Nixre owns its own auth: **argon2 password hashes, server-side sessions, WebAuth
 Username is **ignored**; the **password must be a PAT**.
 
 ```bash
-git clone https://git.nixre.dev/git/<space>/<repo>.git
+git clone https://git.<your-domain>/git/<space>/<repo>.git
 # prompts: username = anything, password = nxp_...
 # or embed:
-git clone https://<username>:<token>@git.nixre.dev/git/<space>/<repo>.git
+git clone https://<username>:<token>@git.<your-domain>/git/<space>/<repo>.git
 ```
 
 Credential managers cache it after the first success. If git keeps failing after fixing creds, clear the stale cache:
-- Windows: Credential Manager → Windows Credentials → `git:https://git.nixre.dev`
+- Windows: Credential Manager → Windows Credentials → `git:https://<host>`
 - macOS: `git credential-osxkeychain erase`
 
 ## Git over SSH (recommended — no prompts, no expiry)
 
 1. Register a public key at **Settings → SSH Keys** (fingerprints shown).
-2. The `nixre-ssh` container's `AuthorizedKeysCommand` resolves keys via core, and each session is locked to a per-key git-shell wrapper that ACL-checks the repo.
+2. The `nixre-ssh` container's `AuthorizedKeysCommand` resolves keys via core, and each session is locked to a per-key git-shell wrapper that ACL-checks the repo. A key can be known yet still be denied for a repo it isn't allowed on.
 3. Clone over the tunnel:
 
 ```bash
-git clone ssh://git@ssh.nixre.dev:3022/<space>/<repo>.git
+git clone ssh://git@ssh.<your-domain>:3022/<space>/<repo>.git
 ```
 
-On this server, connect with `ProxyCommand cloudflared access ssh` if you run the client from the host itself; from your own machine plain `ssh` through the tunnel `ssh.nixre.dev:3022` works.
+If you run the client from the host itself, connect via `ProxyCommand cloudflared access ssh`; from your own machine plain `ssh` through `ssh.<your-domain>:3022` works.
 
 ## Admin
 
 - The **first account** ever created is the instance admin (`admin` flag set at registration).
 - Admin endpoints: `GET/PATCH /api/v1/admin/users`, and `POST /api/v1/admin/registration` (set/reset whether self-service register is open).
-- **Registration is closed** on this instance (`NIXRE_REGISTRATION_CLOSED=true`, plus the kill switch). Add users by having them register when the switch is open, or insert/update directly in the DB.
+- **Registration is closed** by default (`NIXRE_REGISTRATION_CLOSED=true`, plus the kill switch). Add users by having them register when the switch is open, or insert/update directly in the DB.
 
 ## GitHub access for the assistant
 
-The assistant can clone/mirror `github.com` repos via your stored GitHub personal access token (set in the assistant settings). **There is no shell GitHub credential on this server**, so a terminal `git push` to GitHub fails with "could not read Username for 'https://github.com'". Any GitHub push must be done from a machine with credentials.
-
-## Debug session (developer only)
-
-For local testing, insert a temp session into the `sessions` table and use `Authorization: Bearer dbg-XX`. **Always delete debug sessions after use.**
-
-```bash
-docker exec nixre-db psql -U nixre -d nixre \
-  -c "INSERT INTO sessions (id, user_uid, created, expires) VALUES ('dbg-XX', 'Lyan', $1, $2);"
-# then: curl -H 'Authorization: Bearer dbg-XX' https://git.nixre.dev/api/v1/user
-```
-
-Admin user uid on this instance is `Lyan`.
+The assistant can clone/mirror `github.com` repos via your stored GitHub personal access token (set in the assistant settings). If the host has no shell GitHub credential, a terminal `git push` to GitHub fails with "could not read Username for 'https://github.com'". Any GitHub push must be done from a machine with credentials.
