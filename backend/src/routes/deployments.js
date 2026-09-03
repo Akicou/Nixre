@@ -63,7 +63,13 @@ export function deploymentRoutes(pool, authenticate) {
   async function loadService(req, res) {
     const repo = await loadRepo(req, res);
     if (!repo) return null;
-    const serviceId = Number(req.params.serviceId);
+    // Routes define the service param as ':id'; reject non-numeric ids with a
+    // 404 instead of letting Number() produce NaN and blow up in Postgres.
+    const serviceId = Number(req.params.id);
+    if (!Number.isInteger(serviceId) || serviceId <= 0) {
+      res.status(404).json({ message: 'Service not found' });
+      return null;
+    }
     const { rows } = await pool.query(
       'SELECT * FROM deploy_services WHERE id = $1 AND repo_id = $2',
       [serviceId, repo.id],
