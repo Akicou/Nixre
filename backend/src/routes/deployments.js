@@ -18,6 +18,7 @@ import {
   cloudflareConfigured,
   createTunnelCname,
   deleteDnsRecord,
+  findZoneId,
   tunnelCnameTarget,
 } from '../lib/cloudflareDns.js';
 
@@ -849,13 +850,14 @@ export function deploymentRoutes(pool, authenticate) {
     const ctx = await loadService(req, res);
     if (!ctx) return;
     const { rows } = await pool.query(
-      'SELECT id, kind, domain, cf_zone_id, cf_record_id, created FROM deploy_domains WHERE service_id = $1 ORDER BY created',
+      'SELECT id, kind, domain, tls_risk, cf_zone_id, cf_record_id, created FROM deploy_domains WHERE service_id = $1 ORDER BY created',
       [ctx.service.id],
     );
     res.json(rows.map(r => ({
       id: Number(r.id),
       kind: r.kind,
       domain: r.domain,
+      tls_risk: Boolean(r.tls_risk),
       created: Number(r.created),
       dns: dnsStatus(r),
       guidance: domainGuidance(r.domain, r.kind),
@@ -879,9 +881,40 @@ export function deploymentRoutes(pool, authenticate) {
       res.status(409).json({ message: 'That domain is already routed on this instance' });
       return;
     }
+
+    // TLS depth check (tunnel kind): Cloudflare Universal SSL covers only one
+    // level of subdomain per zone on free plans — a.b.example.com gets TLS
+    // handshake failures. Require an explicit confirmation for those instead
+    // of silently attaching something that won't serve HTTPS.
+    let tlsRisk = false;
+    if (kind === 'tunnel' && cloudflareConfigured()) {
+      try {
+        const zone = await findZoneId(domain);
+        const depth = domain.split('.').length - zone.zoneName.split('.').length;
+        if (depth > 1) {
+          tlsRisk = true;
+          if (!req.body?.confirm) {
+            res.status(409).json({
+              code: 'TLS_DEPTH_CONFIRMATION',
+              depth,
+              zone: zone.zoneName,
+              message:
+                `${domain} sits ${depth} levels under ${zone.zoneName}. Cloudflare Universal SSL (free plans) ` +
+                `covers only one level of subdomain, so HTTPS would fail for visitors with a TLS handshake error. ` +
+                `Use a single-level name under the zone, or attach anyway if you know TLS is handled (paid plan / ACM).`,
+            });
+            return;
+          }
+        }
+      } catch {
+        // Zone not visible to the token — no TLS verdict; auto-DNS will
+        // surface its own error downstream if applicable.
+      }
+    }
+
     const { rows } = await pool.query(
-      'INSERT INTO deploy_domains (service_id, kind, domain, created) VALUES ($1,$2,$3,$4) RETURNING id',
-      [ctx.service.id, kind, domain, Date.now()],
+      'INSERT INTO deploy_domains (service_id, kind, domain, tls_risk, created) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+      [ctx.service.id, kind, domain, tlsRisk, Date.now()],
     );
     const row = { id: rows[0].id, kind, domain };
     const dns = await provisionDns(row, domain);
@@ -890,6 +923,7 @@ export function deploymentRoutes(pool, authenticate) {
       id: Number(rows[0].id),
       kind,
       domain,
+      tls_risk: tlsRisk,
       dns,
       guidance: domainGuidance(domain, kind),
     });
@@ -991,17 +1025,23 @@ export function deploymentRoutes(pool, authenticate) {
     );
 
     const domainsByService = new Map();
+    const tlsRiskByService = new Map();
     if (services.length) {
       const ids = services.map(s => s.id);
       const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
       const { rows: domainRows } = await pool.query(
-        `SELECT service_id, domain FROM deploy_domains WHERE service_id IN (${placeholders}) ORDER BY created`,
+        `SELECT service_id, domain, tls_risk FROM deploy_domains WHERE service_id IN (${placeholders}) ORDER BY created`,
         ids,
       );
       for (const d of domainRows) {
         const list = domainsByService.get(Number(d.service_id)) || [];
         list.push(d.domain);
         domainsByService.set(Number(d.service_id), list);
+        if (d.tls_risk) {
+          const risky = tlsRiskByService.get(Number(d.service_id)) || [];
+          risky.push(d.domain);
+          tlsRiskByService.set(Number(d.service_id), risky);
+        }
       }
     }
 
@@ -1013,6 +1053,7 @@ export function deploymentRoutes(pool, authenticate) {
         repo_uid: s.repo_uid,
         alert: s.last_failed_deployment_id != null,
         domains: domainsByService.get(Number(s.id)) || [],
+        tls_risk_domains: tlsRiskByService.get(Number(s.id)) || [],
       }));
     }
 

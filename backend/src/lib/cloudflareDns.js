@@ -43,7 +43,7 @@ async function cfFetch(path, opts = {}) {
 
 // Walk suffixes upward from the full hostname until a zone the token can see
 // matches: app.staging.example.com -> staging.example.com -> example.com.
-async function findZoneId(domain) {
+export async function findZoneId(domain) {
   const labels = domain.split('.');
   for (let i = 1; i < labels.length - 1; i++) {
     const candidate = labels.slice(i).join('.');

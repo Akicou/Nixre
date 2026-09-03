@@ -247,19 +247,65 @@ describe('DeploymentsPage', () => {
         kind: 'caddy',
         domain: 'shop.acme.dev',
         created: 1,
+        tls_risk: false,
         guidance: {
           dns: [{ type: 'A', name: '@', target: '<THIS-SERVER-IP>' }],
           notes: ['Forward requests for shop.acme.dev to port 3003.'],
           caddy_snippet: 'shop.acme.dev {\n  reverse_proxy 127.0.0.1:3003\n}',
         },
       },
+      {
+        id: 4,
+        kind: 'tunnel',
+        domain: 'deep.a.b.acme.dev',
+        created: 2,
+        tls_risk: true,
+        dns: { auto: true, status: 'created', target: 't.cfargotunnel.com' },
+        guidance: {
+          dns: [{ type: 'CNAME', name: 'deep.a', target: 't.cfargotunnel.com', proxied: true }],
+          notes: ['auto-managed'],
+        },
+      },
     ]);
     mountPage();
     fireEvent.click(await screen.findByText('web'));
     fireEvent.click(await screen.findByRole('button', { name: 'domains' }));
-    expect(await screen.findByTestId('domain-card')).toBeInTheDocument();
+    expect((await screen.findAllByTestId('domain-card')).length).toBe(2);
     expect(screen.getAllByText(/THIS-SERVER-IP/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/reverse_proxy 127\.0\.0\.1:3003/).length).toBeGreaterThan(0);
+    // TLS-risky domain gets a persistent warning badge
+    expect(screen.getByTestId('tls-risk-badge')).toBeInTheDocument();
+  });
+
+  it('risky tunnel domains require explicit TLS confirmation before attach', async () => {
+    api.listDomains.mockResolvedValue([]);
+    api.addDomain.mockRejectedValueOnce(Object.assign(new Error('needs confirm'), {
+      status: 409,
+      body: {
+        code: 'TLS_DEPTH_CONFIRMATION',
+        depth: 2,
+        zone: 'acme.dev',
+        message: 'deep.a.b.acme.dev sits 2 levels under acme.dev. HTTPS would fail on free plans.',
+      },
+    }));
+    mountPage();
+    fireEvent.click(await screen.findByText('web'));
+    fireEvent.click(await screen.findByRole('button', { name: 'domains' }));
+    const input = await screen.findByPlaceholderText('app.yourdomain.com');
+    fireEvent.change(input, { target: { value: 'deep.a.b.acme.dev' } });
+    // choose tunnel kind
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'tunnel' } });
+    fireEvent.click(screen.getByRole('button', { name: /Attach domain/i }));
+
+    // Confirmation panel appears instead of attaching
+    expect(await screen.findByTestId('tls-confirm')).toBeInTheDocument();
+    expect(screen.getByText(/broken HTTPS/i)).toBeInTheDocument();
+    expect(api.addDomain).toHaveBeenCalledTimes(1); // only the unconfirmed attempt
+
+    // Confirming re-posts with confirm=true and succeeds
+    api.addDomain.mockResolvedValueOnce({ id: 9, kind: 'tunnel', domain: 'deep.a.b.acme.dev', created: 3, tls_risk: true, guidance: { dns: [], notes: [] } });
+    fireEvent.click(screen.getByTestId('tls-confirm-anyway'));
+    await waitFor(() => expect(api.addDomain).toHaveBeenCalledWith('acme', 'webshop', 12, 'deep.a.b.acme.dev', 'tunnel', true));
   });
 
   it('deleting an env var hits the surgical endpoint, not full-replace PUT', async () => {

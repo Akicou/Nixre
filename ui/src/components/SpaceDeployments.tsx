@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
+  AlertTriangle,
   Check,
   CircleDot,
   Loader2,
@@ -146,7 +147,15 @@ export const SpaceDeployments: React.FC<{ spaceUid: string }> = ({ spaceUid }) =
                     </span>
                   </div>
                   {svc.domains?.length ? (
-                    <p className="text-[11px] font-mono text-txt-brand truncate">{svc.domains[0]}</p>
+                    <p
+                      className="text-[11px] font-mono text-txt-brand truncate flex items-center gap-1"
+                      title={svc.tls_risk_domains?.includes(svc.domains[0]) ? 'TLS likely broken on free Cloudflare plans (multi-level subdomain)' : undefined}
+                    >
+                      {svc.tls_risk_domains?.includes(svc.domains[0]) && (
+                        <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
+                      )}
+                      {svc.domains[0]}
+                    </p>
                   ) : (
                     <p className="text-[11px] font-mono text-txt-tertiary truncate">
                       {svc.repo_uid} · {svc.branch}

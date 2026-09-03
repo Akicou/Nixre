@@ -532,19 +532,26 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
   const [draft, setDraft] = useState('');
   const [kind, setKind] = useState<'caddy' | 'tunnel'>('caddy');
   const [err, setErr] = useState('');
+  const [pendingConfirm, setPendingConfirm] = useState<{ domain: string; kind: string; message: string } | null>(null);
 
   const load = useCallback(() => {
     api.listDomains(space!, repoUid!, service.id).then(setDomains).catch(() => {});
   }, [space, repoUid, service.id]);
   useEffect(load, [load]);
 
-  const add = async () => {
+  const add = async (confirm = false) => {
     setErr('');
     try {
-      await api.addDomain(space!, repoUid!, service.id, draft.trim(), kind);
+      await api.addDomain(space!, repoUid!, service.id, draft.trim(), kind, confirm);
       setDraft('');
+      setPendingConfirm(null);
       load();
-    } catch (e) {
+    } catch (e: unknown) {
+      const body = (e as { body?: { code?: string; message?: string } }).body;
+      if (body?.code === 'TLS_DEPTH_CONFIRMATION') {
+        setPendingConfirm({ domain: draft.trim(), kind, message: body.message || 'TLS confirmation required.' });
+        return;
+      }
       setErr((e as Error).message);
     }
   };
@@ -578,7 +585,7 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
         <input
           value={draft}
           onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && draft.trim() && add()}
+          onKeyDown={e => e.key === 'Enter' && draft.trim() && add(false)}
           placeholder="app.yourdomain.com"
           className="bg-surface-base border border-border-subtle rounded-md px-3 py-2 text-sm flex-1 min-w-[220px] text-txt-primary"
         />
@@ -586,11 +593,39 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
           <option value="caddy">Host Caddy / Nginx</option>
           <option value="tunnel">Cloudflare Tunnel</option>
         </select>
-        <button onClick={add} disabled={!draft.trim()} className="px-3 py-2 text-xs font-medium rounded-md bg-brand/10 text-brand border border-brand/30 hover:bg-brand/20 disabled:opacity-40 inline-flex items-center gap-1">
+        <button onClick={() => add(false)} disabled={!draft.trim()} className="px-3 py-2 text-xs font-medium rounded-md bg-brand/10 text-brand border border-brand/30 hover:bg-brand/20 disabled:opacity-40 inline-flex items-center gap-1">
           <Globe className="w-3.5 h-3.5" /> Attach domain
         </button>
       </div>
       {err && <p className="text-xs text-red-400" role="alert">{err}</p>}
+
+      {pendingConfirm && (
+        <div className="border border-amber-400/40 bg-amber-400/[0.06] rounded-lg p-4 space-y-2" data-testid="tls-confirm" role="alertdialog" aria-label="TLS warning confirmation">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-amber-300">This domain will likely have broken HTTPS</p>
+              <p className="text-[11px] text-txt-secondary mt-1 leading-relaxed">{pendingConfirm.message}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={() => add(true)}
+              data-testid="tls-confirm-anyway"
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-amber-400/50 text-amber-300 hover:bg-amber-400/10"
+            >
+              <span className="inline-flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Attach anyway</span>
+            </button>
+            <button
+              onClick={() => setPendingConfirm(null)}
+              data-testid="tls-confirm-cancel"
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-border-subtle text-txt-secondary hover:text-txt-primary"
+            >
+              Pick a different name
+            </button>
+          </div>
+        </div>
+      )}
 
       {domains.length === 0 && (
         <p className="text-xs text-txt-tertiary">
@@ -623,6 +658,15 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
               {dns.auto && dns.status === 'pending' && (
                 <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 border border-amber-400/30 bg-amber-400/10 rounded px-1.5 py-0.5">
                   <AlertTriangle className="w-3 h-3" /> DNS record pending
+                </span>
+              )}
+              {d.tls_risk && (
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 border border-amber-400/30 bg-amber-400/10 rounded px-1.5 py-0.5 cursor-help"
+                  data-testid="tls-risk-badge"
+                  title="Multi-level subdomain: outside Cloudflare Universal SSL coverage on free plans — visitors will get TLS handshake errors over HTTPS. Attach a single-level name instead, or fix via a paid plan / custom certificate."
+                >
+                  <AlertTriangle className="w-3 h-3" /> TLS likely broken
                 </span>
               )}
             </div>

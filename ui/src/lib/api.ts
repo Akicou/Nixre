@@ -294,11 +294,15 @@ class ApiClient {
 
     if (!res.ok) {
       let msg = `HTTP error ${res.status}`;
+      let body: Record<string, unknown> | undefined;
       try {
-        const body = await res.json();
-        if (body.message) msg = body.message;
+        body = await res.json();
+        if (typeof body.message === "string") msg = body.message;
       } catch {}
-      throw new Error(msg);
+      const err = new Error(msg) as Error & { status?: number; body?: Record<string, unknown> };
+      err.status = res.status;
+      err.body = body;
+      throw err;
     }
 
     const contentType = res.headers.get('content-type');
@@ -516,7 +520,7 @@ class ApiClient {
       let msg = `HTTP error ${res.status}`;
       try {
         const body = JSON.parse(text);
-        if (body.message) msg = body.message;
+        if (typeof body.message === "string") msg = body.message;
       } catch {}
       throw new Error(msg);
     }
@@ -1004,10 +1008,11 @@ class ApiClient {
     serviceId: number,
     domain: string,
     kind: 'caddy' | 'tunnel' = 'caddy',
+    confirm = false,
   ): Promise<DomainEntry> {
     return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}/domains`, {
       method: 'POST',
-      body: JSON.stringify({ domain, kind }),
+      body: JSON.stringify({ domain, kind, confirm }),
     });
   }
 
@@ -1102,6 +1107,7 @@ export interface DeployService {
   repo_uid?: string;
   // Space-board-only fields:
   domains?: string[];
+  tls_risk_domains?: string[];
 }
 
 export interface DockerfileCandidate {
@@ -1197,6 +1203,7 @@ export interface DomainEntry {
   kind: 'caddy' | 'tunnel';
   domain: string;
   created: number;
+  tls_risk?: boolean;
   dns?: DomainDnsStatus;
   guidance: {
     dns: DomainGuidanceDns[];
