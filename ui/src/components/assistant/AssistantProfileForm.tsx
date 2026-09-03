@@ -9,6 +9,7 @@ import {
   Plus,
   Trash2,
   Star,
+  Search,
 } from 'lucide-react';
 import {
   listAiProviders,
@@ -42,6 +43,23 @@ const PROVIDER_KINDS: { id: string; label: string; hint?: string }[] = [
 const inputCls =
   'w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition outline-none';
 
+/** Filter the model list by a text query and an enabled/disabled/all status. */
+export function filterModels(
+  models: string[],
+  enabled: string[],
+  query: string,
+  filter: 'all' | 'enabled' | 'disabled',
+): string[] {
+  const q = query.trim().toLowerCase();
+  return models.filter(m => {
+    const on = enabled.includes(m);
+    if (filter === 'enabled' && !on) return false;
+    if (filter === 'disabled' && on) return false;
+    if (q && !m.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
 /**
  * Multi-provider manager: add several AI providers (each validated + model-
  * fetched server-side), pick which models are enabled for chat, and choose
@@ -66,6 +84,10 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
   const [creating, setCreating] = useState(false);
 
   const [repoProfile, setRepoProfileState] = useState<AssistantRepoProfile>(() => defaultRepoProfile());
+
+  // Model-list search + status filter (per provider card).
+  const [modelQuery, setModelQuery] = useState('');
+  const [modelFilter, setModelFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
 
   const reload = async () => {
     try {
@@ -290,22 +312,48 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
                   {p.enabledModels.length}/{p.models.length} enabled
                 </span>
               </div>
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <div className="relative flex-1 min-w-[140px]">
+                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-txt-tertiary pointer-events-none" />
+                  <input
+                    value={modelQuery}
+                    onChange={e => setModelQuery(e.target.value)}
+                    placeholder="Search models…"
+                    className="w-full pl-7 pr-3 py-1.5 text-[11px] font-mono rounded-md bg-surface-base border border-border-subtle text-txt-primary placeholder:text-txt-tertiary focus:border-brand transition outline-none"
+                  />
+                </div>
+                <div className="flex items-center rounded-md border border-border-subtle overflow-hidden text-[10px] font-mono shrink-0">
+                  {(['all', 'enabled', 'disabled'] as const).map(f => (
+                    <button
+                      key={f}
+                      onClick={() => setModelFilter(f)}
+                      className={`px-2 py-1.5 transition ${modelFilter === f ? 'bg-brand/10 text-brand' : 'text-txt-tertiary hover:text-txt-primary'}`}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </div>
               {(() => {
                 // Local inference servers (llama.cpp, Unsloth, LM Studio…)
                 // can serve "whatever is loaded right now" via the sentinel.
                 const list = isLocalKind(p.provider)
                   ? [LOCAL_MODEL, ...p.models.filter(m => m !== LOCAL_MODEL)]
                   : p.models;
-                if (list.length === 0) {
+                const filtered = filterModels(list, p.enabledModels, modelQuery, modelFilter);
+                const q = modelQuery.trim().toLowerCase();
+                if (filtered.length === 0) {
                   return (
                     <p className="text-[11px] text-txt-tertiary italic">
-                      No models yet — hit the refresh button to fetch them from the provider.
+                      {q || modelFilter !== 'all'
+                        ? 'No models match this search/filter.'
+                        : 'No models yet — hit the refresh button to fetch them from the provider.'}
                     </p>
                   );
                 }
                 return (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-44 overflow-y-auto">
-                    {list.map(m => {
+                    {filtered.map(m => {
                       const on = p.enabledModels.includes(m);
                       const isSentinel = m === LOCAL_MODEL;
                       return (
