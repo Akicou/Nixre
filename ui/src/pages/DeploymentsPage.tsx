@@ -1337,6 +1337,27 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
                     {!isNew && (
                       <button
                         onClick={async () => {
+                          if (revealed[key]) {
+                            setRevealed(r => ({ ...r, [key]: false }));
+                            return;
+                          }
+                          try {
+                            const out = await api.revealEnvVar(space!, repoUid!, service.id, key);
+                            setValues(v => ({ ...v, [key]: out.value }));
+                            setRevealed(r => ({ ...r, [key]: true }));
+                          } catch {
+                            /* permission */
+                          }
+                        }}
+                        className="text-txt-tertiary hover:text-txt-primary shrink-0"
+                        title={revealed[key] ? 'Hide' : 'View value'}
+                      >
+                        {revealed[key] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    )}
+                    {!isNew && (
+                      <button
+                        onClick={async () => {
                           try {
                             const out = await api.revealEnvVar(space!, repoUid!, service.id, key);
                             setValues(v => ({ ...v, [key]: out.value }));

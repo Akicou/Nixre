@@ -229,15 +229,21 @@ describe('DeploymentsPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'env' }));
     const input = await screen.findByPlaceholderText('••••••••');
     expect(input).toHaveAttribute('type', 'password');
-    fireEvent.click(screen.getByTitle('Edit value'));
+    fireEvent.click(screen.getByTitle('View value'));
     await waitFor(() => {
       expect(api.revealEnvVar).toHaveBeenCalledWith('acme', 'webshop', 12, 'API_TOKEN');
-      const editing = screen.getByDisplayValue('s3cr3t-value') as HTMLInputElement;
-      expect(editing.type).toBe('text');
+      const viewing = screen.getByDisplayValue('s3cr3t-value') as HTMLInputElement;
+      expect(viewing.type).toBe('text');
     });
-    // Closing the editor keeps the row masked again
-    fireEvent.click(screen.getByTitle(/Done/));
+    // Hide re-masks without entering edit mode
+    fireEvent.click(screen.getByTitle('Hide'));
     expect(screen.getByPlaceholderText('••••••••')).toHaveAttribute('type', 'password');
+    // Edit enters inline editor with the decrypted value
+    fireEvent.click(screen.getByTitle('Edit value'));
+    await waitFor(() => expect(screen.getByDisplayValue('s3cr3t-value')).toBeTruthy());
+    // Closing the editor re-masks the row
+    fireEvent.click(screen.getByTitle(/Done/));
+    await waitFor(() => expect(screen.getByPlaceholderText('••••••••')).toHaveAttribute('type', 'password'));
   });
 
   it('domain cards present registrar-ready DNS guidance', async () => {
