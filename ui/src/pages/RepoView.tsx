@@ -34,6 +34,16 @@ export const RepoView: React.FC = () => {
   const repoPath = `${space}/${repoUid}`;
 
   const activeTab = searchParams.get('tab') || 'code';
+  // Deployments live inside the code view as a collapsible section. Deep-link
+  // with ?deploys=1; the legacy ?tab=deployments also opens it.
+  const deploysOpen = searchParams.get('deploys') === '1' || activeTab === 'deployments';
+  const setDeploysOpen = (open: boolean) => setSearchParams(prev => {
+    const next = new URLSearchParams(prev);
+    if (open) next.set('deploys', '1');
+    else next.delete('deploys');
+    if (next.get('tab') === 'deployments') next.delete('tab');
+    return next;
+  });
   const currentBranch = searchParams.get('branch') || 'main';
   const currentPath = searchParams.get('path') || '';
   const currentNodeType = resolveNodeType(searchParams.get('type'));
@@ -325,16 +335,6 @@ export const RepoView: React.FC = () => {
         </button>
 
         <button
-          onClick={() => { setSearchParams({ tab: 'deployments' }); }}
-          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
-            activeTab === 'deployments' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
-          }`}
-        >
-          <Rocket className="w-4 h-4" />
-          <span>Deployments</span>
-        </button>
-
-        <button
           onClick={() => { setSearchParams({ tab: 'settings' }); }}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition -mb-px shrink-0 whitespace-nowrap ${
             activeTab === 'settings' ? 'border-brand text-txt-primary font-semibold' : 'border-transparent text-txt-secondary hover:text-txt-primary'
@@ -578,6 +578,22 @@ export const RepoView: React.FC = () => {
               </div>
             </div>
           )}
+
+          {/* Deployments — embedded section (collapsible), part of the code view */}
+          {deploysOpen ? (
+            <DeploymentsSection onCollapse={() => setDeploysOpen(false)} />
+          ) : (
+            <button
+              onClick={() => setDeploysOpen(true)}
+              data-testid="deployments-collapsed"
+              className="mt-6 w-full flex items-center gap-2 px-4 py-3 border border-border-subtle rounded-lg bg-surface-canvas hover:bg-surface-subtle transition text-left"
+            >
+              <Rocket className="w-4 h-4 text-brand" />
+              <span className="text-xs font-semibold text-txt-primary">Deployments</span>
+              <span className="text-[11px] text-txt-tertiary">Docker apps from this repo</span>
+              <ChevronDown className="w-3.5 h-3.5 text-txt-tertiary ml-auto" />
+            </button>
+          )}
         </div>
       )}
 
@@ -733,8 +749,6 @@ export const RepoView: React.FC = () => {
       )}
 
       {/* TAB CONTENT: SETTINGS */}
-      {activeTab === 'deployments' && <DeploymentsSection />}
-
       {activeTab === 'settings' && space && (
         <RepoSettingsPanel
           repo={repo}

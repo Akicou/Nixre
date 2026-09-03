@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   Check,
   ChevronLeft,
+  ChevronDown,
   CircleDot,
   Copy,
   Cpu,
@@ -1322,9 +1323,10 @@ const SettingsIconActions: React.FC<{ name: string; onOpen: () => void }> = ({ n
 // ---------------------------------------------------------------------------
 
 // DeploymentsSection — the full deployments UI (services list, creation
-// wizard, service detail). Embedded as a tab inside RepoView (`?tab=deployments`),
-// so no standalone route: useParams supplies space/repo from the repo route.
-export const DeploymentsSection: React.FC = () => {
+// wizard, service detail). Rendered as an embedded, collapsible section inside
+// the repo's Code view (deep-link ?deploys=1), so no standalone route:
+// useParams supplies space/repo from the repo route.
+export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCollapse }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
   const [services, setServices] = useState<DeployService[] | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -1364,6 +1366,15 @@ export const DeploymentsSection: React.FC = () => {
           <span className="text-xs px-2 py-0.5 rounded-full bg-surface-subtle text-txt-secondary font-mono border border-border-subtle font-normal">
             {services?.length ?? 0} services
           </span>
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              title="Collapse"
+              className="text-txt-tertiary hover:text-txt-primary"
+            >
+              <ChevronDown className="w-4 h-4 rotate-180" />
+            </button>
+          )}
         </h2>
         <p className="text-sm text-txt-secondary mt-0.5">
           Ship any root-directory with its own Dockerfile. Pushes to a watched branch auto-deploy; failures fall back to the last healthy release.
