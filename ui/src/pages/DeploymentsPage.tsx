@@ -517,7 +517,7 @@ const HttpLogsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
         />
       </div>
 
-      <div className="rounded-lg border border-border-subtle overflow-hidden">
+      <div className="rounded-lg border border-border-subtle overflow-x-auto">
         <table className="w-full text-left text-xs font-mono divide-y divide-border-subtle">
           <thead className="bg-surface-subtle text-txt-secondary">
             <tr>
@@ -830,7 +830,7 @@ const DeploysPanel: React.FC<{ service: DeployService; onChanged: () => void }> 
         </button>
       </div>
 
-      <div className="rounded-lg border border-border-subtle overflow-hidden">
+      <div className="rounded-lg border border-border-subtle overflow-x-auto">
         <table className="w-full text-left text-xs divide-y divide-border-subtle">
           <thead className="bg-surface-subtle text-txt-secondary">
             <tr>
@@ -958,7 +958,7 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
   const lastFailedId = service.last_failed_deployment_id;
 
   return (
-    <div className="space-y-5 mt-6">
+    <div className="space-y-5 mt-6 min-w-0">
       <button onClick={onBack} className="inline-flex items-center gap-1 text-xs text-txt-secondary hover:text-txt-primary">
         <ChevronLeft className="w-3.5 h-3.5" /> All services
       </button>
@@ -1014,7 +1014,7 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
         </div>
       )}
 
-      <div className="flex gap-1 border-b border-border-subtle -mt-1">
+      <div className="flex gap-1 border-b border-border-subtle -mt-1 overflow-x-auto scrollbar-thin">
         {(['overview', 'deploys', 'logs', 'env', 'domains'] as Tab[]).map(t => (
           <button
             key={t}
@@ -1597,8 +1597,8 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
   const selected = services?.find(s => s.id === selectedId) || null;
 
   const header = (
-    <div className="mb-5 flex items-start justify-between gap-4">
-      <div>
+    <div className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+      <div className="min-w-0">
         <h2 className="text-lg font-bold text-txt-primary flex items-center gap-2">
           <Rocket className="w-5 h-5 text-brand" />
           Deployments
