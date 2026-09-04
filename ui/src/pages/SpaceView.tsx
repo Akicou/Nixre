@@ -29,6 +29,7 @@ import {
 import { Avatar } from '../components/Avatar';
 import { ProfileGoals } from '../components/ProfileGoals';
 import { ContributionGraph, contributionYears } from '../components/ContributionGraph';
+import { SpaceDeployments } from '../components/SpaceDeployments';
 
 const Markdown = React.lazy(() => import('../components/Markdown').then(m => ({ default: m.Markdown })));
 
@@ -70,10 +71,11 @@ const SocialRow: React.FC<{ link: SocialLink }> = ({ link }) => {
   );
 };
 
-type OrgTab = 'overview' | 'repositories' | 'people' | 'settings';
+type OrgTab = 'overview' | 'repositories' | 'deployments' | 'people' | 'settings';
 
 function tabFromSearch(raw: string | null, opts: { isPersonal: boolean; canManage: boolean }): OrgTab {
   if (raw === 'repositories') return 'repositories';
+  if (raw === 'deployments') return 'deployments';
   if (!opts.isPersonal && raw === 'people') return 'people';
   if (!opts.isPersonal && opts.canManage && raw === 'settings') return 'settings';
   return 'overview';
@@ -594,6 +596,18 @@ export const SpaceView: React.FC = () => {
             {repos.length}
           </span>
         </button>
+        <button
+          type="button"
+          onClick={() => setTab('deployments')}
+          data-testid="space-tab-deployments"
+          className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
+            activeTab === 'deployments'
+              ? 'border-brand text-txt-primary'
+              : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
+        >
+          Deployments
+        </button>
         {!isPersonal && (
           <button
             type="button"
@@ -816,6 +830,8 @@ export const SpaceView: React.FC = () => {
               )}
             </div>
           )}
+
+          {activeTab === 'deployments' && <SpaceDeployments spaceUid={space.uid} />}
 
           {activeTab === 'people' && (
             <OrgPeoplePanel

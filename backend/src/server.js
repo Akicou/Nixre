@@ -22,12 +22,15 @@ import { accountRoutes } from './routes/account.js';
 import { avatarRoutes } from './routes/avatar.js';
 import { internalRoutes } from './routes/internal.js';
 import { webhookRoutes } from './routes/webhooks.js';
+import { deploymentRoutes } from './routes/deployments.js';
 import { aiRoutes } from './routes/ai.js';
 import { smartHttp } from './git/smartHttp.js';
 import { REPOS_ROOT } from './git/repo.js';
 import { initSandbox } from './lib/agentSandbox.js';
 import { sweepStaleRuns } from './lib/agentJobs.js';
 import { loadInstanceSettings } from './lib/instanceSettings.js';
+import { deployEngine, setDeployProxy } from './lib/deployRuntime.js';
+import { createDeployProxy } from './lib/deployProxy.js';
 import { mkdir, access, constants } from 'node:fs/promises';
 
 const PORT = Number(process.env.PORT || 3002);
@@ -87,6 +90,7 @@ app.use('/api/v1', pullRequestRoutes(pool, authenticate));
 app.use('/api/v1', internalRoutes(pool, authenticate));
 app.use('/api/v1', webhookRoutes(pool, authenticate));
 app.use('/api/v1', aiRoutes(pool, authenticate));
+app.use('/api/v1', deploymentRoutes(pool, authenticate));
 
 // Git Smart HTTP transport. No body parser — the request stream is piped
 // straight into git http-backend (CGI).
@@ -136,9 +140,39 @@ async function boot() {
   if (settings.registrationClosed) console.log('Registration closed (signup kill switch active)');
   await sweepStaleRuns(pool);
   await initSandbox();
+  await bootDeployments();
   app.listen(PORT, () => {
     console.log(`nixre-core listening on :${PORT} — sovereign, no forge dependency`);
   });
+}
+
+// Deployments: reconcile in-flight runs from a previous process, autostart
+// services whose containers died with the host, then open the central proxy
+// port for routed app traffic. Docker being absent degrades gracefully —
+// sweeps keep running and pick deployments up when it appears.
+async function bootDeployments() {
+  await deployEngine.sweep().catch(err => console.error('deploy sweep failed:', err.message));
+
+  const proxyPort = Number(process.env.DEPLOY_PROXY_PORT || 3003);
+  if (proxyPort > 0) {
+    const proxy = createDeployProxy({ pool, engine: deployEngine });
+    setDeployProxy(proxy);
+    try {
+      const addr = await proxy.listen(proxyPort, process.env.DEPLOY_PROXY_BIND || undefined);
+      console.log(`Deploy proxy routing app traffic on :${addr?.port ?? proxyPort}`);
+    } catch (err) {
+      console.error(`Deploy proxy could not bind :${proxyPort} (${err.message})`);
+    }
+  }
+
+  const sweepMs = Number(process.env.DEPLOY_SWEEP_MS || 60_000);
+  setInterval(() => void deployEngine.sweep().catch(() => {}), sweepMs).unref();
+
+  const probeMs = Number(process.env.DEPLOY_PROBE_MS || 30_000);
+  setInterval(() => void deployEngine.probeTick().catch(() => {}), probeMs).unref();
+
+  const metricsMs = Number(process.env.DEPLOY_METRICS_MS || 10_000);
+  setInterval(() => void deployEngine.metricsTick().catch(() => {}), metricsMs).unref();
 }
 
 boot().catch(err => {

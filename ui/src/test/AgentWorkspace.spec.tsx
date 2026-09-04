@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AgentWorkspace } from '../pages/AgentWorkspace';
-import { installSyncFetchMock, syncMockReset, lastAiJobBody } from './syncMock';
+import { installSyncFetchMock, syncMockReset, syncMockDb, lastAiJobBody } from './syncMock';
 
 installSyncFetchMock();
 
@@ -27,6 +27,14 @@ vi.mock('../lib/api', async importOriginal => {
         },
       ]),
       getStt: vi.fn().mockResolvedValue({ configured: false, base_url: null, model: null }),
+      listGithubRepos: vi.fn().mockResolvedValue({
+        configured: true,
+        valid: true,
+        repos: [
+          { full_name: 'octo/widget', private: false, description: '', updated_at: '' },
+          { full_name: 'octo/private-repo', private: true, description: '', updated_at: '' },
+        ],
+      }),
     },
   };
 });
@@ -89,6 +97,29 @@ describe('AgentWorkspace', () => {
     });
   });
 
+  it('auto-reattaches to a running session on load', async () => {
+    syncMockDb.conversations.push({
+      id: 'conv_run',
+      repoPath: 'acme/website',
+      title: 'running task',
+      messages: [{ id: 'u1', role: 'user', content: 'carry on', createdAt: 1 }],
+      updatedAt: Date.now(),
+      run_status: 'running',
+      run_queue: [],
+    });
+    render(
+      <MemoryRouter initialEntries={['/agent']}>
+        <AgentWorkspace />
+      </MemoryRouter>,
+    );
+
+    // Cold-load resume: the running session is opened and followed with no
+    // user interaction — the transcript replaces the empty hero.
+    await waitFor(() => expect(screen.getByText(/carry on/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/15 tests passing/i)).toBeInTheDocument());
+    expect(screen.queryByText('Plan a feature')).not.toBeInTheDocument();
+  });
+
   it('does not stop the server job when the workspace unmounts', async () => {
     const inner = globalThis.fetch;
     const stops: string[] = [];
@@ -120,5 +151,33 @@ describe('AgentWorkspace', () => {
     );
     fireEvent.click(await screen.findByTitle('Environment feedback'));
     await waitFor(() => expect(lastAiJobBody?.kind).toBe('env_audit'));
+  });
+
+  it('repo picker searches sources and switches to GitHub/Unrestricted targets', async () => {
+    render(
+      <MemoryRouter initialEntries={['/agent']}>
+        <AgentWorkspace />
+      </MemoryRouter>,
+    );
+
+    // Open the picker: Unrestricted is pinned, the Nixre section lists hosted repos.
+    fireEvent.click(await screen.findByText('acme/website'));
+    const input = await screen.findByPlaceholderText(/search repositories/i);
+    expect(screen.getByText('free-form')).toBeInTheDocument();
+    expect(await screen.findByText('octo/widget')).toBeInTheDocument();
+    expect(screen.getByText('octo/private-repo')).toBeInTheDocument();
+
+    // Search narrows both sources.
+    fireEvent.change(input, { target: { value: 'widget' } });
+    expect(screen.queryByText('octo/private-repo')).not.toBeInTheDocument();
+
+    // Selecting a GitHub repo retargets the workspace.
+    fireEvent.click(screen.getByText('octo/widget'));
+    expect(await screen.findByText('octo/widget')).toBeInTheDocument();
+
+    // Switch to Unrestricted mode.
+    fireEvent.click(screen.getByText('octo/widget'));
+    fireEvent.click(await screen.findByText('free-form'));
+    expect(await screen.findByText('Unrestricted')).toBeInTheDocument();
   });
 });

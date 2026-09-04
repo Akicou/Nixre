@@ -218,7 +218,7 @@ const aiMockProfile = () => {
   return {
     ...active,
     model: active.defaultModel,
-    models: active.enabledModels.length > 0 ? active.enabledModels : active.models,
+    models: active.enabledModels,
     providers: aiMockProviders,
     reasoningLevel: (active as any).reasoningLevel ?? 'none',
     interleavedReasoning: (active as any).interleavedReasoning ?? false,
@@ -229,6 +229,9 @@ function handleAi(path: string, method: string, body: any): Response | null {
   if (!/^\/ai\//.test(path)) return null;
 
   if (path === '/ai/profile' && method === 'GET') return json(200, aiMockProfile());
+  if (path === '/ai/github/repos' && method === 'GET') {
+    return json(200, { configured: true, valid: true, repos: [] });
+  }
   if (path === '/ai/profile' && method === 'PUT') {
     // Legacy single-profile shape: routes into the active provider.
     if (aiMockProviders.length === 0) return json(200, { ...aiMockProfile(), validated: false });

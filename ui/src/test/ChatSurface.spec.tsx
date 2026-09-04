@@ -69,7 +69,7 @@ describe('ChatSurface', () => {
     }
   });
 
-  it('subscribes when opening a conversation that is already running', async () => {
+  it('auto-subscribes to a conversation that is already running on load', async () => {
     syncMockDb.conversations.push({
       id: 'conv_live',
       repoPath: 'acme/website',
@@ -80,9 +80,12 @@ describe('ChatSurface', () => {
       run_queue: [],
     });
     await mount();
-    fireEvent.click(await screen.findByText('live session'));
+    // Cold-load resume: a server-side turn survives browser death, so the
+    // surface must reattach to it without any user interaction.
     await waitFor(() => expect(screen.getByText(/keep going/i)).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText(/15 tests passing/i)).toBeInTheDocument());
+    // Opened, not just listed — the transcript replaced the empty state.
+    expect(screen.queryByText(/How can I help in acme\/website/i)).not.toBeInTheDocument();
   });
 
   it('persists conversations and lists them on reload', async () => {

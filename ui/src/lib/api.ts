@@ -236,6 +236,20 @@ export interface UserSecret {
   key_mask?: string | null;
 }
 
+export interface GithubRepoInfo {
+  full_name: string;
+  private: boolean;
+  description: string;
+  updated_at: string;
+}
+
+export interface GithubReposResult {
+  configured: boolean;
+  valid: boolean;
+  repos: GithubRepoInfo[];
+  message?: string;
+}
+
 export interface UserStt {
   configured: boolean;
   base_url: string | null;
@@ -280,11 +294,15 @@ class ApiClient {
 
     if (!res.ok) {
       let msg = `HTTP error ${res.status}`;
+      let body: Record<string, unknown> | undefined;
       try {
-        const body = await res.json();
-        if (body.message) msg = body.message;
+        body = await res.json();
+        if (typeof body.message === "string") msg = body.message;
       } catch {}
-      throw new Error(msg);
+      const err = new Error(msg) as Error & { status?: number; body?: Record<string, unknown> };
+      err.status = res.status;
+      err.body = body;
+      throw err;
     }
 
     const contentType = res.headers.get('content-type');
@@ -502,7 +520,7 @@ class ApiClient {
       let msg = `HTTP error ${res.status}`;
       try {
         const body = JSON.parse(text);
-        if (body.message) msg = body.message;
+        if (typeof body.message === "string") msg = body.message;
       } catch {}
       throw new Error(msg);
     }
@@ -695,6 +713,13 @@ class ApiClient {
     await this.request('/user/secrets/github', { method: 'DELETE' });
   }
 
+  // The user's github.com repositories, via their stored PAT. The backend
+  // answers 200 with an envelope so an invalid PAT never trips the global
+  // 401 handler in request().
+  async listGithubRepos(): Promise<GithubReposResult> {
+    return this.request<GithubReposResult>('/ai/github/repos');
+  }
+
   async getStt(): Promise<UserStt> {
     return this.request<UserStt>('/user/stt');
   }
@@ -761,6 +786,435 @@ class ApiClient {
       body: JSON.stringify({ closed }),
     });
   }
+
+  // -----------------------------------------------------------------------
+  // Deployments — Docker app services attached to repos.
+  // -----------------------------------------------------------------------
+
+  listDeployServices(space: string, repo: string): Promise<DeployService[]> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services`);
+  }
+
+  detectDockerfiles(
+    space: string,
+    repo: string,
+    rootDir: string,
+    ref?: string,
+  ): Promise<{ ref: string; root_dir: string; dockerfiles: DockerfileCandidate[] }> {
+    const params = new URLSearchParams({ root_dir: rootDir });
+    if (ref) params.set('ref', ref);
+    return this.request(`/repos/${space}/${repo}/+/deployments/dockerfiles?${params}`);
+  }
+
+  createDeployService(
+    space: string,
+    repo: string,
+    input: {
+      name: string;
+      root_dir: string;
+      dockerfile_path: string;
+      branch?: string;
+      ref?: string;
+      container_port: number;
+      cpu_cores?: number;
+      memory_mb?: number;
+      auto_deploy?: boolean;
+      env?: Record<string, string>;
+    },
+  ): Promise<DeployService> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  patchDeployService(
+    space: string,
+    repo: string,
+    serviceId: number,
+    patch: Partial<{
+      name: string;
+      root_dir: string;
+      dockerfile_path: string;
+      branch: string;
+      auto_deploy: boolean;
+      container_port: number;
+      cpu_nano_cpus: number;
+      memory_bytes: number;
+      preserve_status_min: number;
+      success_retention_hours: number;
+      failure_retention_hours: number;
+      desired_state: 'running' | 'stopped';
+      /** Partial secret merge: KEY -> value upserts, KEY -> null deletes. */
+      env: Record<string, string | null>;
+    }>,
+  ): Promise<DeployService> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  }
+
+  deleteDeployService(space: string, repo: string, serviceId: number): Promise<void> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  listEnvVars(space: string, repo: string, serviceId: number): Promise<EnvVarInfo[]> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}/env`);
+  }
+
+  setEnvVars(
+    space: string,
+    repo: string,
+    serviceId: number,
+    vars: Record<string, string>,
+  ): Promise<{ ok: boolean; keys: string[] }> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}/env`, {
+      method: 'PUT',
+      body: JSON.stringify({ vars }),
+    });
+  }
+
+  removeEnvVar(space: string, repo: string, serviceId: number, key: string): Promise<void> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/env/${encodeURIComponent(key)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  revealEnvVar(
+    space: string,
+    repo: string,
+    serviceId: number,
+    key: string,
+  ): Promise<{ key: string; value: string }> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/env/${encodeURIComponent(key)}/reveal`,
+    );
+  }
+
+  deployService(
+    space: string,
+    repo: string,
+    serviceId: number,
+    ref?: string,
+  ): Promise<{ deploymentId: number | null; deployment?: DeploymentRecord }> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}/deploy`, {
+      method: 'POST',
+      body: JSON.stringify(ref ? { ref } : {}),
+    });
+  }
+
+  cancelDeploymentRun(space: string, repo: string, serviceId: number): Promise<{ ok: boolean }> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/deployments/latest/cancel`,
+      { method: 'POST' },
+    );
+  }
+
+  listDeployments(space: string, repo: string, serviceId: number, limit = 30): Promise<DeploymentRecord[]> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/deployments?limit=${limit}`,
+    );
+  }
+
+  getDeployment(
+    space: string,
+    repo: string,
+    serviceId: number,
+    deploymentId: number,
+  ): Promise<DeploymentDetail> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/deployments/${deploymentId}`,
+    );
+  }
+
+  redeployDeployment(
+    space: string,
+    repo: string,
+    serviceId: number,
+    deploymentId: number,
+  ): Promise<unknown> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/deployments/${deploymentId}/redeploy`,
+      { method: 'POST', body: '{}' },
+    );
+  }
+
+  rollbackDeployment(
+    space: string,
+    repo: string,
+    serviceId: number,
+    deploymentId: number,
+  ): Promise<unknown> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/deployments/${deploymentId}/rollback`,
+      { method: 'POST', body: '{}' },
+    );
+  }
+
+  deleteDeploymentRecord(
+    space: string,
+    repo: string,
+    serviceId: number,
+    deploymentId: number,
+  ): Promise<void> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/deployments/${deploymentId}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  httpLogs(
+    space: string,
+    repo: string,
+    serviceId: number,
+    opts: { min_status?: number; class?: string; q?: string; limit?: number } = {},
+  ): Promise<HttpLogsResponse> {
+    const params = new URLSearchParams();
+    if (opts.min_status != null) params.set('min_status', String(opts.min_status));
+    if (opts.class) params.set('class', opts.class);
+    if (opts.q) params.set('q', opts.q);
+    if (opts.limit != null) params.set('limit', String(opts.limit));
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/http-logs?${params}`,
+    );
+  }
+
+  serviceStats(space: string, repo: string, serviceId: number): Promise<StatsSnapshot> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}/stats`);
+  }
+
+  serviceUptime(
+    space: string,
+    repo: string,
+    serviceId: number,
+    range: '24h' | '7d' | '30d' = '24h',
+  ): Promise<UptimeResponse> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/uptime?range=${range}`,
+    );
+  }
+
+  listDomains(space: string, repo: string, serviceId: number): Promise<DomainEntry[]> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}/domains`);
+  }
+
+  addDomain(
+    space: string,
+    repo: string,
+    serviceId: number,
+    domain: string,
+    kind: 'caddy' | 'tunnel' = 'caddy',
+    confirm = false,
+  ): Promise<DomainEntry> {
+    return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}/domains`, {
+      method: 'POST',
+      body: JSON.stringify({ domain, kind, confirm }),
+    });
+  }
+
+  removeDomain(
+    space: string,
+    repo: string,
+    serviceId: number,
+    domainId: number,
+  ): Promise<{ ok: boolean; dns?: { removed: boolean; error?: string } }> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/domains/${domainId}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  retryDomainDns(space: string, repo: string, serviceId: number, domainId: number): Promise<DomainEntry> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/domains/${domainId}/dns`,
+      { method: 'POST' },
+    );
+  }
+
+  deploymentsOverview(): Promise<DeployService[]> {
+    return this.request('/deployments/overview');
+  }
+
+  spaceDeployments(space: string): Promise<SpaceDeploymentsBoard> {
+    return this.request(`/spaces/${encodeURIComponent(space)}/deployments`);
+  }
 }
 
 export const api = new ApiClient();
+
+// ---------------------------------------------------------------------------
+// Deployments — Docker app services attached to repos.
+// ---------------------------------------------------------------------------
+
+export interface DeploymentSummary {
+  id: number;
+  ref: string;
+  sha: string;
+  short_sha: string;
+  message: string;
+  status: string;
+  trigger: string;
+  started: number;
+  finished: number | null;
+}
+
+export interface DeployActivityEntry {
+  id: number;
+  service_id: number;
+  service_name: string;
+  ref: string;
+  short_sha: string;
+  status: string;
+  trigger: string;
+  started: number;
+  finished: number | null;
+}
+
+export interface SpaceDeploymentsBoard {
+  services: DeployService[];
+  activity: DeployActivityEntry[];
+}
+
+export interface DeployService {
+  id: number;
+  name: string;
+  root_dir: string;
+  dockerfile_path: string;
+  branch: string;
+  auto_deploy: boolean;
+  container_port: number;
+  cpu_nano_cpus: number;
+  memory_bytes: number;
+  desired_state: 'running' | 'stopped';
+  status: 'idle' | 'deploying' | 'running' | 'stopped' | 'failed';
+  current_deployment_id: number | null;
+  last_failed_deployment_id: number | null;
+  preserve_status_min: number;
+  success_retention_hours: number;
+  failure_retention_hours: number;
+  created: number;
+  updated: number;
+  current?: DeploymentSummary | null;
+  // Overview-only fields (dashboard):
+  requests_24h?: number;
+  alert?: boolean;
+  live?: boolean;
+  space?: string;
+  repo_uid?: string;
+  // Space-board-only fields:
+  domains?: string[];
+  tls_risk_domains?: string[];
+}
+
+export interface DockerfileCandidate {
+  path: string; // repo-relative
+  file: string; // relative to the chosen root dir
+}
+
+export interface DeploymentRecord {
+  id: number;
+  ref: string;
+  sha: string;
+  short_sha: string;
+  message: string;
+  trigger: string;
+  status: 'queued' | 'building' | 'releasing' | 'live' | 'failed' | 'cancelled';
+  error: string | null;
+  started: number;
+  finished: number | null;
+  duration_ms: number | null;
+  serving: boolean;
+}
+
+export interface DeploymentDetail extends DeploymentRecord {
+  image_tag: string | null;
+  build_log: string;
+}
+
+export interface HttpLogRow {
+  id: number;
+  method: string;
+  path: string;
+  status_code: number | null;
+  duration_ms: number | null;
+  ts: number;
+}
+
+export interface HttpLogsResponse {
+  logs: HttpLogRow[];
+  counts_24h: Record<string, number>;
+  preserve: {
+    preserve_status_min: number;
+    success_retention_hours: number;
+    failure_retention_hours: number;
+  };
+}
+
+export interface UptimeBucket {
+  start: number;
+  state: 'up' | 'down' | 'empty';
+  latency_ms: number | null;
+}
+
+export interface UptimeResponse {
+  range: string;
+  bucket_ms: number;
+  buckets: UptimeBucket[];
+  uptime_pct: number | null;
+  checks_total: number;
+}
+
+export interface MetricSample {
+  ts: number;
+  cpuPctOfLimit: number;
+  memUsedBytes: number;
+  memPctOfLimit: number;
+}
+
+export interface StatsSnapshot {
+  limits: { cpu_nano_cpus: number; memory_bytes: number };
+  latest: MetricSample | null;
+  series: MetricSample[];
+}
+
+export interface DomainGuidanceDns {
+  type: string;
+  name: string;
+  target: string;
+  proxied?: boolean;
+  note?: string;
+}
+
+export interface DomainDnsStatus {
+  auto: boolean;
+  status: 'created' | 'failed' | 'pending' | 'manual';
+  target?: string;
+  zone?: string;
+  existed?: boolean;
+  error?: string;
+}
+
+export interface DomainEntry {
+  id: number;
+  kind: 'caddy' | 'tunnel';
+  domain: string;
+  created: number;
+  tls_risk?: boolean;
+  dns?: DomainDnsStatus;
+  guidance: {
+    dns: DomainGuidanceDns[];
+    notes: string[];
+    caddy_snippet?: string;
+    nginx_snippet?: string;
+    cloudflared_ingress?: { hostname: string; service: string }[];
+  };
+}
+
+export interface EnvVarInfo {
+  key: string;
+  updated: number;
+}

@@ -62,27 +62,38 @@ export function internalRoutes(pool, authenticate) {
   });
 
   // POST /internal/push-event — called by the SSH-side post-receive hook
-  // and by smartHttp's own post-receive handling; fans out repo webhooks.
+  // and by smartHttp's own post-receive handling; fans out repo webhooks,
+  // then kicks auto-deploys for services watching the pushed branch.
   api.post('/internal/push-event', internalAuth, async (req, res) => {
     const { space, repo, branch, before, after, pusher } = req.body || {};
     if (!space || !repo || !branch) {
       res.status(400).json({ message: 'space, repo, branch required' });
       return;
     }
+    let deliveries = 0;
     try {
       const { fireWebhooks } = await import('../lib/webhooks.js');
-      const deliveries = await fireWebhooks(pool, space, repo, {
+      deliveries = await fireWebhooks(pool, space, repo, {
         type: 'push',
         branch,
         before: String(before || ''),
         after: String(after || ''),
         pusher: String(pusher || ''),
       });
-      res.json({ deliveries });
     } catch (err) {
       console.error('push-event failed:', err.message);
       res.status(500).json({ message: 'webhook fanout failed' });
+      return;
     }
+    // Webhook failures must not block deploys; deploy hiccups must not fail
+    // the push either — best-effort kick, engine records its own state.
+    try {
+      const { deployEngine } = await import('../lib/deployRuntime.js');
+      await deployEngine.maybeAutoDeploy({ space, repo, branch, after });
+    } catch (err) {
+      console.error('auto-deploy fanout failed:', err.message);
+    }
+    res.json({ deliveries });
   });
 
   void authenticate;

@@ -49,6 +49,38 @@ const MAX_GREP_MATCHES = 60;
 const MAX_CMD_MS = 120_000;
 const MAX_CMD_BYTES = 32 * 1024;
 
+// --- workspace targets ---------------------------------------------------------
+//
+// Tools run against a pre-resolved workspace passed on `context.workspace`
+// ({ kind, dir, ... } from lib/workspaces.js). When absent, legacy behaviour
+// applies: git plumbing straight on the hosted bare repo space/repo.
+
+/** Git dir for read tools. Throws a model-actionable error when unrestricted. */
+function readGitDir(context, space, repo) {
+  if (context?.workspace) {
+    if (!context.workspace.dir) {
+      throw new Error(
+        'No repository is attached in Unrestricted mode — list_files/read_file/search_code need one. Inspect /workspace via run_command instead.',
+      );
+    }
+    return context.workspace.dir;
+  }
+  return repoDir(space, repo);
+}
+
+/** Git dir for clone sources; null when unrestricted (nothing to clone). */
+function sourceGitDir(context, space, repo) {
+  if (context?.workspace) return context.workspace.dir;
+  return repoDir(space, repo);
+}
+
+// Unrestricted conversations have no valid segment pair; a resolved workspace
+// upstream is authority enough to skip the guard.
+function assertTarget(space, repo, context = {}) {
+  if (context?.workspace) return;
+  assertRepo(space, repo);
+}
+
 export const TOOL_SCHEMAS = [
   {
     name: 'list_files',
@@ -204,11 +236,11 @@ function pathAllowed(p, rules) {
 
 // --- read-only tools ----------------------------------------------------------
 
-export async function listFiles(space, repo, args, permissions = {}) {
-  assertRepo(space, repo);
+export async function listFiles(space, repo, args, permissions = {}, context = {}) {
+  assertTarget(space, repo, context);
   let out;
   try {
-    out = await git(repoDir(space, repo), ['ls-tree', '-r', '--name-only', 'HEAD']);
+    out = await git(readGitDir(context, space, repo), ['ls-tree', '-r', '--name-only', 'HEAD']);
   } catch (err) {
     return { output: `0 files\n(empty or missing repository: ${err.message || 'no HEAD'})` };
   }
@@ -219,12 +251,12 @@ export async function listFiles(space, repo, args, permissions = {}) {
   return { output: `${files.length} files\n${head.join('\n')}${suffix}` };
 }
 
-export async function readFile(space, repo, args, permissions = {}) {
-  assertRepo(space, repo);
+export async function readFile(space, repo, args, permissions = {}, context = {}) {
+  assertTarget(space, repo, context);
   const p = assertSafePath(args?.path);
   const rules = pathRules(permissions);
   if (!pathAllowed(p, rules)) throw new Error(`Path '${p}' is outside the allowed paths for this repo`);
-  const dir = repoDir(space, repo);
+  const dir = readGitDir(context, space, repo);
   // Reject symlinks / submodules cheaply by checking the tracked mode.
   const ls = await git(dir, ['ls-tree', 'HEAD', '--', p]);
   if (/^160000 /.test(ls)) throw new Error('Refusing to read submodule');
@@ -239,11 +271,11 @@ export async function readFile(space, repo, args, permissions = {}) {
   return { output: text };
 }
 
-export async function searchCode(space, repo, args, permissions = {}) {
-  assertRepo(space, repo);
+export async function searchCode(space, repo, args, permissions = {}, context = {}) {
+  assertTarget(space, repo, context);
   const query = String(args?.query || '');
   if (!query || query.length > 256) throw new Error('Invalid search query');
-  const dir = repoDir(space, repo);
+  const dir = readGitDir(context, space, repo);
   let out;
   try {
     out = await git(dir, ['grep', '-n', '-I', '-E', '-e', query, 'HEAD']);
@@ -302,7 +334,7 @@ async function ensureFallbackWorkspace(context, space, repo) {
   const { userId, conversationId } = context;
   if (!userId || !conversationId) return null;
   sweepFallbackWorkspaces();
-  const key = `${userId}:${conversationId}:${space}/${repo}`;
+  const key = `${userId}:${conversationId}:${context.repoPath || `${space}/${repo}`}`;
   let ws = fallbackWorkspaces.get(key);
   if (ws) {
     ws.expires = Date.now() + FALLBACK_WS_TTL_MS;
@@ -311,11 +343,17 @@ async function ensureFallbackWorkspace(context, space, repo) {
   const parent = path.join(os.tmpdir(), 'nixre-agent-ws', crypto.createHash('sha256').update(key).digest('hex').slice(0, 20));
   const workdir = path.join(parent, 'repo');
   await fs.mkdir(parent, { recursive: true });
-  const src = repoDir(space, repo);
-  try {
-    await exec('git', ['clone', '--depth', '1', '--quiet', src, workdir], { timeout: 60_000 });
-  } catch {
-    await exec('git', ['clone', '--quiet', src, workdir], { timeout: 60_000 });
+  const src = sourceGitDir(context, space, repo);
+  if (src) {
+    try {
+      await exec('git', ['clone', '--depth', '1', '--quiet', src, workdir], { timeout: 60_000 });
+    } catch {
+      await exec('git', ['clone', '--quiet', src, workdir], { timeout: 60_000 });
+    }
+  } else {
+    // Unrestricted: empty scratch repo instead of a clone.
+    await fs.mkdir(workdir, { recursive: true });
+    await exec('git', ['init', '--quiet', workdir]).catch(() => {});
   }
   const name = context.user?.name || 'Nixre Agent';
   const email = context.user?.email || 'agent@nixre.local';
@@ -328,7 +366,7 @@ async function ensureFallbackWorkspace(context, space, repo) {
 }
 
 export async function writeFile(space, repo, args, permissions = {}, context = {}) {
-  assertRepo(space, repo);
+  assertTarget(space, repo, context);
   const p = assertSafePath(args?.path);
   const rules = pathRules(permissions);
   if (!pathAllowed(p, rules)) {
@@ -371,11 +409,16 @@ export async function writeFile(space, repo, args, permissions = {}, context = {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
   const throwaway = path.join(parent, 'repo');
   try {
-    const src = repoDir(space, repo);
-    try {
-      await exec('git', ['clone', '--depth', '1', '--quiet', src, throwaway], { timeout: 60_000 });
-    } catch {
-      await exec('git', ['clone', '--quiet', src, throwaway], { timeout: 60_000 });
+    const src = sourceGitDir(context, space, repo);
+    if (src) {
+      try {
+        await exec('git', ['clone', '--depth', '1', '--quiet', src, throwaway], { timeout: 60_000 });
+      } catch {
+        await exec('git', ['clone', '--quiet', src, throwaway], { timeout: 60_000 });
+      }
+    } else {
+      await fs.mkdir(throwaway, { recursive: true });
+      await exec('git', ['init', '--quiet', throwaway]).catch(() => {});
     }
     const dest = path.join(throwaway, p.split('/').join(path.sep));
     await fs.mkdir(path.dirname(dest), { recursive: true });
@@ -387,7 +430,7 @@ export async function writeFile(space, repo, args, permissions = {}, context = {
 }
 
 export async function runCommand(space, repo, args, _permissions = {}, context = {}) {
-  assertRepo(space, repo);
+  assertTarget(space, repo, context);
   const command = String(args?.command || '').trim();
   if (!command || command.length > 2000) throw new Error('Invalid command');
   if (BLOCKED.test(command)) throw new Error('Command blocked by safety policy');
@@ -428,12 +471,17 @@ export async function runCommand(space, repo, args, _permissions = {}, context =
   // mkdtemp left an empty folder — that is the sandbox the agent then cannot find.
   const throwaway = path.join(parent, 'repo');
   try {
-    const src = repoDir(space, repo);
-    try {
-      await exec('git', ['clone', '--depth', '1', '--quiet', src, throwaway], { timeout: 60_000 });
-    } catch {
-      // Empty bare repos have no HEAD; shallow clone fails. Full clone still works.
-      await exec('git', ['clone', '--quiet', src, throwaway], { timeout: 60_000 });
+    const src = sourceGitDir(context, space, repo);
+    if (src) {
+      try {
+        await exec('git', ['clone', '--depth', '1', '--quiet', src, throwaway], { timeout: 60_000 });
+      } catch {
+        // Empty bare repos have no HEAD; shallow clone fails. Full clone still works.
+        await exec('git', ['clone', '--quiet', src, throwaway], { timeout: 60_000 });
+      }
+    } else {
+      await fs.mkdir(throwaway, { recursive: true });
+      await exec('git', ['init', '--quiet', throwaway]).catch(() => {});
     }
     await configureGithubGit(throwaway, userId);
     return await runShellCommand(command, throwaway, extraEnv);
@@ -477,8 +525,8 @@ const MAX_SHOW_IMAGES = 4;
 const MAX_SHOW_BYTES = 2 * 1024 * 1024;
 const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
 
-export async function showImages(space, repo, args, permissions = {}) {
-  assertRepo(space, repo);
+export async function showImages(space, repo, args, permissions = {}, context = {}) {
+  assertTarget(space, repo, context);
   const raw = Array.isArray(args?.paths) ? args.paths : [];
   const rules = pathRules(permissions);
   const paths = raw
@@ -487,7 +535,7 @@ export async function showImages(space, repo, args, permissions = {}) {
     .filter(p => pathAllowed(p, rules))
     .slice(0, MAX_SHOW_IMAGES);
   if (paths.length === 0) throw new Error('paths required');
-  const dir = repoDir(space, repo);
+  const dir = readGitDir(context, space, repo);
   const images = [];
   const notes = [];
   for (const p of paths) {
@@ -527,17 +575,17 @@ export async function showImages(space, repo, args, permissions = {}) {
 }
 
 const EXECUTORS = {
-  list_files: (space, repo, args, permissions) => listFiles(space, repo, args, permissions),
-  read_file: (space, repo, args, permissions) => readFile(space, repo, args, permissions),
-  search_code: (space, repo, args, permissions) => searchCode(space, repo, args, permissions),
+  list_files: (space, repo, args, permissions, context) => listFiles(space, repo, args, permissions, context),
+  read_file: (space, repo, args, permissions, context) => readFile(space, repo, args, permissions, context),
+  search_code: (space, repo, args, permissions, context) => searchCode(space, repo, args, permissions, context),
   run_command: (space, repo, args, permissions, context) =>
     runCommand(space, repo, args, permissions, context),
   write_file: (space, repo, args, permissions, context) =>
     writeFile(space, repo, args, permissions, context),
-  show_images: (space, repo, args, permissions) => showImages(space, repo, args, permissions),
+  show_images: (space, repo, args, permissions, context) => showImages(space, repo, args, permissions, context),
   web_search: (space, repo, args) => webSearchTool(args),
-  read_skill: (space, repo, args) =>
-    readSkill(space, repo, args?.name).then(output => ({ output })),
+  read_skill: (space, repo, args, _permissions, context) =>
+    readSkill(space, repo, args?.name, undefined, context?.workspace?.dir).then(output => ({ output })),
 };
 
 // --- web_search (permission-gated) ---------------------------------------------
@@ -581,7 +629,9 @@ export async function executeTool(tool, space, repo, args, permissions = {}, con
     }
   }
   if (tool === 'web_search') {
-    if (permissions.canSearchWeb !== true) {
+    // Unrestricted mode implies broad capability; the per-repo opt-in applies
+    // only to repo-bound conversations.
+    if (context.workspace?.kind !== 'unrestricted' && permissions.canSearchWeb !== true) {
       throw new Error(
         "web_search requires the 'Search the web' permission for this repo (Assistant → repo settings).",
       );

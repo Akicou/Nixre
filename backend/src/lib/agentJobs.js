@@ -6,6 +6,12 @@ import { decryptSecret, PROVIDERS, streamChat } from './ai.js';
 import { TOOL_SCHEMAS, executeTool } from './agentTools.js';
 import { touchSandbox } from './agentSandbox.js';
 import { getMode } from './assistantModes.js';
+import {
+  resolveWorkspace,
+  parseWorkspacePath,
+  workspaceContextBlock,
+  workspaceGitDir,
+} from './workspaces.js';
 import { runAgentLoop } from './agentLoop.js';
 import { listSkills, formatSkillCatalog, expandMentions } from './agentSkills.js';
 import {
@@ -24,7 +30,6 @@ import {
 } from './chatApply.js';
 
 const jobs = new Map();
-const PERSIST_DEBOUNCE_MS = 500;
 
 function queueId() {
   return uid('q');
@@ -102,21 +107,26 @@ async function loadPermissions(pool, userId, repoPath) {
   return {};
 }
 
+// The provider row a job runs on: the one whose enabled/default models
+// contain the requested model, or the active provider when no model was
+// requested. A requested model that no provider enables is rejected instead
+// of silently executing on whatever provider happens to be active.
 async function loadProvider(pool, userId, model) {
   const { rows } = await pool.query(
     'SELECT * FROM ai_providers WHERE user_uid = $1 ORDER BY created',
     [userId],
   );
   if (rows.length === 0) return null;
-  if (model) {
-    const owner = rows.find(
-      r =>
-        (Array.isArray(r.enabled_models) && r.enabled_models.includes(model)) ||
-        r.default_model === model,
-    );
-    if (owner) return owner;
+  if (!model) return rows.find(r => r.is_default) ?? rows[0];
+  const owner = rows.find(
+    r =>
+      (Array.isArray(r.enabled_models) && r.enabled_models.includes(model)) ||
+      r.default_model === model,
+  );
+  if (!owner) {
+    throw new Error(`'${model}' is not enabled on any AI provider. Enable it under Plugins → Nixre Assistant.`);
   }
-  return rows.find(r => r.is_default) ?? rows[0];
+  return owner;
 }
 
 function broadcast(job, evt) {
@@ -148,14 +158,20 @@ function flushPersist(pool, job, extra) {
   });
 }
 
-function debouncePersist(pool, job) {
-  if (job.persistTimer) clearTimeout(job.persistTimer);
+// Streaming text/reasoning checkpoints. A fixed cadence instead of a trailing
+// debounce: a debounce timer that resets on every token can postpone the write
+// for a whole uninterrupted stream, so a hard core death loses minutes of
+// transcript. With this cadence at most ~500ms of progress is ever unflushed.
+const PERSIST_CADENCE_MS = 500;
+
+function checkpointPersist(pool, job) {
+  if (job.persistTimer) return;
   job.persistTimer = setTimeout(() => {
     job.persistTimer = null;
     persistMessages(pool, job).catch(err => {
       console.error('[agentJobs] persist failed:', err.message);
     });
-  }, PERSIST_DEBOUNCE_MS);
+  }, PERSIST_CADENCE_MS);
 }
 
 function emitJob(pool, job, ev) {
@@ -174,7 +190,7 @@ function emitJob(pool, job, ev) {
     'stream_retry',
   ]);
   if (immediate.has(ev.type)) flushPersist(pool, job);
-  else if (ev.type === 'message_text' || ev.type === 'reasoning') debouncePersist(pool, job);
+  else if (ev.type === 'message_text' || ev.type === 'reasoning') checkpointPersist(pool, job);
 }
 
 async function popQueueKind(pool, job, kind) {
@@ -270,15 +286,19 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     throw new Error('No API key configured for the assistant provider.');
   }
 
-  const slash = job.repoPath.indexOf('/');
-  const space = slash > 0 ? job.repoPath.slice(0, slash) : '';
-  const repo = slash > 0 ? job.repoPath.slice(slash + 1) : job.repoPath;
+  // Workspace resolution can hit the network (first GitHub clone) and fail
+  // with a user-facing message — surface it instead of running the turn blind.
+  const ws = await resolveWorkspace(pool, job.userId, job.repoPath);
+  const info = parseWorkspacePath(job.repoPath);
+  const space = info.space;
+  const repo = info.repo;
   const permissions = await loadPermissions(pool, job.userId, job.repoPath);
   const toolCtx = {
     userId: job.userId,
     user: job.user,
     conversationId: job.conversationId,
     repoPath: job.repoPath,
+    workspace: ws,
   };
   const exec = async (name, args) => {
     if (name === 'submit_env_feedback') {
@@ -297,8 +317,13 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
   const mode = getMode(job.mode);
   const turnKind = jobKind || job.kind || 'chat';
   const agentMode = job.mode === 'agent' || job.mode === 'debug' || turnKind === 'env_audit';
-  const skills = await listSkills(space, repo).catch(() => []);
+  // Skills live on HEAD of the working tree source: hosted bare for nixre,
+  // the local mirror for GitHub targets.
+  const skillsDir = ws.kind === 'github' ? workspaceGitDir(ws) : undefined;
+  const skills = await listSkills(space, repo, skillsDir).catch(() => []);
   const extras = [];
+  // Workspace target first: the <workspace> block grounds every later context.
+  extras.push(workspaceContextBlock(ws));
   if (job.extraContext) extras.push(job.extraContext);
   const catalog = formatSkillCatalog(skills);
   if (catalog) extras.push(catalog);

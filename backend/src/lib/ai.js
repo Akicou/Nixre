@@ -109,23 +109,36 @@ function isOpenRouterBase(base) {
 }
 
 // Read reasoning from any OpenAI-compatible delta field (vLLM, DeepSeek, etc.).
-function extractReasoningTexts(src) {
+// Dedupes identical text within one source: gateways like OpenRouter send the
+// same delta under BOTH `reasoning` and `reasoning_details`, and some vLLM /
+// Qwen builds send it under `thinking` and `reasoning_content`. Emitting both
+// made every reasoning token append twice — the interleaved "LetLet me solve..."
+// bug in the transcript and UI.
+export function extractReasoningTexts(src) {
   const out = [];
+  const seen = new Set();
+  const push = t => {
+    if (typeof t !== 'string' || !t) return;
+    const key = t.trim();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(t);
+  };
   if (!src || typeof src !== 'object') return out;
-  if (typeof src.thinking === 'string' && src.thinking) out.push(src.thinking);
+  if (typeof src.thinking === 'string' && src.thinking) push(src.thinking);
   if (typeof src.reasoning_content === 'string' && src.reasoning_content) {
-    out.push(src.reasoning_content);
+    push(src.reasoning_content);
   }
   const r = src.reasoning;
-  if (typeof r === 'string' && r) out.push(r);
+  if (typeof r === 'string' && r) push(r);
   else if (r && typeof r === 'object') {
-    if (typeof r.content === 'string' && r.content) out.push(r.content);
-    else if (typeof r.text === 'string' && r.text) out.push(r.text);
+    if (typeof r.content === 'string' && r.content) push(r.content);
+    else if (typeof r.text === 'string' && r.text) push(r.text);
   }
   if (Array.isArray(src.reasoning_details)) {
     for (const d of src.reasoning_details) {
-      if (typeof d === 'string' && d) out.push(d);
-      else if (typeof d?.text === 'string' && d.text) out.push(d.text);
+      if (typeof d === 'string' && d) push(d);
+      else if (typeof d?.text === 'string' && d.text) push(d.text);
     }
   }
   return out;
@@ -183,10 +196,37 @@ export class AuthError extends Error {
 //   data: {"type":"error","message":"..."}
 //   data: {"type":"done"}
 // `send(event)` is an async callback; the caller wires it to the HTTP response.
-function combineAbort(signal) {
-  const timeout = AbortSignal.timeout(120_000);
-  if (!signal) return timeout;
-  return typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : timeout;
+// A provider stream is cut off when it goes SILENT between chunks, not on a
+// total wall clock — reasoning models can legally think for minutes on one
+// request, and server-side agent jobs die invisibly when that gets aborted.
+const STREAM_IDLE_MS = Number(process.env.AI_STREAM_IDLE_MS || 120_000);
+
+// AbortController whose timer re-arms on every received byte. Outer signals
+// (the job's Stop button) still abort through instantly, preserving their
+// original AbortError reason.
+function createStreamGuard(outerSignal) {
+  const ctrl = new AbortController();
+  let timer = null;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const err = new Error(`Provider stream stalled — no data for ${Math.round(STREAM_IDLE_MS / 1000)}s`);
+      err.name = 'TimeoutError';
+      ctrl.abort(err);
+    }, STREAM_IDLE_MS);
+  };
+  arm();
+  if (outerSignal) {
+    if (outerSignal.aborted) ctrl.abort(outerSignal.reason);
+    else outerSignal.addEventListener('abort', () => ctrl.abort(outerSignal.reason), { once: true });
+  }
+  return {
+    signal: ctrl.signal,
+    touch: () => {
+      if (!ctrl.signal.aborted) arm();
+    },
+    dispose: () => clearTimeout(timer),
+  };
 }
 
 export async function streamChat({ provider, apiKey, baseUrl, model, messages, reasoningLevel, tools, signal }, send) {
@@ -247,23 +287,26 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
     };
   }
 
-  const r = await fetch(`${apiRoot(base)}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-    },
-    body: JSON.stringify(body),
-    signal: combineAbort(signal),
-  });
-  if (r.status === 401 || r.status === 403) throw new AuthError('Invalid API key');
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error(`Provider returned HTTP ${r.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
-  }
+  const guard = createStreamGuard(signal);
+  try {
+    const r = await fetch(`${apiRoot(base)}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: guard.signal,
+    });
+    if (r.status === 401 || r.status === 403) throw new AuthError('Invalid API key');
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      throw new Error(`Provider returned HTTP ${r.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
+    }
 
-  const thinkTagState = { inside: false, endTag: '' };
-  await parseSSE(r, async (payload) => {
+    const thinkTagState = { inside: false, endTag: '' };
+    let sawReasoning = false;
+    await parseSSE(r, async (payload) => {
     if (payload === '[DONE]') return;
     let evt;
     try {
@@ -303,20 +346,37 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
     // in <think>…</think> inside `content`.
     const src = delta || {};
     const message = evt.choices?.[0]?.message;
+    // Dedupe identical reasoning within one chunk: many gateways send the same
+    // delta under BOTH `reasoning` and `reasoning_details` (OpenRouter) or
+    // `thinking` and `reasoning_content` (vLLM/Qwen). Emitting both appended
+    // every reasoning token twice — the interleaved "LetLet me solve..." bug in
+    // the transcript and UI.
     const reasoningTexts = extractReasoningTexts(src);
-    if (reasoningTexts.length === 0 && message) {
-      reasoningTexts.push(...extractReasoningTexts(message));
+    // Only fall back to the whole `message` when the stream has produced no
+    // reasoning yet — some gateways attach the full reasoning block on the
+    // final chunk; emitting it after streamed deltas doubles everything.
+    const useMessageFallback = reasoningTexts.length === 0 && message && !sawReasoning;
+    let pending = Promise.resolve();
+    const emitReasoning = text => {
+      if (!text) return;
+      sawReasoning = true;
+      pending = pending.then(() => send({ type: 'reasoning', text }));
+    };
+    for (const text of reasoningTexts) emitReasoning(text);
+    if (useMessageFallback) {
+      for (const text of extractReasoningTexts(message)) emitReasoning(text);
     }
-    for (const text of reasoningTexts) {
-      if (text) await send({ type: 'reasoning', text });
-    }
+    await pending;
     if (src.content) {
       const parts = splitThinkTags(src.content, thinkTagState);
       for (const part of parts) {
         if (part.text) await send({ type: part.kind, text: part.text });
       }
     }
-  });
+  }, () => guard.touch());
+  } finally {
+    guard.dispose();
+  }
 }
 
 // Thinking tags some OpenAI-compatible servers embed inside `content`.
@@ -426,23 +486,25 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, 
     body.thinking = { type: 'enabled', budget_tokens: { low: 2048, medium: 8192, high: 16384 }[reasoningLevel] || 4096 };
   }
 
-  const r = await fetch(`${apiRoot(base)}/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify(body),
-    signal: combineAbort(signal),
-  });
-  if (r.status === 401 || r.status === 403) throw new AuthError('Invalid API key');
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error(`Provider returned HTTP ${r.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
-  }
+  const guard = createStreamGuard(signal);
+  try {
+    const r = await fetch(`${apiRoot(base)}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+      signal: guard.signal,
+    });
+    if (r.status === 401 || r.status === 403) throw new AuthError('Invalid API key');
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      throw new Error(`Provider returned HTTP ${r.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
+    }
 
-  await parseSSE(r, async (payload) => {
+    await parseSSE(r, async (payload) => {
     let evt;
     try {
       evt = JSON.parse(payload);
@@ -480,17 +542,22 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, 
         await send({ type: 'usage', usage: { input, output, total: input + output } });
       }
     }
-  });
+  }, () => guard.touch());
+  } finally {
+    guard.dispose();
+  }
 }
 
-// Shared SSE frame reader for provider responses.
-async function parseSSE(response, onPayload) {
+// Shared SSE frame reader for provider responses. `onData` fires per network
+// chunk so callers can keep an idle guard alive.
+async function parseSSE(response, onPayload, onData = () => {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    onData(value);
     buf += decoder.decode(value, { stream: true });
     let idx;
     while ((idx = buf.indexOf('\n')) !== -1) {
