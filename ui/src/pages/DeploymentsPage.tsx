@@ -1010,16 +1010,29 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
                     autoFocus
                     value={renameValue}
                     onChange={e => { setRenameValue(e.target.value); setRenameError(''); }}
-                    onBlur={() => { setRenameEditing(false); setRenameError(''); }}
+                    onKeyDown={e => {
+                      // Escape cancels without saving; Enter submits the form.
+                      if (e.key === 'Escape') { setRenameEditing(false); setRenameError(''); }
+                    }}
                     disabled={renameBusy}
                     className="px-2 py-0.5 text-lg font-bold rounded-md border border-border-subtle bg-surface-subtle text-txt-primary focus:outline-none focus:border-brand/50 w-56"
                   />
                   <button
                     type="submit"
+                    onMouseDown={e => e.preventDefault()}
                     disabled={renameBusy || !renameValue.trim()}
                     className="px-2.5 py-1 text-xs font-medium rounded-md bg-brand text-white hover:opacity-90 inline-flex items-center gap-1"
                   >
                     {renameBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3.5 h-3.5" />} Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRenameEditing(false)}
+                    title="Cancel rename"
+                    aria-label="Cancel rename"
+                    className="p-1 text-txt-tertiary hover:text-txt-primary"
+                  >
+                    <X className="w-4 h-4" />
                   </button>
                 </form>
               ) : (

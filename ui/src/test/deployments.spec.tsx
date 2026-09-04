@@ -121,6 +121,35 @@ describe('DeploymentsPage', () => {
     expect(screen.queryByTestId('failure-banner')).toBeNull();
   });
 
+  it('renames a service via the inline editor (Save submits, Escape cancels)', async () => {
+    mountPage();
+    fireEvent.click(await screen.findByTestId('service-card-web'));
+    fireEvent.click(await screen.findByRole('button', { name: /Rename/i }));
+    const input = await screen.findByDisplayValue('web');
+    fireEvent.change(input, { target: { value: 'api-gateway' } });
+
+    // Clicking Save must not be cancelled by focus changes. A real click
+    // mousedowns the button, which makes the browser blur the input and fire
+    // a focus change before the click — the rename form must stay mounted so
+    // the submit still fires. (The old onBlur-cancel tore the form down here,
+    // so Save silently did nothing.)
+    fireEvent.mouseDown(screen.getByRole('button', { name: /Save/i }));
+    fireEvent.blur(input);
+    fireEvent.click(screen.getByRole('button', { name: /Save/i }));
+    await waitFor(() => expect(api.patchDeployService).toHaveBeenCalledWith('acme', 'webshop', 12, { name: 'api-gateway' }));
+
+  });
+
+  it('cancels an inline rename with Escape without calling the API', async () => {
+    mountPage();
+    fireEvent.click(await screen.findByTestId('service-card-web'));
+    fireEvent.click(await screen.findByRole('button', { name: /Rename/i }));
+    const input = await screen.findByDisplayValue('web');
+    fireEvent.change(input, { target: { value: 'ignored' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(api.patchDeployService).not.toHaveBeenCalled());
+  });
+
   it('deep-links ?svc= apply once and never yank back after a later refresh', async () => {
     const second = { ...baseService, id: 99, name: 'second' };
     api.listDeployServices.mockResolvedValue([baseService, second]);
