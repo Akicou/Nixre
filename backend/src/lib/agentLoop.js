@@ -136,12 +136,12 @@ export async function runAgentLoop(opts, emit, deps = {}) {
                 type: 'tool_start',
                 tool: { id: cur.id, name: cur.name, status: 'running', argsText: cur.args },
               });
-            } else if (cur.id && started.has(cur.id) && evt.argsDelta) {
-              emit({
-                type: 'tool_start',
-                tool: { id: cur.id, name: cur.name || '', status: 'running', argsText: cur.args },
-              });
             }
+            // Deliberately NO per-delta re-emit of tool_start: a streamed
+            // write_file arrives as thousands of fragments, and each re-emit
+            // used to trigger a full-transcript copy + DB UPDATE + SSE
+            // broadcast carrying the whole accumulated args (O(n²)). The
+            // complete argsText is emitted once before execution below.
           } else if (evt.type === 'usage') {
             emit({ type: 'usage', usage: evt.usage });
           } else if (evt.type === 'finish') {
