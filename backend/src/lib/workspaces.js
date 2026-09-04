@@ -204,8 +204,18 @@ export async function resolveWorkspace(pool, userId, repoPath) {
   if (ws.kind === 'invalid') {
     throw Object.assign(new Error(`Invalid workspace target '${ws.repoPath}'`), { status: 400 });
   }
-  if (ws.kind !== 'github') return ws;
-  await ensureGithubMirror(userId, ws.owner, ws.repo);
+  if (ws.kind === 'unrestricted') {
+    ws.dir = null;
+    return ws;
+  }
+  // Attach the git dir the read/clone tools expect (see lib/agentTools.js
+  // contract: context.workspace.dir). For a github target this must come
+  // AFTER the mirror is provisioned so the dir exists. Unrestricted has no
+  // repo, so dir is null.
+  if (ws.kind === 'github') {
+    await ensureGithubMirror(userId, ws.owner, ws.repo);
+  }
+  ws.dir = workspaceGitDir(ws);
   return ws;
 }
 

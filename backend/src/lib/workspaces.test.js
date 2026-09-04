@@ -8,6 +8,7 @@ import {
   parseWorkspacePath,
   workspaceGitDir,
   workspaceContextBlock,
+  resolveWorkspace,
 } from './workspaces.js';
 
 test('parseWorkspacePath classifies hosted repos', () => {
@@ -60,6 +61,24 @@ test('workspaceGitDir maps kinds under REPOS_ROOT without escaping it', () => {
   assert.ok(ghDir.endsWith(path.join('github', 'facebook', 'react.git')));
 
   assert.equal(workspaceGitDir(parseWorkspacePath(UNRESTRICTED_PATH)), null);
+});
+
+// Regression: resolveWorkspace must attach the .dir the read/clone tools read
+// from context.workspace (agentTools.js). It was returning the parse result
+// without .dir, so list_files/read_file/search_code threw "no repository" and
+// a github repo looked like it never got initialised. The nixre branch needs
+// no DB/network, so it's covered directly; the github/lib mapping is covered
+// by the workspaceGitDir test above (the .dir value is workspaceGitDir(ws)).
+test('resolveWorkspace attaches .dir for a hosted repo', async () => {
+  const ws = await resolveWorkspace(null, 'u1', 'acme/website');
+  assert.equal(ws.kind, 'nixre');
+  assert.equal(ws.dir, path.join('/data/repos', 'acme', 'website.git'));
+});
+
+test('resolveWorkspace attaches dir:null for unrestricted', async () => {
+  const ws = await resolveWorkspace(null, 'u1', UNRESTRICTED_PATH);
+  assert.equal(ws.kind, 'unrestricted');
+  assert.equal(ws.dir, null);
 });
 
 test('workspaceContextBlock describes every kind with a target line', () => {
