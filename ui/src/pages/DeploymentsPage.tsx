@@ -957,6 +957,42 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
   const busyNow = ['queued', 'building', 'releasing'].includes(service.status);
   const lastFailedId = service.last_failed_deployment_id;
 
+  const [renameEditing, setRenameEditing] = useState(false);
+  const [renameValue, setRenameValue] = useState(service.name);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState('');
+
+  const beginRename = () => {
+    setRenameValue(service.name);
+    setRenameError('');
+    setRenameEditing(true);
+  };
+
+  const submitRename = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const next = renameValue.trim();
+    if (!next || next === service.name) {
+      setRenameEditing(false);
+      setRenameError('');
+      return;
+    }
+    setRenameBusy(true);
+    setRenameError('');
+    try {
+      const updated = await api.patchDeployService(space!, repoUid!, service.id, { name: next });
+      if (updated.name) {
+        setRenameEditing(false);
+        triggerRefresh();
+      } else {
+        setRenameError('Die Umbenennung wurde nicht übernommen.');
+      }
+    } catch (err: any) {
+      setRenameError(err?.message || err?.data?.message || 'Umbenennen fehlgeschlagen.');
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-5 mt-6 min-w-0">
       <button onClick={onBack} className="inline-flex items-center gap-1 text-xs text-txt-secondary hover:text-txt-primary">
@@ -968,16 +1004,50 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
           <Rocket className="w-5 h-5 text-brand shrink-0" />
           <div className="min-w-0">
             <h1 className="text-xl font-bold text-txt-primary truncate flex items-center gap-2.5">
-              {service.name}
-              <StatusPill status={service.desired_state === 'stopped' ? 'stopped' : service.status} />
-              {service.current?.short_sha && <span className="font-mono text-xs text-txt-tertiary">{service.current.short_sha}</span>}
+              {renameEditing ? (
+                <form onSubmit={submitRename} className="flex items-center gap-2">
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={e => { setRenameValue(e.target.value); setRenameError(''); }}
+                    onBlur={() => { setRenameEditing(false); setRenameError(''); }}
+                    disabled={renameBusy}
+                    className="px-2 py-0.5 text-lg font-bold rounded-md border border-border-subtle bg-surface-subtle text-txt-primary focus:outline-none focus:border-brand/50 w-56"
+                  />
+                  <button
+                    type="submit"
+                    disabled={renameBusy || !renameValue.trim()}
+                    className="px-2.5 py-1 text-xs font-medium rounded-md bg-brand text-white hover:opacity-90 inline-flex items-center gap-1"
+                  >
+                    {renameBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3.5 h-3.5" />} Save
+                  </button>
+                </form>
+              ) : (
+                <>
+                  {service.name}
+                  <StatusPill status={service.desired_state === 'stopped' ? 'stopped' : service.status} />
+                  {service.current?.short_sha && <span className="font-mono text-xs text-txt-tertiary">{service.current.short_sha}</span>}
+                </>
+              )}
             </h1>
+            {renameError && (
+              <p className="text-xs text-red-400 mt-0.5">{renameError}</p>
+            )}
             <p className="text-xs text-txt-secondary truncate">
               {service.root_dir === '.' ? 'repo root' : service.root_dir}/<span className="font-mono">{service.dockerfile_path}</span> · port {service.container_port} · {(Number(service.cpu_nano_cpus) / 1e9).toFixed(1)} cores · {fmtBytes(Number(service.memory_bytes))}
             </p>
           </div>
         </div>
         <div className="flex gap-2">
+          {!renameEditing && (
+            <button
+              onClick={beginRename}
+              title="Rename service"
+              className="px-3 py-1.5 text-xs rounded-md border border-border-subtle text-txt-secondary hover:text-txt-primary inline-flex items-center gap-1.5"
+            >
+              <Pencil className="w-3.5 h-3.5" /> Rename
+            </button>
+          )}
           {busyNow ? (
             <button onClick={() => api.cancelDeploymentRun(space!, repoUid!, service.id).then(triggerRefresh)} className="px-3 py-1.5 text-xs rounded-md border border-amber-400/40 text-amber-400 hover:bg-amber-400/10 inline-flex items-center gap-1.5">
               <Square className="w-3 h-3" /> Cancel run

@@ -284,6 +284,8 @@ export function deploymentRoutes(pool, authenticate) {
       if (!SERVICE_PATCHABLE.has(key)) continue;
       let value = body[key];
       if (key === 'root_dir') value = normalizeRootDir(value);
+      // Renames must stay slug-safe DNS labels, exactly like creation does.
+      if (key === 'name') value = sanitizeServiceName(value);
       if (key === 'container_port') {
         const p = Number(value);
         if (!(Number.isInteger(p) && p > 0 && p < 65536)) {
@@ -360,10 +362,20 @@ export function deploymentRoutes(pool, authenticate) {
       sets.updated = { v: Date.now() };
       const entries = Object.entries(sets);
       const setSql = entries.map(([name], i) => `${name} = $${i + 1}`).join(', ');
-      await pool.query(
-        `UPDATE deploy_services SET ${setSql} WHERE id = $${entries.length + 1}`,
-        [...entries.map(([, v]) => v.v), service.id],
-      );
+      try {
+        await pool.query(
+          `UPDATE deploy_services SET ${setSql} WHERE id = $${entries.length + 1}`,
+          [...entries.map(([, v]) => v.v), service.id],
+        );
+      } catch (err) {
+        if (err.code === '23505' && sets.name) {
+          res.status(409).json({
+            message: `A service named '${sets.name.v}' already exists on this repository — pick a different name.`,
+          });
+          return;
+        }
+        throw err;
+      }
     }
     await proxyInvalidate();
 
