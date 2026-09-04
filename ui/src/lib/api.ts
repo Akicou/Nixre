@@ -820,6 +820,8 @@ class ApiClient {
       memory_mb?: number;
       auto_deploy?: boolean;
       env?: Record<string, string>;
+      /** Optional Docker runtime options (binds, caps, health path, …). */
+      runtime_options?: Record<string, unknown> | null;
     },
   ): Promise<DeployService> {
     return this.request(`/repos/${space}/${repo}/+/deployments/services`, {
@@ -847,6 +849,8 @@ class ApiClient {
       desired_state: 'running' | 'stopped';
       /** Partial secret merge: KEY -> value upserts, KEY -> null deletes. */
       env: Record<string, string | null>;
+      /** Full replace with an object; explicit null clears back to legacy. */
+      runtime_options?: Record<string, unknown> | null;
     }>,
   ): Promise<DeployService> {
     return this.request(`/repos/${space}/${repo}/+/deployments/services/${serviceId}`, {
@@ -1079,6 +1083,26 @@ export interface SpaceDeploymentsBoard {
   activity: DeployActivityEntry[];
 }
 
+export interface RuntimeOptions {
+  version: number;
+  health_path: string;
+  health_timeout_ms: number | null;
+  command: string[] | null;
+  entrypoint: string[] | null;
+  host_config: {
+    binds: string[];
+    privileged: boolean;
+    cap_add: string[];
+    cap_drop: string[];
+    devices: string[];
+    group_add: Array<number | string>;
+    extra_hosts: string[];
+    shm_size: number | null;
+    tmpfs: Record<string, string>;
+    network_mode: string | null;
+  };
+}
+
 export interface DeployService {
   id: number;
   name: string;
@@ -1096,6 +1120,7 @@ export interface DeployService {
   preserve_status_min: number;
   success_retention_hours: number;
   failure_retention_hours: number;
+  runtime_options?: RuntimeOptions | null;
   created: number;
   updated: number;
   current?: DeploymentSummary | null;

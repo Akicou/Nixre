@@ -42,6 +42,14 @@ services:
       DEPLOY_PROXY_PORT: ${DEPLOY_PROXY_PORT:-3003}
       DEPLOY_BASE_DOMAIN: ${DEPLOY_BASE_DOMAIN:-}
       DEPLOY_HEALTH_TIMEOUT_MS: ${DEPLOY_HEALTH_TIMEOUT_MS:-30000}
+      # Idle timeout for proxied app traffic (streaming AI services need more).
+      DEPLOY_PROXY_TIMEOUT_MS: ${DEPLOY_PROXY_TIMEOUT_MS:-120000}
+      # --- Runtime options policy (fail closed) -------------------------
+      # Host bind mounts require BOTH an allowlist here AND instance admin.
+      # Privileged mode and network_mode=host additionally need their flags.
+      NIXRE_DEPLOY_BIND_ALLOWLIST: ${NIXRE_DEPLOY_BIND_ALLOWLIST:-}
+      NIXRE_DEPLOY_ALLOW_PRIVILEGED: ${NIXRE_DEPLOY_ALLOW_PRIVILEGED:-false}
+      NIXRE_DEPLOY_ALLOW_HOST_NETWORK: ${NIXRE_DEPLOY_ALLOW_HOST_NETWORK:-false}
       # --- Cloudflare DNS automation -----------------------------------
       # When set, tunnel-kind custom domains get their proxied CNAME
       # (<domain> -> <CLOUDFLARE_TUNNEL_ID>.cfargotunnel.com) created/removed

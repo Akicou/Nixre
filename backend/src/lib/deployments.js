@@ -18,6 +18,7 @@ import {
   computeUsage,
 } from './deployPure.js';
 import { decryptSecret } from './ai.js';
+import { getRuntimeOptions } from './deployRuntimeOptions.js';
 import * as bus from './deployBus.js';
 
 const SERVICE_TABLE = 'deploy_services';
@@ -466,7 +467,32 @@ export function createDeploymentEngine({
       /* no leftover under this name */
     }
     const net = await getNetwork(docker);
-    const created = await docker.createContainer({
+    const ro = getRuntimeOptions(service);
+    const hc = ro?.host_config || null;
+
+    const hostConfig = {
+      Memory: Number(service.memory_bytes),
+      NanoCpus: Number(service.cpu_nano_cpus),
+      RestartPolicy: { Name: 'unless-stopped' },
+      Init: true,
+    };
+    if (hc) {
+      // Values here were validated by normalizeRuntimeOptions at API time;
+      // getRuntimeOptions is the defensive re-read. An explicit network_mode
+      // (host/none/container:*) replaces the default core-network attachment.
+      if (hc.binds.length) hostConfig.Binds = hc.binds;
+      if (hc.privileged) hostConfig.Privileged = true;
+      if (hc.cap_add.length) hostConfig.CapAdd = hc.cap_add;
+      if (hc.cap_drop.length) hostConfig.CapDrop = hc.cap_drop;
+      if (hc.devices.length) hostConfig.Devices = hc.devices;
+      if (hc.group_add.length) hostConfig.GroupAdd = hc.group_add;
+      if (hc.extra_hosts.length) hostConfig.ExtraHosts = hc.extra_hosts;
+      if (hc.shm_size != null) hostConfig.ShmSize = hc.shm_size;
+      if (Object.keys(hc.tmpfs).length) hostConfig.Tmpfs = hc.tmpfs;
+      if (hc.network_mode) hostConfig.NetworkMode = hc.network_mode;
+    }
+
+    const createOpts = {
       name,
       Image: imageTag,
       Labels: {
@@ -477,14 +503,15 @@ export function createDeploymentEngine({
         'nixre.name': service.name,
       },
       Env: env,
-      HostConfig: {
-        Memory: Number(service.memory_bytes),
-        NanoCpus: Number(service.cpu_nano_cpus),
-        RestartPolicy: { Name: 'unless-stopped' },
-        Init: true,
-      },
-      ...(net ? { NetworkingConfig: { EndpointsConfig: { [net]: {} } } } : {}),
-    });
+      HostConfig: hostConfig,
+    };
+    if (ro?.command) createOpts.Cmd = ro.command;
+    if (ro?.entrypoint) createOpts.Entrypoint = ro.entrypoint;
+    // Explicit network modes conflict with EndpointsConfig — omit ours then.
+    if (net && !(hc && hc.network_mode)) {
+      createOpts.NetworkingConfig = { EndpointsConfig: { [net]: {} } };
+    }
+    const created = await docker.createContainer(createOpts);
     await created.start();
     return created.inspect();
   }
@@ -497,7 +524,10 @@ export function createDeploymentEngine({
       Object.values(networks).map(n => n.IPAddress).find(Boolean);
     if (!ip) throw new Error('Container has no routable IP yet');
 
-    const deadline = Date.now() + healthTimeoutMs;
+    const ro = getRuntimeOptions(service);
+    const probePath = ro?.health_path || '/';
+    const budgetMs = ro?.health_timeout_ms || healthTimeoutMs;
+    const deadline = Date.now() + budgetMs;
     let lastErr = '';
     while (Date.now() < deadline) {
       throwIfCancelled(entry);
@@ -506,7 +536,7 @@ export function createDeploymentEngine({
         const out = await prober({
           host: ip,
           port: service.container_port,
-          path: '/',
+          path: probePath,
           timeoutMs: 2500,
           signal: entry.controller.signal,
         });
@@ -526,8 +556,8 @@ export function createDeploymentEngine({
       await sleep(20);
     }
     throw new Error(
-      `Health check failed: app did not answer on port ${service.container_port} within ` +
-        `${Math.round(healthTimeoutMs / 1000)}s (${lastErr})`,
+      `Health check failed: app did not answer on port ${service.container_port} ` +
+        `${probePath} within ${Math.round(budgetMs / 1000)}s (${lastErr})`,
     );
   }
 
@@ -815,7 +845,7 @@ export function createDeploymentEngine({
           outcome = await prober({
             host: target.ip,
             port: target.port,
-            path: '/',
+            path: getRuntimeOptions(service)?.health_path || '/',
             timeoutMs: 3000,
           });
           if (outcome && typeof outcome === 'object' && !('ok' in outcome)) {

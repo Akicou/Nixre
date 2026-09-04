@@ -407,6 +407,111 @@ test('create options inject decrypted env, limits, labels, restart policy', asyn
   assert.ok(create.NetworkingConfig.EndpointsConfig.nixre, 'joins core network');
 });
 
+test('runtime options merge into the docker create payload', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({
+    runtime_options: {
+      version: 1,
+      health_path: '/health',
+      health_timeout_ms: 5_000,
+      entrypoint: ['/bin/sh', '-c'],
+      host_config: {
+        binds: ['/var/run/docker.sock:/var/run/docker.sock', '/var/lib/ws:/workspace:rw'],
+        cap_add: ['NET_ADMIN'],
+        group_add: [998],
+        extra_hosts: ['db:10.0.0.5'],
+        shm_size: 268_435_456,
+        tmpfs: { '/run': '' },
+      },
+    },
+  });
+
+  const docker = new FakeDocker();
+  const probed = [];
+  const { engine } = await makeEngine(pool, {
+    docker,
+    drivers: {
+      probeHttp: () => async arg => {
+        probed.push(arg);
+        return { ok: true, status: 200 };
+      },
+    },
+  });
+
+  await engine.startDeployment(svc.id, { trigger: 'manual' });
+  await settle(engine, svc.id);
+
+  assert.equal(pool.services.get(svc.id).status, 'running');
+  const create = docker.createCalls.at(-1);
+  assert.deepEqual(create.HostConfig.Binds, [
+    '/var/run/docker.sock:/var/run/docker.sock',
+    '/var/lib/ws:/workspace:rw',
+  ]);
+  assert.equal(create.HostConfig.Privileged, undefined, 'privileged stays unset when false');
+  assert.deepEqual(create.HostConfig.CapAdd, ['NET_ADMIN']);
+  assert.deepEqual(create.HostConfig.GroupAdd, [998]);
+  assert.deepEqual(create.HostConfig.ExtraHosts, ['db:10.0.0.5']);
+  assert.equal(create.HostConfig.ShmSize, 268_435_456);
+  assert.deepEqual(create.HostConfig.Tmpfs, { '/run': '' });
+  assert.equal(create.HostConfig.NetworkMode, undefined, 'no network_mode keeps core-network join');
+  assert.ok(create.NetworkingConfig.EndpointsConfig.nixre, 'core network attached');
+  assert.deepEqual(create.Entrypoint, ['/bin/sh', '-c']);
+  assert.equal(create.Cmd, undefined);
+
+  // The release probe hit the configured health path, not "/".
+  assert.ok(probed.length > 0);
+  assert.equal(probed[0].path, '/health');
+});
+
+test('network_mode=host skips the core-network attachment', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({
+    runtime_options: {
+      version: 1,
+      health_path: '/',
+      host_config: { network_mode: 'host' },
+    },
+  });
+
+  const docker = new FakeDocker();
+  const { engine } = await makeEngine(pool, { docker });
+  await engine.startDeployment(svc.id, { trigger: 'manual' });
+  await settle(engine, svc.id);
+
+  const create = docker.createCalls.at(-1);
+  assert.equal(create.HostConfig.NetworkMode, 'host');
+  assert.equal(create.NetworkingConfig, undefined, 'host mode must not pass EndpointsConfig');
+});
+
+test('services without runtime options launch exactly as before', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({});
+
+  const docker = new FakeDocker();
+  const probed = [];
+  const { engine } = await makeEngine(pool, {
+    docker,
+    drivers: {
+      probeHttp: () => async arg => {
+        probed.push(arg);
+        return { ok: true, status: 200 };
+      },
+    },
+  });
+  await engine.startDeployment(svc.id, { trigger: 'manual' });
+  await settle(engine, svc.id);
+
+  const create = docker.createCalls.at(-1);
+  assert.equal(create.HostConfig.Binds, undefined);
+  assert.equal(create.HostConfig.Privileged, undefined);
+  assert.equal(create.HostConfig.NetworkMode, undefined);
+  assert.ok(create.NetworkingConfig.EndpointsConfig.nixre);
+  assert.equal(probed[0].path, '/');
+});
+
 test('blue/green swap replaces the old container only after health', async () => {
   const pool = new FakePool();
   pool.addRepo('acme', 'mono');

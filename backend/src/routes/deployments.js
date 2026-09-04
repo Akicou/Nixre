@@ -15,6 +15,10 @@ import {
   shortSha,
 } from '../lib/deployPure.js';
 import {
+  normalizeRuntimeOptions,
+  runtimeFlagsFromEnv,
+} from '../lib/deployRuntimeOptions.js';
+import {
   cloudflareConfigured,
   createTunnelCname,
   deleteDnsRecord,
@@ -126,6 +130,7 @@ export function deploymentRoutes(pool, authenticate) {
       preserve_status_min: Number(s.preserve_status_min ?? 400),
       success_retention_hours: Number(s.success_retention_hours ?? 24),
       failure_retention_hours: Number(s.failure_retention_hours ?? 168),
+      runtime_options: s.runtime_options ?? null,
       created: Number(s.created),
       updated: Number(s.updated),
       ...extra,
@@ -213,11 +218,26 @@ export function deploymentRoutes(pool, authenticate) {
       return;
     }
 
+    // Optional Docker runtime options (binds, caps, health path, …) are
+    // validated + policy-gated up front so invalid payloads never reach the
+    // database, let alone a container create call.
+    let runtimeOptions = null;
+    if (body.runtime_options != null) {
+      try {
+        runtimeOptions = normalizeRuntimeOptions(body.runtime_options, {
+          admin: Boolean(req.auth.user.admin),
+        });
+      } catch (err) {
+        res.status(400).json({ message: err.message });
+        return;
+      }
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO deploy_services
          (repo_id, name, root_dir, dockerfile_path, branch, auto_deploy,
-          container_port, cpu_nano_cpus, memory_bytes, created_by, created, updated)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+          container_port, cpu_nano_cpus, memory_bytes, runtime_options, created_by, created, updated)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
        RETURNING *`,
       [
         repo.id,
@@ -229,6 +249,7 @@ export function deploymentRoutes(pool, authenticate) {
         containerPort,
         Math.round(Number(body.cpu_cores || 1) * 1e9) || 1e9,
         Math.round(Number(body.memory_mb || 512) * 1024 * 1024) || 512 * 1024 * 1024,
+        runtimeOptions,
         req.auth.user.uid,
         Date.now(),
       ],
@@ -271,6 +292,7 @@ export function deploymentRoutes(pool, authenticate) {
     'success_retention_hours',
     'failure_retention_hours',
     'env',
+    'runtime_options',
   ]);
 
   api.patch('/repos/:space/:repo/\\+/deployments/services/:id', auth, guard(async (req, res) => {
@@ -297,6 +319,25 @@ export function deploymentRoutes(pool, authenticate) {
       if (key === 'cpu_nano_cpus') value = Math.max(1e8, Number(value));
       if (['preserve_status_min'].includes(key)) {
         value = Math.min(600, Math.max(100, Number(value)));
+      }
+      if (key === 'runtime_options') {
+        // Full replace when an object is provided; explicit null clears back
+        // to legacy behavior. Omitted = untouched (like every other field).
+        if (value === null) {
+          sets[key] = { v: null };
+          continue;
+        }
+        try {
+          sets[key] = {
+            v: normalizeRuntimeOptions(value, {
+              admin: Boolean(req.auth.user.admin),
+            }),
+          };
+        } catch (err) {
+          res.status(400).json({ message: err.message });
+          return;
+        }
+        continue;
       }
       if (key === 'env') {
         // Partial secret update: merged into service_env_vars — keys present

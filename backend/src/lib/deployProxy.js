@@ -213,7 +213,13 @@ export function createDeployProxy({ pool, engine }) {
         method: req.method,
         headers,
       });
-      upstream.setTimeout(120_000, () => upstream.destroy(new Error('upstream timeout')));
+      // Idle timeout for app traffic. Configurable because streaming AI
+      // gateways legitimately pause between tokens for minutes during long
+      // reasoning; the default stays conservative for ordinary web apps.
+      const upstreamTimeoutMs = Number(process.env.DEPLOY_PROXY_TIMEOUT_MS || 120_000);
+      upstream.setTimeout(upstreamTimeoutMs, () =>
+        upstream.destroy(new Error('upstream timeout')),
+      );
       upstream.on('error', () => {
         page(res, 502, 'Upstream error', 'The app container dropped the connection.');
         resolve();

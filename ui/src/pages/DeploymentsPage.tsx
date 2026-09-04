@@ -37,6 +37,7 @@ import {
   DomainEntry,
   EnvVarInfo,
   HttpLogsResponse,
+  RuntimeOptions,
   StatsSnapshot,
   UptimeResponse,
 } from '../lib/api';
@@ -172,6 +173,10 @@ const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch, onCance
   const [memoryMb, setMemoryMb] = useState(String(Math.round((cloneFrom?.memory_bytes ?? 536870912) / 1024 / 1024)));
   const [autoDeploy, setAutoDeploy] = useState(cloneFrom?.auto_deploy ?? true);
   const [envPairs, setEnvPairs] = useState<Array<{ key: string; value: string }>>([]);
+  const [runtimeText, setRuntimeText] = useState(
+    cloneFrom?.runtime_options ? JSON.stringify(cloneFrom.runtime_options, null, 2) : '',
+  );
+  const [runtimeOpen, setRuntimeOpen] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -216,6 +221,15 @@ const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch, onCance
 
   const submit = async () => {
     setError('');
+    let runtimeOptions: Record<string, unknown> | null = null;
+    if (runtimeText.trim()) {
+      try {
+        runtimeOptions = JSON.parse(runtimeText);
+      } catch {
+        setError('Advanced runtime options is not valid JSON.');
+        return;
+      }
+    }
     setBusy(true);
     try {
       const svc = await api.createDeployService(space!, repoUid!, {
@@ -228,6 +242,7 @@ const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch, onCance
         memory_mb: Number(memoryMb),
         auto_deploy: autoDeploy,
         env: Object.fromEntries(envPairs.filter(p => p.key).map(p => [p.key, p.value])),
+        ...(runtimeOptions ? { runtime_options: runtimeOptions } : {}),
       });
       onCreated(svc);
     } catch (err) {
@@ -324,6 +339,35 @@ const CreateWizard: React.FC<WizardProps> = ({ onCreated, defaultBranch, onCance
       </label>
 
       <EnvPairEditor pairs={envPairs} onChange={setEnvPairs} />
+
+      <div className="space-y-2">
+        <button
+          type="button"
+          onClick={() => setRuntimeOpen(o => !o)}
+          className="text-xs text-brand hover:underline flex items-center gap-1"
+          data-testid="wizard-runtime-toggle"
+        >
+          <SettingsIcon className="w-3.5 h-3.5" /> {runtimeOpen ? 'Hide' : 'Show'} advanced runtime options
+        </button>
+        {runtimeOpen && (
+          <div className="space-y-1" data-testid="wizard-runtime-editor">
+            <textarea
+              value={runtimeText}
+              onChange={e => setRuntimeText(e.target.value)}
+              spellCheck={false}
+              rows={8}
+              placeholder={'{\n  "health_path": "/health",\n  "host_config": {\n    "binds": ["/var/run/docker.sock:/var/run/docker.sock"]\n  }\n}'}
+              className="w-full bg-surface-base border border-border-subtle rounded px-2 py-1.5 text-xs font-mono text-txt-primary leading-relaxed"
+            />
+            <p className="text-[11px] text-txt-tertiary">
+              Optional JSON: health_path / health_timeout_ms, command & entrypoint overrides, and
+              host_config (binds, cap_add, cap_drop, devices, group_add, extra_hosts, shm_size,
+              tmpfs, network_mode). Host bind mounts need the instance bind allowlist + admin;
+              privileged and network_mode=host are additionally env-gated. Applied on the next deploy.
+            </p>
+          </div>
+        )}
+      </div>
 
       {error && <p className="text-xs text-red-400 break-words" role="alert">{error}</p>}
 
@@ -935,7 +979,7 @@ const LogViewer: React.FC<{ detail: DeploymentDetail; onClose: () => void }> = (
 // Service detail (overview / env / settings)
 // ---------------------------------------------------------------------------
 
-type Tab = 'overview' | 'deploys' | 'logs' | 'env' | 'domains';
+type Tab = 'overview' | 'deploys' | 'logs' | 'env' | 'domains' | 'runtime';
 
 const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; onDeleted: () => void; onBack: () => void }> = ({
   service,
@@ -1098,7 +1142,7 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
       )}
 
       <div className="flex gap-1 border-b border-border-subtle -mt-1 overflow-x-auto scrollbar-thin">
-        {(['overview', 'deploys', 'logs', 'env', 'domains'] as Tab[]).map(t => (
+        {(['overview', 'deploys', 'logs', 'env', 'domains', 'runtime'] as Tab[]).map(t => (
           <button
             key={t}
             data-tab={t}
@@ -1117,6 +1161,7 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
       {tab === 'logs' && <HttpLogsPanel service={service} />}
       {tab === 'env' && <EnvPanel service={service} onChanged={triggerRefresh} />}
       {tab === 'domains' && <DomainsPanel service={service} />}
+      {tab === 'runtime' && <RuntimePanel service={service} onChanged={triggerRefresh} />}
 
       <DangerZone service={service} onDeleted={onDeleted} />
     </div>
@@ -1557,6 +1602,129 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
         </>
       )}
       {err && <p className="text-xs text-red-400" role="alert">{err}</p>}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Runtime options panel — JSON editor for the service's Docker runtime
+// options (binds, caps, network mode, health path, …). Full replace on save;
+// takes effect on the next deploy because blue/green launches a fresh
+// container from the stored service row.
+// ---------------------------------------------------------------------------
+
+const RUNTIME_PLACEHOLDER = `{
+  "health_path": "/health",
+  "health_timeout_ms": 30000,
+  "host_config": {
+    "binds": ["/var/run/docker.sock:/var/run/docker.sock"],
+    "cap_add": [],
+    "network_mode": null
+  }
+}`;
+
+const runtimeSummaryChips = (ro: RuntimeOptions): string[] => {
+  const hc = ro.host_config;
+  const chips: string[] = [];
+  if (ro.health_path !== '/') chips.push(`health ${ro.health_path}`);
+  if (hc.binds.length) chips.push(`${hc.binds.length} bind${hc.binds.length === 1 ? '' : 's'}`);
+  if (hc.privileged) chips.push('privileged');
+  if (hc.cap_add.length) chips.push(`+${hc.cap_add.length} caps`);
+  if (hc.network_mode) chips.push(`net ${hc.network_mode}`);
+  if (ro.command || ro.entrypoint) chips.push('cmd override');
+  return chips;
+};
+
+const RuntimePanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({ service, onChanged }) => {
+  const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
+  const [text, setText] = useState(
+    service.runtime_options ? JSON.stringify(service.runtime_options, null, 2) : '',
+  );
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const dirty = service.runtime_options
+    ? text !== JSON.stringify(service.runtime_options, null, 2)
+    : text.trim() !== '';
+
+  const save = async (next: Record<string, unknown> | null) => {
+    setBusy(true);
+    setErr('');
+    setMsg('');
+    try {
+      const updated = await api.patchDeployService(space!, repoUid!, service.id, {
+        runtime_options: next,
+      });
+      setText(updated.runtime_options ? JSON.stringify(updated.runtime_options, null, 2) : '');
+      setMsg('Saved — takes effect on the next deploy.');
+      onChanged();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveParsed = () => {
+    if (!text.trim()) {
+      void save(null);
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      setErr('Not valid JSON.');
+      return;
+    }
+    void save(parsed as Record<string, unknown>);
+  };
+
+  const ro = service.runtime_options;
+  const chips = ro ? runtimeSummaryChips(ro) : [];
+
+  return (
+    <div className="space-y-3 max-w-2xl">
+      <div className="flex flex-wrap items-center gap-2">
+        {chips.length === 0 ? (
+          <span className="text-xs text-txt-tertiary italic">Default runtime — no custom options.</span>
+        ) : (
+          chips.map(c => (
+            <span key={c} className="text-[11px] font-mono px-2 py-0.5 rounded-md border border-border-subtle text-txt-secondary bg-surface-subtle">
+              {c}
+            </span>
+          ))
+        )}
+      </div>
+      <textarea
+        value={text}
+        onChange={e => setText(e.target.value)}
+        spellCheck={false}
+        rows={12}
+        placeholder={RUNTIME_PLACEHOLDER}
+        data-testid="runtime-json"
+        className="w-full bg-surface-base border border-border-subtle rounded px-2 py-1.5 text-xs font-mono text-txt-primary leading-relaxed"
+      />
+      <p className="text-[11px] text-txt-tertiary">
+        Optional Docker runtime options as JSON. Host bind mounts need the instance bind allowlist
+        (NIXRE_DEPLOY_BIND_ALLOWLIST) + admin; privileged and network_mode=host are additionally
+        env-gated (NIXRE_DEPLOY_ALLOW_PRIVILEGED / NIXRE_DEPLOY_ALLOW_HOST_NETWORK). Clear the text
+        and save to reset to the default runtime.
+      </p>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={saveParsed}
+          disabled={busy}
+          data-testid="runtime-save"
+          className="px-3 py-1.5 text-xs font-medium rounded-md bg-brand text-white hover:opacity-90 disabled:opacity-40"
+        >
+          {busy ? 'Saving…' : 'Save runtime options'}
+        </button>
+        {msg && <span className="text-xs text-txt-secondary">{msg}</span>}
+        {dirty && !msg && !err && <span className="text-xs text-amber-400">Unsaved edits</span>}
+      </div>
+      {err && <p className="text-xs text-red-400 break-words" role="alert">{err}</p>}
     </div>
   );
 };
