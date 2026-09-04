@@ -397,21 +397,40 @@ async function spawnShell(key, containerId) {
     AttachStderr: true,
   });
   const stream = await execInstance.start({ hijack: true, stdin: true });
-  const state = { stream, buf: '', waiters: [], busy: false };
+  const state = { stream, buf: '', waiters: [], busy: false, dead: false };
+  const kill = err => {
+    if (state.dead) return;
+    state.dead = true;
+    shells.delete(key);
+    for (const w of state.waiters) {
+      clearTimeout(w.timer);
+      w.reject(new Error(`Sandbox shell error (${err?.message || err || 'stream closed'})`));
+    }
+    state.waiters = [];
+  };
   const append = chunk => {
     state.buf += chunk.toString('utf8');
     drainWaiters(state);
   };
+  // A stream 'error' (EPIPE, socket reset, write-after-end) with no listener
+  // is an uncaught exception — it takes the whole core process down and every
+  // active agent job with it. Fail the pending command instead.
+  stream.on('error', err => {
+    console.error(`[agentSandbox] shell stream error for ${key}:`, err?.message || err);
+    kill(err);
+  });
+  stream.on('close', () => kill(new Error('stream closed')));
   docker.modem.demuxStream(stream, { write: append }, { write: append });
   stream.on('end', () => {
-    shells.delete(key);
-    for (const w of state.waiters) {
-      clearTimeout(w.timer);
-      w.reject(new Error('Sandbox shell exited'));
-    }
+    kill(new Error('Sandbox shell exited'));
   });
-  stream.write(`[ -f ${GITHUB_TOKEN_FILE} ] && export GITHUB_TOKEN=$(cat ${GITHUB_TOKEN_FILE})\n`);
-  stream.write(`cd ${WORK_DIR} 2>/dev/null || cd /workspace\n`);
+  try {
+    stream.write(`[ -f ${GITHUB_TOKEN_FILE} ] && export GITHUB_TOKEN=$(cat ${GITHUB_TOKEN_FILE})\n`);
+    stream.write(`cd ${WORK_DIR} 2>/dev/null || cd /workspace\n`);
+  } catch (err) {
+    kill(err);
+    throw err;
+  }
   shells.set(key, state);
   return state;
 }
@@ -476,6 +495,12 @@ async function execInShell(key, containerId, command) {
       reject(new Error(`Command timed out after ${MAX_CMD_MS / 1000}s`));
     }, MAX_CMD_MS);
 
+    const fail = err => {
+      clearTimeout(timer);
+      state.busy = false;
+      reject(err);
+    };
+
     state.waiters.push({
       resolve: ({ exitCode, output }) => {
         let out = output;
@@ -484,16 +509,25 @@ async function execInShell(key, containerId, command) {
         }
         resolve({ output: `exit code: ${exitCode}\n${out}`, exitCode });
       },
-      reject,
+      reject: fail,
       timer,
     });
 
-    if (!command.includes('\n')) {
-      state.stream.write(`( ${command} )\n`);
-    } else {
-      state.stream.write(`${command}\n`);
+    try {
+      if (!command.includes('\n')) {
+        state.stream.write(`( ${command} )\n`);
+      } else {
+        state.stream.write(`${command}\n`);
+      }
+      state.stream.write(`printf '${MARKER}:%s\\n' $?\n`);
+    } catch (err) {
+      // Write on a closed/destroyed socket must fail the command, not the
+      // process — an async 'error' event is handled by the spawnShell handler,
+      // this catches the synchronous throw surface.
+      state.stream.destroy?.();
+      fail(new Error(`Sandbox shell unavailable (${err.message})`));
+      return;
     }
-    state.stream.write(`printf '${MARKER}:%s\\n' $?\n`);
     drainWaiters(state);
   });
 }
@@ -544,11 +578,17 @@ export async function writeFileInSandbox({
   const rel = String(filePath || '').replace(/\\/g, '/');
   const target = `${WORK_DIR}/${rel}`;
   const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : WORK_DIR;
+  // One-shot exec with the content passed as exec stdin. Deliberately NOT the
+  // persistent shell: a whole file as a single ~64KB base64 command line was
+  // the only >2000-char write into the hijacked shell stream and could kill
+  // the stream (and with an unhandled 'error' listener missing, the whole
+  // core process). A dedicated exec also cannot collide with a busy
+  // run_command shell.
   const b64 = Buffer.from(String(content ?? ''), 'utf8').toString('base64');
-  const cmd = `mkdir -p ${JSON.stringify(parent)} && echo ${JSON.stringify(b64)} | base64 -d > ${JSON.stringify(target)}`;
-  const { output, exitCode } = await execInShell(key, containerId, cmd);
-  if (exitCode !== 0) {
-    throw new Error(output || `write_file failed (exit ${exitCode})`);
+  const script = `set -eu\nmkdir -p ${JSON.stringify(parent)}\nbase64 -d > ${JSON.stringify(target)}\n`;
+  const { output, code } = await dockerExec(containerId, ['bash', '-lc', script], { stdin: b64 });
+  if (code !== 0) {
+    throw new Error(output || `write_file failed (exit ${code})`);
   }
   return { output: `Wrote ${Buffer.byteLength(content ?? '', 'utf8')} bytes to ${rel}` };
 }

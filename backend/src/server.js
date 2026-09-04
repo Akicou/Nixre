@@ -179,3 +179,15 @@ boot().catch(err => {
   console.error('Failed to start nixre-core:', err);
   process.exit(1);
 });
+
+// A stray rejected promise must not take down core — every active agent job
+// dies with it and comes back as "Job lost on core restart". Log loudly and
+// keep serving. Uncaught exceptions remain fatal (state may be inconsistent):
+// logged with full stack, then exit(1) so docker restarts us cleanly.
+process.on('unhandledRejection', err => {
+  console.error('[core] unhandled rejection:', err?.stack || err);
+});
+process.on('uncaughtException', err => {
+  console.error('[core] uncaught exception:', err?.stack || err);
+  process.exit(1);
+});
