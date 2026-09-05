@@ -593,6 +593,91 @@ export async function writeFileInSandbox({
   return { output: `Wrote ${Buffer.byteLength(content ?? '', 'utf8')} bytes to ${rel}` };
 }
 
+// --- user attachments ---------------------------------------------------------
+//
+// Pasted/attached chat files are dropped into the sandbox workspace instead of
+// being inlined into the provider request. They live under
+// .nixre/attachments/<message-id>/ inside the repo workdir: readable with
+// run_command, displayable via show_images, and kept out of `git status`
+// through .git/info/exclude (local-only, never touches .gitignore).
+
+const ATTACHMENTS_ROOT = '.nixre/attachments';
+
+export function sanitizeAttachmentName(raw, fallbackExt = 'bin') {
+  const base = String(raw || '').split(/[\\/]/).pop() || '';
+  const cleaned = base.replace(/[^a-zA-Z0-9._ -]/g, '_').replace(/\s+/g, ' ').trim();
+  const capped = (cleaned || `attachment.${fallbackExt}`).slice(0, 120);
+  return /^\.+$/.test(capped) ? `attachment.${fallbackExt}` : capped;
+}
+
+export function extForMime(mime) {
+  const m = String(mime || '').toLowerCase();
+  const map = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'application/pdf': 'pdf', 'text/plain': 'txt' };
+  return map[m] || (m.startsWith('image/') ? 'png' : 'bin');
+}
+
+/**
+ * Write pasted chat attachments into the conversation's sandbox workspace.
+ * files: [{ name, mime, data(Buffer) }]. Returns
+ * { written: [{ name, path }], failed: [{ name, error }] }, or null when no
+ * sandbox is available (caller falls back to inlining).
+ */
+export async function writeAttachmentFiles({
+  userId,
+  conversationId,
+  repoPath,
+  space,
+  repo,
+  user,
+  groupId,
+  files,
+}) {
+  if (!(await isSandboxEnabled())) return null;
+  if (!userId || !conversationId || !repoPath || !Array.isArray(files) || files.length === 0) return null;
+  const key = sessionKey(userId, conversationId, repoPath);
+  let containerId;
+  try {
+    containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user);
+  } catch (err) {
+    return { written: [], failed: files.map((f, i) => ({ index: i, name: f.name, error: err.message })), unavailable: false };
+  }
+  const group = sanitizeAttachmentName(groupId || `m${Date.now().toString(36)}`, 'm').replace(/\.[a-z0-9]+$/i, '');
+  const dir = `${WORK_DIR}/${ATTACHMENTS_ROOT}/${group}`;
+  const exclude = `${WORK_DIR}/.git/info/exclude`;
+  // .nixre/ is local scratch (attachments, screenshots) — hide it from git
+  // status without touching the repo's .gitignore.
+  try {
+    const setup = `mkdir -p ${JSON.stringify(dir)} && grep -qxF '.nixre/' ${JSON.stringify(exclude)} 2>/dev/null || echo '.nixre/' >> ${JSON.stringify(exclude)}`;
+    const { code, output } = await dockerExec(containerId, ['bash', '-lc', setup]);
+    if (code !== 0) throw new Error(output || `exclude setup failed (exit ${code})`);
+  } catch (err) {
+    return { written: [], failed: files.map((f, i) => ({ index: i, name: f.name, error: err.message })), unavailable: false };
+  }
+
+  const written = [];
+  const failed = [];
+  const used = new Map();
+  for (const [i, f] of files.entries()) {
+    try {
+      const stem = sanitizeAttachmentName(f.name, extForMime(f.mime)).replace(/\.[^.]+$/, '');
+      const extMatch = sanitizeAttachmentName(f.name, extForMime(f.mime)).match(/\.([a-z0-9]+)$/i);
+      const ext = extMatch ? `.${extMatch[1]}` : `.${extForMime(f.mime)}`;
+      const n = (used.get(stem) || 0) + 1;
+      used.set(stem, n);
+      const rel = `${ATTACHMENTS_ROOT}/${group}/${stem}${n > 1 ? `-${n}` : ''}${ext}`;
+      const target = `${WORK_DIR}/${rel}`;
+      const b64 = Buffer.from(f.data).toString('base64');
+      const script = `base64 -d > ${JSON.stringify(target)}`;
+      const { code, output } = await dockerExec(containerId, ['bash', '-lc', script], { stdin: b64 });
+      if (code !== 0) throw new Error(output || `write failed (exit ${code})`);
+      written.push({ name: f.name || rel, path: rel });
+    } catch (err) {
+      failed.push({ index: i, name: f.name || `file-${i + 1}`, error: err.message });
+    }
+  }
+  return { written, failed, unavailable: false };
+}
+
 /**
  * Read a file from the conversation's live sandbox workspace (uncommitted
  * files included — screenshots, build output). Returns a Buffer, or null when

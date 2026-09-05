@@ -23,6 +23,7 @@ RUN apt-get update \
     zip \
     unzip \
     xz-utils \
+    poppler-utils \
   && rm -rf /var/lib/apt/lists/*
 
 # Playwright + headless Chromium preinstalled so the agent can screenshot web

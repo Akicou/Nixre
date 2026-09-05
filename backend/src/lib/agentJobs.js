@@ -4,7 +4,7 @@
 import { EventEmitter } from 'node:events';
 import { decryptSecret, PROVIDERS, streamChat } from './ai.js';
 import { TOOL_SCHEMAS, executeTool } from './agentTools.js';
-import { touchSandbox } from './agentSandbox.js';
+import { touchSandbox, writeAttachmentFiles, extForMime } from './agentSandbox.js';
 import { getMode } from './assistantModes.js';
 import {
   resolveWorkspace,
@@ -317,6 +317,41 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
   const mode = getMode(job.mode);
   const turnKind = jobKind || job.kind || 'chat';
   const agentMode = job.mode === 'agent' || job.mode === 'debug' || turnKind === 'env_audit';
+
+  // Pasted/attached files: drop them into the sandbox and reference them by
+  // path in a <user-file-attached> block instead of inlining them into the
+  // provider request. Tool-less modes (ask/plan) cannot open sandbox files,
+  // so they keep the old inline behavior.
+  let inlineImages = images;
+  let attachmentBlock = '';
+  if (agentMode && Array.isArray(images) && images.length > 0) {
+    const att = await writeAttachmentFiles({
+      userId: job.userId,
+      conversationId: job.conversationId,
+      repoPath: job.repoPath,
+      space,
+      repo,
+      user: job.user,
+      groupId: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      files: images.map((img, i) => ({
+        name: img.name || `image-${i + 1}.${extForMime(img.mime)}`,
+        mime: img.mime,
+        data: Buffer.from(String(img.dataUrl || '').split(',').pop() || '', 'base64'),
+      })),
+    }).catch(err => {
+      console.warn('[agentJobs] attachment drop failed:', err.message);
+      return null;
+    });
+    if (att && att.written.length > 0) {
+      const failedIdx = new Set(att.failed.map(f => f.index));
+      inlineImages = images.filter((_, i) => failedIdx.has(i));
+      const lines = att.written.map(w => `- ${w.path}`);
+      attachmentBlock = `\n\n<user-file-attached>\nThe user has attached ${att.written.length} file${att.written.length === 1 ? '' : 's'}. ${att.written.length === 1 ? 'It is' : 'They are'} saved in your sandbox workspace at:\n${lines.join('\n')}\nInspect them with run_command (pdftotext for PDFs); show images to the user with show_images.\n</user-file-attached>`;
+    }
+    // att === null (no sandbox) or everything failed → inlineImages stays as
+    // the original list and the provider gets them inline, as before.
+  }
+
   // Skills live on HEAD of the working tree source: hosted bare for nixre,
   // the local mirror for GitHub targets.
   const skillsDir = ws.kind === 'github' ? workspaceGitDir(ws) : undefined;
@@ -341,6 +376,7 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
   }
   const { summary, history } = buildModelContext(job.messages.slice(0, -1));
   const modelPrompt = await expandMentions(prompt, { execute: exec, skills }).catch(() => prompt);
+  const finalPrompt = attachmentBlock ? `${modelPrompt}${attachmentBlock}` : modelPrompt;
   const tools = agentMode
     ? turnKind === 'env_audit'
       ? [...TOOL_SCHEMAS, SUBMIT_ENV_FEEDBACK_SCHEMA]
@@ -363,8 +399,8 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
       extraContext: extras.join('\n\n'),
       compactionSummary: summary ?? undefined,
       history,
-      prompt: modelPrompt,
-      images,
+      prompt: finalPrompt,
+      images: inlineImages,
       provider: providerRow.provider,
       apiKey,
       baseUrl: providerRow.base_url,

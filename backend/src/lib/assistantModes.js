@@ -57,6 +57,24 @@ instruction into what you do next. Never let an earlier plan override a newer
 user instruction.
 </steering>`;
 
+const USER_ATTACHMENTS = `<user_attachments>
+Files the user pastes or attaches are NOT sent to you directly. They are dropped
+into your sandbox workspace and referenced at the end of the user's message in
+a <user-file-attached> block, like:
+
+<user-file-attached>
+The user has attached 2 files. They are saved in your sandbox workspace at:
+- .nixre/attachments/m1abc/image1.png
+- .nixre/attachments/m1abc/research-paper1.pdf
+</user-file-attached>
+
+Open them with run_command (cat, rg, pdftotext for PDFs — poppler is installed).
+Show images with show_images; it reads the sandbox. Attachments live under
+.nixre/ and are git-excluded via .git/info/exclude — never commit them.
+If no <user-file-attached> block is present but files were referenced, they may
+have arrived inline as image parts.
+</user_attachments>`;
+
 const VISUAL_CHECKS = `<visual_checks>
 When the task touches a web UI, verify it visually instead of trusting code
 alone. The sandbox ships Playwright with headless Chromium preinstalled:
@@ -155,6 +173,8 @@ ${STEERING}
 
 ${TDD_DISCIPLINE}
 
+${USER_ATTACHMENTS}
+
 ${VISUAL_CHECKS}
 
 <critical_rules>
@@ -201,6 +221,8 @@ ${FORGE_CONTEXT}
 ${STEERING}
 
 ${TDD_DISCIPLINE}
+
+${USER_ATTACHMENTS}
 
 ${VISUAL_CHECKS}
 

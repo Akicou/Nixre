@@ -1,8 +1,10 @@
-// Pasted / displayed chat images. Data URLs only — never uploaded as files.
-// OpenRouter/OpenAI multimodal parts use { type:'image_url', image_url:{ url } }.
+// Pasted / displayed chat attachments. Data URLs only — never uploaded as files.
+// Images may be inlined as OpenAI/OpenRouter multimodal parts; every kind is
+// also dropped into the agent sandbox by the backend and referenced by path.
 
 export const MAX_CHAT_IMAGES = 4;
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+export const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const ALLOWED = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp']);
 
 export interface ChatImage {
@@ -10,6 +12,8 @@ export interface ChatImage {
   mime: string;
   dataUrl: string;
   name?: string;
+  /** 'image' (renderable/inlineable) or 'file' (sandbox attachment, e.g. pdf). */
+  kind?: 'image' | 'file';
 }
 
 export type ContentPart =
@@ -20,33 +24,35 @@ export function isAllowedImageMime(mime: string): boolean {
   return ALLOWED.has((mime || '').toLowerCase());
 }
 
+export function isImageAttachment(img: ChatImage): boolean {
+  return (img.kind ?? 'image') === 'image' || img.dataUrl.startsWith('data:image/');
+}
+
 export function toMultimodalParts(text: string, images: ChatImage[]): ContentPart[] {
   const parts: ContentPart[] = [];
   if (text) parts.push({ type: 'text', text });
   for (const img of images) {
-    if (img.dataUrl) parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+    if (img.dataUrl && isImageAttachment(img)) parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
   }
   if (parts.length === 0) parts.push({ type: 'text', text: '' });
   return parts;
 }
 
-/** Read a File/Blob into a ChatImage. Rejects oversized or non-image types. */
+/** Read a File/Blob into a ChatImage. Images inline; other files ride along as sandbox attachments. */
 export function fileToChatImage(file: File | Blob, name?: string): Promise<ChatImage> {
   return new Promise((resolve, reject) => {
-    const mime = (file.type || 'image/png').toLowerCase();
-    if (!isAllowedImageMime(mime)) {
-      reject(new Error(`Unsupported image type: ${mime || 'unknown'}`));
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      reject(new Error(`Image too large (max ${MAX_IMAGE_BYTES / 1024 / 1024}MB)`));
+    const mime = (file.type || 'application/octet-stream').toLowerCase();
+    const isImage = isAllowedImageMime(mime);
+    const cap = isImage ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
+    if (file.size > cap) {
+      reject(new Error(`File too large (max ${cap / 1024 / 1024}MB)`));
       return;
     }
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Could not read image'));
+    reader.onerror = () => reject(new Error('Could not read file'));
     reader.onload = () => {
       const dataUrl = String(reader.result || '');
-      if (!dataUrl.startsWith('data:image/')) {
+      if (isImage && !dataUrl.startsWith('data:image/')) {
         reject(new Error('Not an image'));
         return;
       }
@@ -55,24 +61,23 @@ export function fileToChatImage(file: File | Blob, name?: string): Promise<ChatI
         mime,
         dataUrl,
         name: name || (file instanceof File ? file.name : undefined),
+        kind: isImage ? 'image' : 'file',
       });
     };
     reader.readAsDataURL(file);
   });
 }
 
-/** Pull image files out of a paste/drop event. */
+/** Pull attachable files out of a paste/drop event — images and documents alike. */
 export function imageFilesFromClipboard(data: DataTransfer | null): File[] {
   if (!data) return [];
   const out: File[] = [];
   if (data.files?.length) {
-    for (const f of Array.from(data.files)) {
-      if (f.type.startsWith('image/')) out.push(f);
-    }
+    for (const f of Array.from(data.files)) out.push(f);
   }
   if (out.length === 0 && data.items) {
     for (const item of Array.from(data.items)) {
-      if (item.kind === 'file' && item.type.startsWith('image/')) {
+      if (item.kind === 'file') {
         const f = item.getAsFile();
         if (f) out.push(f);
       }

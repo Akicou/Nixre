@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  FileText,
   Loader2,
   Pencil,
   XCircle,
@@ -12,7 +13,7 @@ import {
 import type { ChatMessage, ToolCall } from '../../lib/assistantEngine';
 import { messageParts } from '../../lib/assistantEngine';
 import { Markdown } from '../Markdown';
-import { parseShownImages, type ChatImage } from '../../lib/chatImages';
+import { isImageAttachment, parseShownImages, type ChatImage } from '../../lib/chatImages';
 
 /**
  * Shared renderer for a single chat turn — used by the repo ChatSurface and
@@ -263,22 +264,38 @@ export const ImageStrip: React.FC<{ images: ChatImage[] }> = ({ images }) => {
   return (
     <>
       <div className="flex flex-wrap gap-2">
-        {images.map(img => (
-          <button
-            key={img.id}
-            type="button"
-            onClick={() => setLightbox(img)}
-            className="group relative rounded-lg overflow-hidden border border-border-subtle bg-surface-base hover:border-border-mid transition"
-            title={img.name || 'Open image'}
-          >
-            <img src={img.dataUrl} alt={img.name || 'attached'} className="max-h-40 max-w-[14rem] object-contain block" />
-            {img.name && (
-              <span className="absolute bottom-0 inset-x-0 px-1.5 py-0.5 text-[10px] font-mono text-txt-secondary bg-surface-canvas/80 truncate">
-                {img.name}
-              </span>
-            )}
-          </button>
-        ))}
+        {images.map(img => {
+          if (!isImageAttachment(img)) {
+            return (
+              <a
+                key={img.id}
+                href={img.dataUrl}
+                download={img.name || 'attachment'}
+                className="group flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-base hover:border-border-mid transition px-3 py-2"
+                title={img.name || 'Download attachment'}
+              >
+                <FileText className="w-4 h-4 text-txt-secondary shrink-0" />
+                <span className="text-xs font-mono text-txt-secondary truncate max-w-[12rem]">{img.name || 'attachment'}</span>
+              </a>
+            );
+          }
+          return (
+            <button
+              key={img.id}
+              type="button"
+              onClick={() => setLightbox(img)}
+              className="group relative rounded-lg overflow-hidden border border-border-subtle bg-surface-base hover:border-border-mid transition"
+              title={img.name || 'Open image'}
+            >
+              <img src={img.dataUrl} alt={img.name || 'attached'} className="max-h-40 max-w-[14rem] object-contain block" />
+              {img.name && (
+                <span className="absolute bottom-0 inset-x-0 px-1.5 py-0.5 text-[10px] font-mono text-txt-secondary bg-surface-canvas/80 truncate">
+                  {img.name}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
       {lightbox && (
         <div
