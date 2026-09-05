@@ -299,6 +299,7 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     conversationId: job.conversationId,
     repoPath: job.repoPath,
     workspace: ws,
+    mode: job.mode,
   };
   const exec = async (name, args) => {
     if (name === 'submit_env_feedback') {
@@ -316,15 +317,17 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
 
   const mode = getMode(job.mode);
   const turnKind = jobKind || job.kind || 'chat';
+  const isPlanMode = job.mode === 'plan';
   const agentMode = job.mode === 'agent' || job.mode === 'debug' || turnKind === 'env_audit';
+  const useTools = agentMode || isPlanMode;
 
   // Pasted/attached files: drop them into the sandbox and reference them by
   // path in a <user-file-attached> block instead of inlining them into the
-  // provider request. Tool-less modes (ask/plan) cannot open sandbox files,
-  // so they keep the old inline behavior.
+  // provider request. Ask mode cannot open sandbox files (no tools), so it
+  // keeps inline behavior. Plan and Agent modes drop into sandbox.
   let inlineImages = images;
   let attachmentBlock = '';
-  if (agentMode && Array.isArray(images) && images.length > 0) {
+  if (useTools && Array.isArray(images) && images.length > 0) {
     const att = await writeAttachmentFiles({
       userId: job.userId,
       conversationId: job.conversationId,
@@ -381,7 +384,9 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     ? turnKind === 'env_audit'
       ? [...TOOL_SCHEMAS, SUBMIT_ENV_FEEDBACK_SCHEMA]
       : [...TOOL_SCHEMAS]
-    : null;
+    : isPlanMode
+      ? TOOL_SCHEMAS.filter(t => t.name !== 'write_file')
+      : null;
 
   const touch = () =>
     touchSandbox({

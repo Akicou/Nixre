@@ -307,6 +307,9 @@ export async function searchCode(space, repo, args, permissions = {}, context = 
 
 const BLOCKED = /\brm\s+-rf\s+[/~]|\bmkfs\b|:\(\)\{.*\};:|dd\s+if=\/dev\/[\w]+\s+of=\/dev\/|shutdown|reboot/i;
 
+/** In Plan mode, shell commands must be strictly read-only / research. */
+const PLAN_MODE_WRITE_BLOCK = /(?:>|>>|\|\|\s*touch|\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\brm\b|\bmkdir\b|\brmdir\b|\bchmod\b|\bchown\b|\bgit\s+(?:commit|push|checkout\s+-b|merge|rebase|reset|apply|stash|cherry-pick|clean|branch\s+-[dDmM]|tag)\b|\bnpm\s+(?:install|i|ci|add|remove|uninstall|update)\b|\byarn\s+(?:add|remove|install)\b|\bpnpm\s+(?:add|remove|install|i)\b|\bpip\s+(?:install|uninstall)\b)/i;
+
 /** cat > with no heredoc/pipe waits for stdin and hangs across separate tool calls. */
 const INTERACTIVE_CAT = /^\s*cat\s+>\s*(\S+)?\s*$/;
 
@@ -443,6 +446,9 @@ export async function runCommand(space, repo, args, _permissions = {}, context =
   const command = String(args?.command || '').trim();
   if (!command || command.length > 2000) throw new Error('Invalid command');
   if (BLOCKED.test(command)) throw new Error('Command blocked by safety policy');
+  if (context?.mode === 'plan' && PLAN_MODE_WRITE_BLOCK.test(command)) {
+    throw new Error('Plan mode is strictly read-only for research. Writing to files, redirects (>), filesystem mutations, and install commands are blocked.');
+  }
   if (INTERACTIVE_CAT.test(command)) {
     throw new Error(
       'cat > waits for interactive stdin and does not work across tool calls. Use write_file to create or overwrite a file instead.',
@@ -667,6 +673,9 @@ async function webSearchTool(args) {
 export async function executeTool(tool, space, repo, args, permissions = {}, context = {}) {
   const fn = EXECUTORS[tool];
   if (!fn) throw new Error(`Unknown tool '${tool}'`);
+  if (context?.mode === 'plan' && tool === 'write_file') {
+    throw new Error('Plan mode is strictly read-only. write_file is blocked in Plan mode.');
+  }
   if (tool === 'run_command') {
     // Missing keys (no saved repo profile) default on — same as the UI toggles.
     const bash = permissions.canRunBash !== false;
