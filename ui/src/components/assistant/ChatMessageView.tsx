@@ -8,6 +8,7 @@ import {
   FileText,
   Loader2,
   Pencil,
+  RotateCcw,
   XCircle,
 } from 'lucide-react';
 import type { ChatMessage, ToolCall } from '../../lib/assistantEngine';
@@ -29,9 +30,19 @@ interface ChatMessageViewProps {
   streaming?: boolean;
   /** When set on a user message, offers inline edit-and-resend. */
   onEdit?: (messageId: string, newText: string) => void;
+  /** When set on a user message, offers restarting the turn from here. */
+  onRestart?: (messageId: string) => void;
+  /** When set on an assistant message, offers regenerating this response. */
+  onRegenerate?: (messageId: string) => void;
 }
 
-export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, streaming = false, onEdit }) => {
+export const ChatMessageView: React.FC<ChatMessageViewProps> = ({
+  message,
+  streaming = false,
+  onEdit,
+  onRestart,
+  onRegenerate,
+}) => {
   const isUser = message.role === 'user';
   const parts = isUser ? [] : messageParts(message);
   const hasText = parts.some(p => p.type === 'text');
@@ -89,15 +100,26 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
                   </div>
                 )}
               </div>
-              {onEdit && !streaming && (
-                <button
-                  onClick={() => { setDraft(message.content); setEditing(true); }}
-                  title="Edit & resend"
-                  className="mt-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition text-[10px] text-txt-tertiary hover:text-txt-primary flex items-center gap-1 min-h-11 px-1"
-                >
-                  <Pencil className="w-3 h-3" /> edit &amp; resend
-                </button>
-              )}
+              <div className="flex items-center gap-2 mt-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition">
+                {onEdit && !streaming && (
+                  <button
+                    onClick={() => { setDraft(message.content); setEditing(true); }}
+                    title="Edit & resend"
+                    className="text-[10px] text-txt-tertiary hover:text-txt-primary flex items-center gap-1 min-h-8 px-1"
+                  >
+                    <Pencil className="w-3 h-3" /> edit
+                  </button>
+                )}
+                {onRestart && !streaming && (
+                  <button
+                    onClick={() => onRestart(message.id)}
+                    title="Restart task from this message (deletes subsequent agent turns)"
+                    className="text-[10px] text-txt-tertiary hover:text-txt-primary flex items-center gap-1 min-h-8 px-1"
+                  >
+                    <RotateCcw className="w-3 h-3" /> restart from here
+                  </button>
+                )}
+              </div>
             </>
           )
         ) : (
@@ -138,9 +160,18 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({ message, strea
         )}
       </div>
 
-      {!isUser && !streaming && message.content && (
-        <div className="mt-1">
-          <CopyButton text={message.content} />
+      {!isUser && !streaming && (
+        <div className="mt-1 flex items-center gap-2">
+          {message.content && <CopyButton text={message.content} />}
+          {onRegenerate && (
+            <button
+              onClick={() => onRegenerate(message.id)}
+              title="Regenerate this response"
+              className="text-[10px] text-txt-tertiary hover:text-txt-primary flex items-center gap-1 py-1 px-1.5 rounded hover:bg-surface-subtle transition"
+            >
+              <RotateCcw className="w-3 h-3" /> regenerate
+            </button>
+          )}
         </div>
       )}
     </div>

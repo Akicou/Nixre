@@ -607,6 +607,98 @@ export const AgentWorkspace: React.FC = () => {
     if (id) void stopAgentJob(id).catch(() => {});
   };
 
+  /**
+   * Restart task from a given user message: truncate transcript to before that
+   * message, and resend it (cleaning out all downstream agent turns).
+   */
+  const handleRestart = (messageId: string) => {
+    if (streaming) return;
+    const idx = messages.findIndex(m => m.id === messageId);
+    if (idx === -1 || messages[idx].role !== 'user') return;
+    const targetMsg = messages[idx];
+    const base = messages.slice(0, idx);
+    messagesRef.current = base;
+    setMessages(base);
+    const convId = currentIdRef.current;
+    if (convId && activeRepo) {
+      void updateConversation({
+        id: convId,
+        repoPath: activeRepo,
+        title: allConversations.find(c => c.id === convId)?.title ?? targetMsg.content.slice(0, 48),
+        messages: base,
+        updatedAt: Date.now(),
+      }).then(() => {
+        void sendToJob(targetMsg.content, targetMsg.images ?? []);
+      });
+    } else {
+      void sendToJob(targetMsg.content, targetMsg.images ?? []);
+    }
+  };
+
+  /**
+   * Edit a sent user message: truncate transcript before it and send with updated text.
+   */
+  const handleEditUserMessage = (messageId: string, newText: string) => {
+    if (streaming || !newText.trim()) return;
+    const idx = messages.findIndex(m => m.id === messageId);
+    if (idx === -1 || messages[idx].role !== 'user') return;
+    const targetMsg = messages[idx];
+    const base = messages.slice(0, idx);
+    messagesRef.current = base;
+    setMessages(base);
+    const convId = currentIdRef.current;
+    if (convId && activeRepo) {
+      void updateConversation({
+        id: convId,
+        repoPath: activeRepo,
+        title: allConversations.find(c => c.id === convId)?.title ?? newText.slice(0, 48),
+        messages: base,
+        updatedAt: Date.now(),
+      }).then(() => {
+        void sendToJob(newText.trim(), targetMsg.images ?? []);
+      });
+    } else {
+      void sendToJob(newText.trim(), targetMsg.images ?? []);
+    }
+  };
+
+  /**
+   * Regenerate assistant turn: find the user message preceding this assistant turn,
+   * truncate the transcript back to that user message, and re-run.
+   */
+  const handleRegenerate = (assistantMessageId: string) => {
+    if (streaming) return;
+    const idx = messages.findIndex(m => m.id === assistantMessageId);
+    if (idx === -1 || messages[idx].role !== 'assistant') return;
+    // Find the immediately preceding user message
+    let userIdx = -1;
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userIdx = i;
+        break;
+      }
+    }
+    if (userIdx === -1) return;
+    const userMsg = messages[userIdx];
+    const base = messages.slice(0, userIdx);
+    messagesRef.current = base;
+    setMessages(base);
+    const convId = currentIdRef.current;
+    if (convId && activeRepo) {
+      void updateConversation({
+        id: convId,
+        repoPath: activeRepo,
+        title: allConversations.find(c => c.id === convId)?.title ?? userMsg.content.slice(0, 48),
+        messages: base,
+        updatedAt: Date.now(),
+      }).then(() => {
+        void sendToJob(userMsg.content, userMsg.images ?? []);
+      });
+    } else {
+      void sendToJob(userMsg.content, userMsg.images ?? []);
+    }
+  };
+
   const handleSteer = (id: string) => {
     const item = queuedRef.current.find(q => q.id === id);
     const convId = currentIdRef.current;
@@ -1489,6 +1581,9 @@ export const AgentWorkspace: React.FC = () => {
                       streaming={
                         streaming && i === visible.length - 1 && msg.role === 'assistant'
                       }
+                      onEdit={msg.role === 'user' ? handleEditUserMessage : undefined}
+                      onRestart={msg.role === 'user' ? handleRestart : undefined}
+                      onRegenerate={msg.role === 'assistant' ? handleRegenerate : undefined}
                     />
                   ),
                 )}
