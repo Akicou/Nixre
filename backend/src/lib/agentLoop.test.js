@@ -72,4 +72,62 @@ describe('agentLoop', () => {
     assert.ok(events.some(e => e.type === 'steer_applied' && e.prompt === 'do this instead'));
     assert.ok(events.some(e => e.type === 'message_text' && e.text === 'redirected'));
   });
+
+  it('attaches show_images output multimodally and strips base64 from tool text', async () => {
+    let secondRoundMessages = null;
+    let round = 0;
+    const streamChat = async (opts, send) => {
+      round++;
+      if (round === 1) {
+        await send({ type: 'tool_delta', index: 0, id: 't_img', name: 'show_images' });
+        await send({ type: 'tool_delta', index: 0, argsDelta: '{"paths":["test.png"]}' });
+        await send({ type: 'finish', reason: 'tool_calls' });
+        return;
+      }
+      secondRoundMessages = opts.messages;
+      await send({ type: 'text', text: 'I see the image.' });
+    };
+
+    const dummyBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const executeTool = async (name) => {
+      assert.equal(name, 'show_images');
+      return JSON.stringify({
+        images: [{ path: 'test.png', mime: 'image/png', source: 'sandbox', dataUrl: dummyBase64 }],
+        note: undefined,
+      });
+    };
+
+    const events = [];
+    await runAgentLoop(
+      {
+        systemPrompt: 'test',
+        history: [],
+        prompt: 'show me test.png',
+        provider: 'openrouter',
+        apiKey: 'k',
+        model: 'm',
+        tools: [{ name: 'show_images' }],
+      },
+      ev => events.push(ev),
+      { streamChat, executeTool },
+    );
+
+    assert.equal(round, 2);
+    // UI gets full payload with dataUrl
+    const outputEv = events.find(e => e.type === 'tool_output');
+    assert.ok(outputEv);
+    assert.ok(outputEv.output.includes(dummyBase64));
+
+    // Upstream messages thread: tool message must NOT have base64
+    const toolMsg = secondRoundMessages.find(m => m.role === 'tool');
+    assert.ok(toolMsg);
+    assert.ok(!toolMsg.content.includes(dummyBase64));
+    assert.ok(toolMsg.content.includes('test.png'));
+
+    // Upstream messages thread: user message attached with image_url
+    const userImgMsg = secondRoundMessages.find(m => m.role === 'user' && Array.isArray(m.content) && m.content.some(c => c.type === 'image_url'));
+    assert.ok(userImgMsg);
+    assert.equal(userImgMsg.content[1].type, 'image_url');
+    assert.equal(userImgMsg.content[1].image_url.url, dummyBase64);
+  });
 });

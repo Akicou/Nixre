@@ -222,7 +222,50 @@ export async function runAgentLoop(opts, emit, deps = {}) {
       try {
         const output = await execute(call.name, argsObj);
         emit({ type: 'tool_output', toolId: call.id, output });
-        thread.push({ role: 'tool', tool_call_id: call.id, content: output });
+
+        // show_images output contains base64 data URLs for UI rendering.
+        // If sent verbatim into LLM thread context as text, it consumes
+        // 300k+ text tokens and the model cannot process it as vision.
+        // Strip dataUrl from the tool result text, and attach images
+        // multimodally via standard OpenRouter/OpenAI content parts.
+        if (call.name === 'show_images') {
+          let parsed = null;
+          try {
+            parsed = JSON.parse(output);
+          } catch {}
+
+          if (parsed && Array.isArray(parsed.images) && parsed.images.length > 0) {
+            const strippedImages = parsed.images.map(img => ({
+              path: img.path,
+              mime: img.mime,
+              source: img.source,
+            }));
+            const lightweightOutput = JSON.stringify({
+              images: strippedImages,
+              note: parsed.note || `${parsed.images.length} image(s) loaded and attached to multimodal context below.`,
+            });
+            thread.push({ role: 'tool', tool_call_id: call.id, content: lightweightOutput });
+
+            const validImages = parsed.images.filter(img => typeof img.dataUrl === 'string' && img.dataUrl.startsWith('data:image/'));
+            if (validImages.length > 0) {
+              const content = [
+                {
+                  type: 'text',
+                  text: `Attached ${validImages.length} image(s) from show_images (${validImages.map(img => img.path).join(', ')}):`,
+                },
+                ...validImages.map(img => ({
+                  type: 'image_url',
+                  image_url: { url: img.dataUrl },
+                })),
+              ];
+              thread.push({ role: 'user', content });
+            }
+          } else {
+            thread.push({ role: 'tool', tool_call_id: call.id, content: output });
+          }
+        } else {
+          thread.push({ role: 'tool', tool_call_id: call.id, content: output });
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Tool execution failed';
         emit({ type: 'tool_error', toolId: call.id, output: msg });
