@@ -21,7 +21,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import { repoDir } from '../git/repo.js';
 import { webSearch } from './webSearch.js';
-import { isSandboxEnabled, runCommandInSandbox, writeFileInSandbox } from './agentSandbox.js';
+import { isSandboxEnabled, runCommandInSandbox, writeFileInSandbox, readFileInSandbox } from './agentSandbox.js';
 import { getDecryptedSecret } from './userSecrets.js';
 import { READ_SKILL_SCHEMA, readSkill } from './agentSkills.js';
 
@@ -131,7 +131,7 @@ export const TOOL_SCHEMAS = [
   {
     name: 'show_images',
     description:
-      'Display one or more images from the repository in the chat so the user can see them. Pass repo-relative paths (png/jpg/gif/webp). Use when a screenshot, diagram or asset would help the user.',
+      'Display one or more images in the chat so the user can see them. Pass repo-relative paths (png/jpg/gif/webp). Reads the live sandbox workspace first — screenshots and other files you wrote but have not committed work — then falls back to the hosted repository HEAD. Use it to review UI screenshots you captured and to present visual results.',
     parameters: {
       type: 'object',
       properties: {
@@ -365,6 +365,15 @@ async function ensureFallbackWorkspace(context, space, repo) {
   return ws.dir;
 }
 
+/** Existing no-sandbox workspace dir for this conversation, or null. Read-only peek — never provisions. */
+function peekFallbackWorkspace(context = {}, space, repo) {
+  const { userId, conversationId } = context;
+  if (!userId || !conversationId) return null;
+  const key = `${userId}:${conversationId}:${context.repoPath || `${space}/${repo}`}`;
+  const ws = fallbackWorkspaces.get(key);
+  return ws ? ws.dir : null;
+}
+
 export async function writeFile(space, repo, args, permissions = {}, context = {}) {
   assertTarget(space, repo, context);
   const p = assertSafePath(args?.path);
@@ -538,6 +547,37 @@ export async function showImages(space, repo, args, permissions = {}, context = 
   const dir = readGitDir(context, space, repo);
   const images = [];
   const notes = [];
+
+  // Read order per path: the live sandbox workspace first (screenshots and
+  // other uncommitted agent output live there), then the no-sandbox fallback
+  // clone, then the hosted repository HEAD.
+  const { userId, conversationId, repoPath } = context;
+  let sandboxReady = null; // lazily resolved: true/false — avoid repeated docker probes
+  const readSandbox = async safe => {
+    if (!userId || !conversationId || !repoPath) return null;
+    if (sandboxReady === false) return null;
+    if (sandboxReady === null) {
+      sandboxReady = (async () => {
+        try {
+          return await isSandboxEnabled();
+        } catch {
+          return false;
+        }
+      })();
+    }
+    if (!(await sandboxReady)) return null;
+    return readFileInSandbox({
+      userId,
+      conversationId,
+      repoPath,
+      space,
+      repo,
+      user: context.user,
+      filePath: safe,
+      maxBytes: MAX_SHOW_BYTES,
+    });
+  };
+
   for (const p of paths) {
     try {
       const safe = assertSafePath(p);
@@ -546,12 +586,28 @@ export async function showImages(space, repo, args, permissions = {}, context = 
         continue;
       }
       const ext = safe.split('.').pop().toLowerCase();
-      const { stdout } = await exec('git', ['-C', dir, 'show', `HEAD:${safe}`], {
-        encoding: 'buffer',
-        maxBuffer: MAX_SHOW_BYTES + 1024,
-        timeout: 15_000,
-      });
-      const buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '', 'binary');
+      let buf = await readSandbox(safe);
+      let where = 'sandbox';
+      if (!buf) {
+        const fb = peekFallbackWorkspace(context, space, repo);
+        if (fb) {
+          buf = await fs.readFile(path.join(fb, safe.split('/').join(path.sep))).catch(() => null);
+          where = 'workspace';
+        }
+      }
+      if (!buf) {
+        const { stdout } = await exec('git', ['-C', dir, 'show', `HEAD:${safe}`], {
+          encoding: 'buffer',
+          maxBuffer: MAX_SHOW_BYTES + 1024,
+          timeout: 15_000,
+        });
+        buf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '', 'binary');
+        where = 'HEAD';
+      }
+      if (buf.length === 0) {
+        notes.push(`${safe}: not found`);
+        continue;
+      }
       if (buf.length > MAX_SHOW_BYTES) {
         notes.push(`${safe}: too large (max ${MAX_SHOW_BYTES / 1024 / 1024}MB)`);
         continue;
@@ -560,6 +616,7 @@ export async function showImages(space, repo, args, permissions = {}, context = 
       images.push({
         path: safe,
         mime,
+        ...(where !== 'HEAD' ? { source: where } : {}),
         dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
       });
     } catch {

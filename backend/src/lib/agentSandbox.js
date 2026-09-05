@@ -593,6 +593,50 @@ export async function writeFileInSandbox({
   return { output: `Wrote ${Buffer.byteLength(content ?? '', 'utf8')} bytes to ${rel}` };
 }
 
+/**
+ * Read a file from the conversation's live sandbox workspace (uncommitted
+ * files included — screenshots, build output). Returns a Buffer, or null when
+ * there is no sandbox / the file is missing. Caps the transferred bytes at
+ * maxBytes so a stray huge file cannot be piped into core whole.
+ */
+export async function readFileInSandbox({
+  userId,
+  conversationId,
+  repoPath,
+  space,
+  repo,
+  user,
+  filePath,
+  maxBytes,
+}) {
+  if (!(await isSandboxEnabled())) return null;
+  if (!userId || !conversationId || !repoPath) return null;
+  const key = sessionKey(userId, conversationId, repoPath);
+  let containerId = null;
+  try {
+    const info = await docker.getContainer(containerName(key)).inspect();
+    if (info.State.Status === 'running') {
+      containerId = info.Id;
+    } else {
+      // Wake it. The resync's reset --hard only touches tracked files —
+      // untracked files (screenshots) survive.
+      containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user);
+    }
+  } catch {
+    return null; // no sandbox provisioned for this conversation
+  }
+  const rel = String(filePath || '').replace(/\\/g, '/');
+  const target = `${WORK_DIR}/${rel}`;
+  const b64Cap = Math.ceil((((maxBytes ?? 2 * 1024 * 1024) + 1) * 4) / 3) + 4;
+  try {
+    const { output, code } = await dockerExec(containerId, ['bash', '-lc', `base64 ${JSON.stringify(target)} | head -c ${b64Cap}`]);
+    if (code !== 0) return null;
+    return Buffer.from(String(output).replace(/\s+/g, ''), 'base64');
+  } catch {
+    return null;
+  }
+}
+
 async function stopContainerByName(name) {
   try {
     const container = docker.getContainer(name);

@@ -25,6 +25,13 @@ RUN apt-get update \
     xz-utils \
   && rm -rf /var/lib/apt/lists/*
 
+# Playwright + headless Chromium preinstalled so the agent can screenshot web
+# UIs it builds (see <visual_checks> in the mode prompts) and show_images them
+# without a multi-minute browser download per conversation.
+RUN npm install -g playwright \
+  && playwright install --with-deps chromium \
+  && npm cache clean --force
+
 WORKDIR /workspace
 
 CMD ["sleep", "infinity"]

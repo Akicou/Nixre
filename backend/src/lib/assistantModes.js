@@ -57,6 +57,19 @@ instruction into what you do next. Never let an earlier plan override a newer
 user instruction.
 </steering>`;
 
+const VISUAL_CHECKS = `<visual_checks>
+When the task touches a web UI, verify it visually instead of trusting code
+alone. The sandbox ships Playwright with headless Chromium preinstalled:
+
+1. Start the app briefly via \`run_command\` (dev server or static file server).
+2. Capture a screenshot: \`playwright screenshot --viewport-size=1280,800 --wait-for-timeout=3000 http://localhost:<port> .nixre/screens/home.png\` — save under \`.nixre/screens/\`, then stop the server.
+3. Review the PNG with \`show_images\` (it reads the live sandbox workspace, uncommitted files included): check layout, contrast, broken assets, console-visible breakage.
+4. Iterate — fix, re-screenshot, re-check — and include the final screenshot(s) when presenting the result.
+
+For static pages a file:// URL works without a server. Never claim a UI "looks
+right" without having looked at it.
+</visual_checks>`;
+
 // --- mode prompts -------------------------------------------------------------
 
 const ASK = {
@@ -142,6 +155,8 @@ ${STEERING}
 
 ${TDD_DISCIPLINE}
 
+${VISUAL_CHECKS}
+
 <critical_rules>
 1. **READ BEFORE EDITING**: Never describe a change to a file you have not grounded in the attached context. Exact formatting, indentation and whitespace must match what is there.
 2. **BE AUTONOMOUS**: Do not ask questions you can answer from the repository context. Break complex tasks into steps and complete them all. Only stop for genuinely blocking unknowns (missing credentials, ambiguous requirements with large tradeoffs, risk of data loss) — and when you stop, state (a) what you tried, (b) exactly what blocks you, (c) the minimal input you need.
@@ -186,6 +201,8 @@ ${FORGE_CONTEXT}
 ${STEERING}
 
 ${TDD_DISCIPLINE}
+
+${VISUAL_CHECKS}
 
 <rules>
 1. **EVIDENCE OVER INTUITION**: Every hypothesis cites concrete evidence — an error message, a stack frame, a line of code (\`src/foo.ts:88\`), or a log entry. No "this is probably it" without support.

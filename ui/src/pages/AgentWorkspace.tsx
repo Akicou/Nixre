@@ -234,8 +234,11 @@ export const AgentWorkspace: React.FC = () => {
     [setSearchParams],
   );
 
-  // Keep mode sticky per repo/session.
-  const modeKey = `nixre_mode_${currentId ?? (activeRepo || 'agent')}`;
+  // Keep mode sticky per repo. Keying by conversation id snapped the picker
+  // back to 'agent' the moment a new conversation got its id (localStorage
+  // miss under the fresh key) — the send itself left as the picked mode, but
+  // the follow-up went out as agent: "started in Plan, it implemented".
+  const modeKey = `nixre_mode_${activeRepo || 'agent'}`;
   useEffect(() => {
     const saved = localStorage.getItem(modeKey);
     if (saved && ASSISTANT_MODES.some(m => m.id === saved)) setMode(saved as ModeId);

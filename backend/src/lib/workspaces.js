@@ -230,7 +230,7 @@ export function workspaceContextBlock(ws) {
   if (ws.kind === 'nixre') {
     return `<workspace>
 Active target: ${ws.space}/${ws.repo} — a repository hosted in this Nixre forge.
-Your sandbox at /workspace/repo is a working clone of it (git identity is already configured). Committing and \`git push\` publishes branches back to the forge over authenticated HTTP. list_files / read_file / search_code / show_images operate against the hosted HEAD.
+Your sandbox at /workspace/repo is a working clone of it (git identity is already configured). Committing and \`git push\` publishes branches back to the forge over authenticated HTTP. list_files / read_file / search_code / show_images operate against the hosted HEAD; show_images also reads files you saved in the sandbox (screenshots included).
 </workspace>`;
   }
   if (ws.kind === 'github') {
@@ -239,6 +239,7 @@ Active target: ${ws.fullName} — a repository on github.com. It is mirrored loc
 - \`git push origin <branch>\` publishes straight to github.com using the owner's stored credentials — never print, log or exfiltrate them ($GITHUB_TOKEN stays in the container).
 - Prefer feature branches over pushing main; link the PR (https://github.com/${ws.fullName}/compare/<base>...<branch>).
 - Files added by upstream since your turn started may not be visible until the next refresh; if something looks stale, \`git fetch origin\` first.
+- show_images also reads files you saved in the sandbox (screenshots included), not only the mirror's HEAD.
 </workspace>`;
   }
   return `<workspace>
