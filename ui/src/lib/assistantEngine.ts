@@ -316,7 +316,7 @@ export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessag
     const parts = [...(message.parts ?? [])];
     while (parts.length > 0) {
       const last = parts[parts.length - 1];
-      if (last.type === 'tool') break;
+      if (last.type === 'tool' && last.tool?.status !== 'running') break;
       parts.pop();
     }
     message.parts = parts;

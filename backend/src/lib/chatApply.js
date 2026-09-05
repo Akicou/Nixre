@@ -135,7 +135,9 @@ export function applyEvent(messages, ev) {
     const parts = [...(message.parts ?? [])];
     while (parts.length > 0) {
       const last = parts[parts.length - 1];
-      if (last.type === 'tool') break;
+      // Keep completed tools from previous rounds, but drop any tool that was
+      // still 'running' when the stream aborted or failed.
+      if (last.type === 'tool' && last.tool?.status !== 'running') break;
       parts.pop();
     }
     message.parts = parts;

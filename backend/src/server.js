@@ -71,7 +71,7 @@ function authenticate(required = true) {
 // ---------------------------------------------------------------------------
 
 const app = express();
-app.use(express.json({ limit: '4mb' }));
+app.use(express.json({ limit: '64mb' }));
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 

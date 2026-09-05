@@ -180,9 +180,11 @@ export async function runAgentLoop(opts, emit, deps = {}) {
       // Every round may retry, not just post-tool ones: provider streams fail
       // transiently on the opening request too (stalls, dropped connections),
       // and one bad round must not silently end the whole turn.
+      // If a tool_start was emitted during this failed stream attempt, clean it up
+      // so the UI and database transcript don't leave orphaned 'running' tools.
+      emit({ type: 'stream_retry' });
       if (attempt < MAX_POST_TOOL_RETRIES) {
         attempt++;
-        emit({ type: 'stream_retry' });
         continue;
       }
       break;
