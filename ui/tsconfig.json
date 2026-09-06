@@ -11,7 +11,16 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "strict": false,
+    // Strict mode was OFF across the whole app, so `string | undefined` route
+    // params, unguarded nullable reads and implicit anys all compiled
+    // silently. It is on now (and the resulting errors are fixed) — keep it on.
+    "strict": true,
+    // Deliberately still off. Enabling them surfaces ~30 dead declarations
+    // (unused imports, a dead `reveal` handler in DeploymentsPage, a dead
+    // `seedSessionTrace` in AgentWorkspace, and toast-rendered-but-unread
+    // state in ChatSurface). Removing those is a real but separate cleanup
+    // that needs its own review pass; it is tracked as a follow-up rather than
+    // silently bundled into a type-safety change.
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,

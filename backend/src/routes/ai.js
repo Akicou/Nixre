@@ -34,6 +34,8 @@ import {
   resolveWorkspace,
 } from '../lib/workspaces.js';
 import { getDecryptedSecret } from '../lib/userSecrets.js';
+import { assertPublicUrl } from '../lib/netGuard.js';
+import { aiNetworkPolicy } from '../lib/aiNetwork.js';
 
 const MODEL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const MAX_MSG = 64_000;
@@ -207,6 +209,17 @@ export function aiRoutes(pool, authenticate) {
       res.status(400).json({ message: 'A base URL is required for custom providers' });
       return;
     }
+    // SSRF guard: core fetches this URL on every chat and model request, so it
+    // must resolve to a public address. Without it a user can add a "provider"
+    // pointed at cloud metadata (169.254.169.254) or at core's docker peers and
+    // read the response back through the model list / chat stream.
+    if (baseUrl) {
+      const urlCheck = await assertPublicUrl(baseUrl, aiNetworkPolicy());
+      if (!urlCheck.ok) {
+        res.status(400).json({ message: `Provider base URL rejected: ${urlCheck.message}` });
+        return;
+      }
+    }
     const apiKey = String(req.body?.apiKey || '').trim();
     if (!apiKey && def.local !== true) {
       res.status(400).json({ message: 'An API key is required' });
@@ -279,6 +292,15 @@ export function aiRoutes(pool, authenticate) {
 
     const label = req.body?.label !== undefined ? String(req.body.label).trim() : row.label;
     const baseUrl = req.body?.baseUrl !== undefined ? String(req.body.baseUrl).trim() || null : row.base_url;
+    // Same guard as creation: a provider's endpoint is attacker-controlled and
+    // core will fetch it.
+    if (req.body?.baseUrl !== undefined && baseUrl) {
+      const urlCheck = await assertPublicUrl(baseUrl, aiNetworkPolicy());
+      if (!urlCheck.ok) {
+        res.status(400).json({ message: `Provider base URL rejected: ${urlCheck.message}` });
+        return;
+      }
+    }
     const enabledModels = Array.isArray(req.body?.enabledModels)
       ? req.body.enabledModels.filter(m => typeof m === 'string')
       : row.enabled_models;
@@ -423,6 +445,16 @@ export function aiRoutes(pool, authenticate) {
       const label = String(req.body?.label || PROVIDERS[String(req.body?.provider)]?.label || 'Provider');
       const provider = String(req.body?.provider || 'deepseek');
       const baseUrl = String(req.body?.baseUrl || '').trim() || null;
+      const def = PROVIDERS[provider];
+      if (!def || (def.needsBaseUrl && !baseUrl)) {
+        res.status(400).json({ message: !def ? 'Unknown provider' : 'A base URL is required for custom providers' });
+        return;
+      }
+      const urlCheck = await assertPublicUrl(baseUrl || def.defaultBase, aiNetworkPolicy());
+      if (!urlCheck.ok) {
+        res.status(400).json({ message: `Provider base URL rejected: ${urlCheck.message}` });
+        return;
+      }
       const apiKey = String(req.body?.apiKey || '').trim();
       let modelCache;
       try {
@@ -509,6 +541,9 @@ export function aiRoutes(pool, authenticate) {
     };
 
     const wantsTools = req.body?.tools === true;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    res.once('close', abort);
     try {
       await streamChat(
         {
@@ -519,6 +554,7 @@ export function aiRoutes(pool, authenticate) {
           messages,
           reasoningLevel: String(req.body?.reasoningLevel || 'none'),
           tools: wantsTools ? TOOL_SCHEMAS : null,
+          signal: controller.signal,
         },
         send,
       );
@@ -526,6 +562,7 @@ export function aiRoutes(pool, authenticate) {
     } catch (err) {
       await send({ type: 'error', message: err.message });
     } finally {
+      res.off('close', abort);
       res.end();
     }
   });
@@ -555,7 +592,9 @@ export function aiRoutes(pool, authenticate) {
 
     let workspace = null;
     try {
-      workspace = await resolveWorkspace(pool, uid, repoPath);
+      // Passes the caller (not just the uid) so workspace resolution can
+      // enforce repository visibility — see lib/workspaces.js.
+      workspace = await resolveWorkspace(pool, req.auth.user, repoPath);
     } catch (err) {
       res.status(err.status || 400).json({ message: err.message });
       return;
@@ -606,6 +645,7 @@ export function aiRoutes(pool, authenticate) {
     }
     const info = parseWorkspacePath(repoPath);
     try {
+      const workspace = await resolveWorkspace(pool, req.auth.user, repoPath);
       await touchSandbox({
         userId: uid,
         user: { uid, name: req.auth.user.display_name, email: req.auth.user.email },
@@ -613,10 +653,11 @@ export function aiRoutes(pool, authenticate) {
         repoPath,
         space: info.space,
         repo: info.repo,
+        workspace,
       });
       res.json({ ok: true });
     } catch (err) {
-      res.status(400).json({ message: err.message });
+      res.status(err.status || 400).json({ message: err.message });
     }
   });
 

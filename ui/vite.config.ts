@@ -2,12 +2,17 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { fileURLToPath } from 'node:url';
+
+// `import.meta.dirname` rather than the CJS `__dirname`: Vite 8's native
+// config loader cannot evaluate the latter and warns on every run.
+const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(rootDir, './src'),
     },
   },
   test: {

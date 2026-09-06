@@ -7,6 +7,8 @@ import express from 'express';
 import crypto from 'node:crypto';
 import { sha256, newPatSecret } from '../lib/auth.js';
 import { encryptSecret, maskSecret } from '../lib/ai.js';
+import { assertPublicUrl } from '../lib/netGuard.js';
+import { aiNetworkPolicy } from '../lib/aiNetwork.js';
 
 function fingerprintKey(content) {
   // ssh key line: "<type> <base64> [comment]"
@@ -193,12 +195,19 @@ export function accountRoutes(pool, authenticate) {
     const baseUrl = String(req.body?.base_url || '').trim().replace(/\/+$/, '');
     const model = String(req.body?.model || '').trim();
     const apiKey = String(req.body?.api_key || '').trim();
-    if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
+    if (!model) {
+      res.status(400).json({ message: 'A model id is required' });
+      return;
+    }
+    // SSRF guard: core posts audio to this URL, so it must resolve to a
+    // public address rather than loopback / metadata / docker-internal peers.
+    if (!baseUrl) {
       res.status(400).json({ message: 'A valid base URL is required' });
       return;
     }
-    if (!model) {
-      res.status(400).json({ message: 'A model id is required' });
+    const urlCheck = await assertPublicUrl(baseUrl, aiNetworkPolicy());
+    if (!urlCheck.ok) {
+      res.status(400).json({ message: `STT endpoint rejected: ${urlCheck.message}` });
       return;
     }
     const existing = await pool.query(

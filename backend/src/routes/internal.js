@@ -2,13 +2,16 @@
 // Authenticated with the shared INTERNAL_TOKEN secret.
 
 import express from 'express';
-import crypto from 'node:crypto';
+import { timingSafeEqual } from '../lib/auth.js';
 
 export function internalRoutes(pool, authenticate) {
   const api = express.Router();
 
-  // Shared-secret guard. Set INTERNAL_TOKEN in compose; the ssh container
-  // calls with it.
+  // Shared-secret guard. INTERNAL_TOKEN must be configured by the operator
+  // (see assertRequiredSecrets in server.js — core refuses to boot with the
+  // old hard-coded dev default, which was published in this repository while
+  // these routes are reachable from the internet through Caddy's /api/*
+  // proxy).
   const internalToken = process.env.INTERNAL_TOKEN || '';
   const internalAuth = (req, res, next) => {
     if (!internalToken) {
@@ -16,7 +19,12 @@ export function internalRoutes(pool, authenticate) {
       return;
     }
     const auth = req.headers.authorization || '';
-    if (auth !== `Bearer ${internalToken}`) {
+    if (!auth.startsWith('Bearer ')) {
+      res.status(401).json({ message: 'Bad internal token' });
+      return;
+    }
+    // Constant-time: a plain string compare leaks matching-prefix length.
+    if (!timingSafeEqual(auth.slice('Bearer '.length), internalToken)) {
       res.status(401).json({ message: 'Bad internal token' });
       return;
     }
@@ -96,7 +104,8 @@ export function internalRoutes(pool, authenticate) {
     res.json({ deliveries });
   });
 
+  // `authenticate` is unused: these routes use the shared internal secret,
+  // not user sessions.
   void authenticate;
-  void crypto;
   return api;
 }

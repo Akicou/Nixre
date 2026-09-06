@@ -90,11 +90,9 @@ export function createDeploymentEngine({
   }
 
   async function getNetwork(docker) {
-    try {
-      return (await drivers.networkName(docker)) || '';
-    } catch {
-      return '';
-    }
+    const network = await drivers.networkName(docker);
+    if (!network) throw new Error('No approved deployment network configured');
+    return network;
   }
 
   // --- public API -----------------------------------------------------------
@@ -372,7 +370,9 @@ export function createDeploymentEngine({
         servingPrevious: wasServing,
       });
       targetCache.delete(service.id);
-      await removeContainerIfExists(service.id, containerName(service.id, entry.deploymentId));
+      if (!err.preserveContainer) {
+        await removeContainerIfExists(service.id, containerName(service.id, entry.deploymentId));
+      }
     } catch (err2) {
       console.error('failure handling error:', err2.message);
     }
@@ -459,31 +459,46 @@ export function createDeploymentEngine({
 
   async function launchContainer({ docker, service, repo, deploymentId, imageTag, env }) {
     const name = containerName(service.id, deploymentId);
-    // A stale shell of the same name (crashed prior attempt) blocks creation.
+    // Never destroy an existing container during recovery: an inspection error
+    // or a concurrent reconciler must not turn into loss of its writable layer.
+    let existing;
     try {
-      await docker.getContainer(name).inspect();
-      await docker.getContainer(name).remove({ force: true });
-    } catch {
-      /* no leftover under this name */
+      existing = await docker.getContainer(name).inspect();
+    } catch (err) {
+      if (err.statusCode !== 404) throw err;
+    }
+    if (existing) {
+      throw Object.assign(new Error(`Container '${name}' already exists; reconcile it instead of replacing it`), { preserveContainer: true });
     }
     const net = await getNetwork(docker);
     const ro = getRuntimeOptions(service);
     const hc = ro?.host_config || null;
 
+    // The migration stamps existing services with policy 1 and new services
+    // default to 2. Recreating an old image must not silently remove the caps
+    // its entrypoint needs (e.g. nginx's setgid/setuid or gosu).
+    const privileged = Boolean(hc?.privileged);
+    const legacySecurity = Number(service.security_policy_version ?? 1) < 2;
     const hostConfig = {
       Memory: Number(service.memory_bytes),
       NanoCpus: Number(service.cpu_nano_cpus),
       RestartPolicy: { Name: 'unless-stopped' },
       Init: true,
+      // Drop everything by default; cap_add (admin-only) re-adds selectively.
+      CapDrop: hc?.cap_drop?.length ? hc.cap_drop : legacySecurity ? undefined : ['ALL'],
+      // Block setuid/setgid escalation. Omitted for privileged containers,
+      // where it would be meaningless anyway.
+      SecurityOpt: privileged || legacySecurity ? undefined : ['no-new-privileges:true'],
+      // Fork-bomb ceiling. Generous for ordinary web apps and build tools.
+      PidsLimit: Number(process.env.DEPLOY_PIDS_LIMIT || 512),
     };
     if (hc) {
       // Values here were validated by normalizeRuntimeOptions at API time;
       // getRuntimeOptions is the defensive re-read. An explicit network_mode
       // (host/none/container:*) replaces the default core-network attachment.
       if (hc.binds.length) hostConfig.Binds = hc.binds;
-      if (hc.privileged) hostConfig.Privileged = true;
+      if (privileged) hostConfig.Privileged = true;
       if (hc.cap_add.length) hostConfig.CapAdd = hc.cap_add;
-      if (hc.cap_drop.length) hostConfig.CapDrop = hc.cap_drop;
       if (hc.devices.length) hostConfig.Devices = hc.devices;
       if (hc.group_add.length) hostConfig.GroupAdd = hc.group_add;
       if (hc.extra_hosts.length) hostConfig.ExtraHosts = hc.extra_hosts;
@@ -491,6 +506,9 @@ export function createDeploymentEngine({
       if (Object.keys(hc.tmpfs).length) hostConfig.Tmpfs = hc.tmpfs;
       if (hc.network_mode) hostConfig.NetworkMode = hc.network_mode;
     }
+    // `undefined` values are not valid in the Docker API payload.
+    if (hostConfig.SecurityOpt === undefined) delete hostConfig.SecurityOpt;
+    if (hostConfig.CapDrop === undefined) delete hostConfig.CapDrop;
 
     const createOpts = {
       name,
@@ -519,9 +537,9 @@ export function createDeploymentEngine({
   async function waitForHealth({ docker, service, info, entry }) {
     const net = await getNetwork(docker);
     const networks = info.NetworkSettings?.Networks || {};
-    const ip =
-      networks[net]?.IPAddress ||
-      Object.values(networks).map(n => n.IPAddress).find(Boolean);
+    const ip = getRuntimeOptions(service)?.host_config?.network_mode
+      ? Object.values(networks).map(n => n.IPAddress).find(Boolean)
+      : networks[net]?.IPAddress;
     if (!ip) throw new Error('Container has no routable IP yet');
 
     const ro = getRuntimeOptions(service);
@@ -540,7 +558,7 @@ export function createDeploymentEngine({
           timeoutMs: 2500,
           signal: entry.controller.signal,
         });
-        if (out.ok || out.status) {
+        if (out.ok === true) {
           bus.publishLog(
             service.id,
             'release',
@@ -740,6 +758,29 @@ export function createDeploymentEngine({
       return;
     }
 
+    // Attach legacy containers in place: preserve their writable layer, mounts,
+    // identity, and existing capability policy. Explicit admin network modes
+    // are intentional and must not be rewritten by reconciliation.
+    if (!getRuntimeOptions(service)?.host_config?.network_mode) {
+      try {
+        const approved = await getNetwork(docker);
+        if (!info.NetworkSettings?.Networks?.[approved]) {
+          await docker.getNetwork(approved).connect({ Container: info.Id });
+          info = await docker.getContainer(name).inspect();
+          if (!info.NetworkSettings?.Networks?.[approved]) throw new Error('Network attachment was not applied');
+        }
+        // Once the new route exists, remove obsolete shared/data attachments.
+        for (const old of Object.keys(info.NetworkSettings?.Networks || {})) {
+          if (old !== approved) await docker.getNetwork(old).disconnect({ Container: info.Id });
+        }
+      } catch (err) {
+        targetCache.delete(service.id);
+        console.error(`network reconcile failed for svc#${service.id}:`, err.message);
+        await updateServices(service.id, { status: { v: 'failed' }, updated: { v: ts } });
+        return;
+      }
+    }
+
     if (info.State?.Status !== 'running') {
       try {
         await docker.getContainer(name).start();
@@ -810,9 +851,9 @@ export function createDeploymentEngine({
         if (info.State?.Status === 'running') {
           const net = await getNetwork(docker);
           const networks = info.NetworkSettings?.Networks || {};
-          const ip =
-            networks[net]?.IPAddress ||
-            Object.values(networks).map(n => n.IPAddress).find(Boolean);
+          const ip = getRuntimeOptions(service)?.host_config?.network_mode
+            ? Object.values(networks).map(n => n.IPAddress).find(Boolean)
+            : networks[net]?.IPAddress;
           if (ip) {
             target = {
               ip,

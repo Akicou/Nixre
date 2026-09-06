@@ -20,6 +20,10 @@ export const Register: React.FC<RegisterProps> = ({ onRegisterSuccess }) => {
   const [isBlocked, setIsBlocked] = useState(false);
 
   useEffect(() => {
+    // The browser-local flag is only a hint (an admin may have hidden the page
+    // in this browser). The authoritative answer is the server's, and since
+    // Nixre now defaults to CLOSED the common case is that we simply have not
+    // asked yet — so we do not block the form up front.
     setIsBlocked(isRegistrationHidden());
   }, []);
 
@@ -37,6 +41,15 @@ export const Register: React.FC<RegisterProps> = ({ onRegisterSuccess }) => {
       onRegisterSuccess(res.user);
       navigate('/');
     } catch (err: any) {
+      // Registration is closed by default server-side, so a fresh instance has
+      // no browser-local flag set: the user fills in the form and gets a 403.
+      // Show the same "closed" panel we show when the flag IS set, rather than
+      // a bare red error under a form that can never succeed.
+      if (err?.status === 403) {
+        setIsBlocked(true);
+        setError('');
+        return;
+      }
       setError(err.message || 'Registration failed.');
     } finally {
       setLoading(false);

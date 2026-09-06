@@ -22,12 +22,14 @@ Replace the placeholders below with your own deployment's values (found in your 
 | Web + API + SPA | `https://git.<your-domain>` (→ host Caddy `:3000`) |
 | Git over SSH | `ssh://git@ssh.<your-domain>:3022/<space>/<repo>.git` |
 | Source directory | `<nixre-dir>` (this repo) |
-| Containers (only 3 run) | `nixre-core`, `nixre-db`, `nixre-ssh` |
+| Containers (long-running) | `nixre-core`, `nixre-db`, `nixre-ssh` — plus `nixre-web` (Caddy) **if your install uses the compose Caddy**; a host-Caddy install leaves it stopped |
+| Build-only container | `nixre-agent-sandbox` — produces the sandbox image, then exits (`entrypoint: true`); it is never "running" |
 | Host Caddy serves the SPA | `<nixre-dir>/ui/dist` on `:3000` |
 | Deploy proxy (app traffic) | `127.0.0.1:3003` |
 | Stack | host Caddy + Cloudflare Tunnel + nixre-core (Node/Postgres) |
 | Tunnel | a `cloudflared` user service, config in `~/.cloudflared/`, ID in the tunnel |
-| DB | `postgres:16` in container `nixre-db`, user/db/pass all `nixre` |
+| DB | `postgres:16` in container `nixre-db`; credentials come from `POSTGRES_*` in `.env`, **never** the old hard-coded `nixre`/`nixre` |
+| Networks | `nixre-db` sits on the internal `nixre-data` network alone; only `nixre-core` spans both, so sandboxes/ssh/web cannot reach Postgres |
 
 > **If your router has no port forwarding**, all external traffic enters via the Cloudflare Tunnel — do not try to reach nixre with A records / port forwards.
 
@@ -71,3 +73,7 @@ systemctl --user status cloudflared-<name>    # tunnel up?
 4. **TLS is only safe for domains within Universal SSL coverage** (`<your-domain>` + one level). Multi-level names (a dot in a label) fail TLS — the UI gates these behind a confirmation. Prefer hyphenated labels.
 5. **Verify DNS with `dig @1.1.1.1`**, not your resolver — some LAN resolvers cache NXDOMAIN aggressively.
 6. **Cloudflare token** must have `Zone:Read` + `DNS:Edit` on every zone users attach domains from; otherwise auto-DNS fails.
+7. **Secrets are required, not optional.** `NIXRE_INTERNAL_TOKEN`, `NIXRE_AI_SECRET` and `POSTGRES_PASSWORD` have no defaults — compose refuses to start and core refuses to boot on a known published value. Generate with `openssl rand -hex 32`.
+8. **Registration is closed by default.** An unset `NIXRE_REGISTRATION_CLOSED` means closed. Set it to `false` in `.env`, or flip it live via `PUT /api/v1/admin/registration`.
+9. **Custom domains must be verified before they route.** Attaching one parks it and issues a TXT challenge (`_nixre-verify.<domain>`); use the Verify action, or let an admin force it. Set `NIXRE_RESERVED_DOMAINS` to your own hostnames so a deployment can never claim them.
+10. **Run tests from the right directory** (`cd ui && npx vitest run`, `cd backend && npm test`, or `npm test` at the repo root). Running `npx vitest run` from the root finds no jsdom config and fails every UI test with `document is not defined`.

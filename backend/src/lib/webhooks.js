@@ -6,12 +6,40 @@
 // process needed for the self-hosted scale this targets).
 
 import crypto from 'node:crypto';
+import { guardedFetch, isNetPolicyError } from './netGuard.js';
+import { decryptSecret } from './ai.js';
 
 const MAX_ATTEMPTS = 5;
 const RETRY_DELAYS_MS = [0, 15_000, 60_000, 300_000, 1_800_000];
 
 function sign(secret, body) {
   return 'sha256=' + crypto.createHmac('sha256', secret).update(body).digest('hex');
+}
+
+/**
+ * The HMAC key for a delivery row.
+ *
+ * Two storage formats coexist and this is the single place that reconciles
+ * them:
+ *   - rows written from this version on: ciphertext in `secret_enc`, '' in
+ *     `secret` — decrypt to get the key;
+ *   - rows written before migration 025: plaintext in `secret`, NULL in
+ *     `secret_enc` — SQL cannot run AES-GCM, so the migration deliberately
+ *     left them alone.
+ *
+ * Getting this wrong is silent: a bad key still produces a well-formed
+ * signature header, and the receiver simply rejects every delivery.
+ *
+ * @returns {string} the signing key ('' when nothing is stored)
+ */
+export function signingSecretFor(row) {
+  if (!row) return '';
+  if (row.secret_enc) {
+    const decrypted = decryptSecret(row.secret_enc);
+    if (decrypted != null) return decrypted;
+    throw new Error('Webhook signing secret could not be decrypted');
+  }
+  return row.secret ?? '';
 }
 
 // Queue + attempt deliveries for a repo event. Returns queued delivery rows.
@@ -54,7 +82,7 @@ export async function fireWebhooks(pool, space, repo, event) {
 // Attempt every due delivery; exponential backoff up to MAX_ATTEMPTS.
 export async function sweep(pool) {
   const { rows: due } = await pool.query(
-    `SELECT d.*, w.url, w.secret FROM webhook_deliveries d
+    `SELECT d.*, w.url, w.secret, w.secret_enc FROM webhook_deliveries d
      JOIN repo_webhooks w ON w.id = d.webhook_id
      WHERE d.next_retry IS NOT NULL AND d.next_retry <= $1
      LIMIT 25`,
@@ -65,37 +93,49 @@ export async function sweep(pool) {
     const body = JSON.stringify(d.payload);
     let statusCode = null;
     let ok = false;
+    let lastError = null;
+    let blocked = false;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10_000);
-      const r = await fetch(d.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Nixre-Event': d.event_type,
-          'X-Nixre-Signature': sign(d.secret, body),
-          'X-Nixre-Delivery': String(d.id),
+      const secret = signingSecretFor(d);
+      // guardedFetch resolves the host and refuses loopback, link-local
+      // (cloud metadata), RFC1918 and docker-internal targets, and
+      // re-validates every redirect hop. A webhook URL is user-supplied, so
+      // without this it is a server-side request forgery primitive.
+      const r = await guardedFetch(
+        d.url,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Nixre-Event': d.event_type,
+            'X-Nixre-Signature': sign(secret, body),
+            'X-Nixre-Delivery': String(d.id),
+          },
+          body,
         },
-        body,
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+        { timeoutMs: 10_000 },
+      );
       statusCode = r.status;
       ok = r.ok;
-    } catch {
+      await r.body?.cancel();
+    } catch (err) {
       ok = false;
+      lastError = err.message;
+      blocked = isNetPolicyError(err);
     }
-
+    // A URL that is refused outright can never succeed, so stop retrying it
+    // instead of hammering a blocked target five times.
     const attempts = d.attempts + 1;
-    const done = ok || attempts >= MAX_ATTEMPTS;
+    const done = ok || blocked || attempts >= MAX_ATTEMPTS;
     const nextRetry = done ? null : Date.now() + RETRY_DELAYS_MS[Math.min(attempts, RETRY_DELAYS_MS.length - 1)];
     await pool.query(
       `UPDATE webhook_deliveries
        SET status_code = $2, ok = $3, attempts = $4,
            delivered = CASE WHEN $3 THEN $5 ELSE delivered END,
-           next_retry = $6
+           next_retry = $6,
+           error = $7
        WHERE id = $1`,
-      [d.id, statusCode, ok, attempts, Date.now(), nextRetry],
+      [d.id, statusCode, ok, attempts, Date.now(), nextRetry, ok ? null : lastError],
     );
   }
 }

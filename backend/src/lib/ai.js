@@ -12,30 +12,85 @@
 // sees them; chat requests are proxied through /ai/chat.
 
 import crypto from 'node:crypto';
+import { guardedFetch } from './netGuard.js';
+import { aiNetworkPolicy } from './aiNetwork.js';
 
-// --- key encryption (AES-256-GCM, key derived from AI_SECRET) ---------------
+// --- versioned AES-256-GCM secrets -----------------------------------------
+// AI_SECRET_LEGACY supplies the previous material during rotation. Keep it
+// until migrate() has committed and verified every stored secret with the new
+// key. Published defaults require explicit, temporary recovery opt-in.
+const PUBLISHED_SECRETS = new Set([
+  'dev-internal-token-change-me', 'dev-ai-secret-change-me',
+  'nixre-dev-ai-secret', 'change-me-internal-token', 'change-me-ai-secret',
+]);
+const SECRET_AAD = Buffer.from('nixre-secret:v1');
 
-const KEY = crypto.createHash('sha256')
-  .update(process.env.AI_SECRET || process.env.INTERNAL_TOKEN || 'nixre-dev-ai-secret')
-  .digest();
-
-export function encryptSecret(plain) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', KEY, iv);
-  const ct = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return [iv, tag, ct].map(b => b.toString('base64')).join('.');
+export function assertSecretConfiguration() {
+  const material = process.env.AI_SECRET;
+  if (!material || material.length < 32 || PUBLISHED_SECRETS.has(material)) {
+    throw new Error('AI_SECRET must be a non-published secret of at least 32 characters');
+  }
+  if (PUBLISHED_SECRETS.has(process.env.AI_SECRET_LEGACY) &&
+      process.env.ALLOW_LEGACY_DEFAULT_SECRET_RECOVERY !== '1') {
+    throw new Error('Published AI_SECRET_LEGACY requires ALLOW_LEGACY_DEFAULT_SECRET_RECOVERY=1');
+  }
 }
 
-export function decryptSecret(blob) {
-  try {
-    const [iv, tag, ct] = blob.split('.').map(s => Buffer.from(s, 'base64'));
-    const decipher = crypto.createDecipheriv('aes-256-gcm', KEY, iv);
-    decipher.setAuthTag(tag);
-    return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
-  } catch {
-    return null;
+function secretKey(material, salt = process.env.NIXRE_SECRET_SALT || 'nixre.instance.secret.v1') {
+  return Buffer.from(crypto.hkdfSync('sha256', material, salt, 'nixre-secret-encryption-v1', 32));
+}
+
+export function encryptSecret(plain) {
+  assertSecretConfiguration();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', secretKey(process.env.AI_SECRET), iv);
+  cipher.setAAD(SECRET_AAD);
+  const ct = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return 'v1.' + [iv, tag, ct].map(b => b.toString('base64')).join('.');
+}
+
+export function decryptSecret(blob, { allowLegacy = true } = {}) {
+  assertSecretConfiguration();
+  if (blob == null) return null;
+  const versioned = typeof blob === 'string' && blob.startsWith('v1.');
+  const parts = typeof blob === 'string' ? blob.split('.') : [];
+  if (versioned) parts.shift();
+  if (parts.length !== 3 || (!versioned && !allowLegacy)) {
+    throw new Error('Invalid or unsupported encrypted secret format');
   }
+  const [iv, tag, ct] = parts.map(s => Buffer.from(s, 'base64'));
+  if (iv.length !== 12 || tag.length !== 16 ||
+      [iv, tag, ct].some((b, i) => b.toString('base64') !== parts[i])) {
+    throw new Error('Invalid encrypted secret encoding');
+  }
+
+  const keys = [secretKey(process.env.AI_SECRET)];
+  if (allowLegacy && process.env.AI_SECRET_LEGACY) {
+    keys.push(secretKey(process.env.AI_SECRET_LEGACY,
+      process.env.NIXRE_SECRET_SALT_LEGACY || process.env.NIXRE_SECRET_SALT || 'nixre.instance.secret.v1'));
+  }
+  if (!versioned && allowLegacy) {
+    // Historical SHA256(AI_SECRET || INTERNAL_TOKEN || default). Never guess
+    // a published default; recovery must explicitly name it above.
+    const materials = [process.env.AI_SECRET, process.env.INTERNAL_TOKEN, process.env.AI_SECRET_LEGACY];
+    for (const material of new Set(materials.filter(Boolean))) {
+      if (PUBLISHED_SECRETS.has(material) &&
+          !(material === process.env.AI_SECRET_LEGACY && process.env.ALLOW_LEGACY_DEFAULT_SECRET_RECOVERY === '1')) continue;
+      keys.push(crypto.createHash('sha256').update(material).digest());
+    }
+  }
+  for (const key of keys) {
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+      if (versioned) decipher.setAAD(SECRET_AAD);
+      decipher.setAuthTag(tag);
+      return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
+    } catch {
+      // Try only explicitly supported historical keys, never plaintext.
+    }
+  }
+  throw new Error('Secret decryption failed; preserve the old key and configure AI_SECRET_LEGACY before retrying migration');
 }
 
 export function maskSecret(plain) {
@@ -161,11 +216,13 @@ export async function listModels(provider, apiKey, baseUrl) {
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
-  const r = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+  const r = await guardedFetch(url, { headers }, { ...aiNetworkPolicy(), timeoutMs: 15_000 });
   if (r.status === 401 || r.status === 403) {
+    await r.body?.cancel();
     throw new AuthError('Invalid API key');
   }
   if (!r.ok) {
+    await r.body?.cancel();
     throw new Error(`Provider returned HTTP ${r.status}`);
   }
   const body = await r.json();
@@ -216,16 +273,20 @@ function createStreamGuard(outerSignal) {
     }, STREAM_IDLE_MS);
   };
   arm();
+  const abort = () => ctrl.abort(outerSignal.reason);
   if (outerSignal) {
-    if (outerSignal.aborted) ctrl.abort(outerSignal.reason);
-    else outerSignal.addEventListener('abort', () => ctrl.abort(outerSignal.reason), { once: true });
+    if (outerSignal.aborted) abort();
+    else outerSignal.addEventListener('abort', abort, { once: true });
   }
   return {
     signal: ctrl.signal,
     touch: () => {
       if (!ctrl.signal.aborted) arm();
     },
-    dispose: () => clearTimeout(timer),
+    dispose: () => {
+      clearTimeout(timer);
+      outerSignal?.removeEventListener('abort', abort);
+    },
   };
 }
 
@@ -289,7 +350,7 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
 
   const guard = createStreamGuard(signal);
   try {
-    const r = await fetch(`${apiRoot(base)}/chat/completions`, {
+    const r = await guardedFetch(`${apiRoot(base)}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -297,8 +358,11 @@ async function streamOpenAICompatible({ base, apiKey, model, messages, reasoning
       },
       body: JSON.stringify(body),
       signal: guard.signal,
-    });
-    if (r.status === 401 || r.status === 403) throw new AuthError('Invalid API key');
+    }, { ...aiNetworkPolicy(), timeoutMs: 0 });
+    if (r.status === 401 || r.status === 403) {
+      await r.body?.cancel();
+      throw new AuthError('Invalid API key');
+    }
     if (!r.ok) {
       const text = await r.text().catch(() => '');
       throw new Error(`Provider returned HTTP ${r.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
@@ -488,7 +552,7 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, 
 
   const guard = createStreamGuard(signal);
   try {
-    const r = await fetch(`${apiRoot(base)}/messages`, {
+    const r = await guardedFetch(`${apiRoot(base)}/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -497,8 +561,11 @@ async function streamAnthropic({ base, apiKey, model, messages, reasoningLevel, 
       },
       body: JSON.stringify(body),
       signal: guard.signal,
-    });
-    if (r.status === 401 || r.status === 403) throw new AuthError('Invalid API key');
+    }, { ...aiNetworkPolicy(), timeoutMs: 0 });
+    if (r.status === 401 || r.status === 403) {
+      await r.body?.cancel();
+      throw new AuthError('Invalid API key');
+    }
     if (!r.ok) {
       const text = await r.text().catch(() => '');
       throw new Error(`Provider returned HTTP ${r.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
@@ -554,18 +621,32 @@ async function parseSSE(response, onPayload, onData = () => {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    onData(value);
-    buf += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\n')) !== -1) {
-      const line = buf.slice(0, idx).trim();
-      buf = buf.slice(idx + 1);
-      if (line.startsWith('data:')) {
-        await onPayload(line.slice(5).trim());
+  let finished = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        finished = true;
+        break;
       }
+      onData(value);
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (line.startsWith('data:')) {
+          await onPayload(line.slice(5).trim());
+        }
+      }
+    }
+  } finally {
+    // A failed consumer must close the upstream too. Cancellation can reject
+    // after a transport error; do not mask the original failure with cleanup.
+    try {
+      if (!finished) await reader.cancel().catch(() => {});
+    } finally {
+      reader.releaseLock();
     }
   }
 }

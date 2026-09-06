@@ -10,7 +10,12 @@
 
 set -euo pipefail
 
-NIXRE_DIR="/opt/nixre"
+# Overridable so the script works on any install, not just the operator's.
+# It used to hard-code the previous instance hostname, which no longer resolves —
+# so the verification curl failed and the script exited 1 even though the
+# .env change had been applied correctly.
+NIXRE_DIR="${NIXRE_DIR:-/opt/nixre}"
+NIXRE_HOST="${NIXRE_HOST:-http://127.0.0.1:3000}"
 ENV_FILE="$NIXRE_DIR/.env"
 
 log() { printf "[%s] %s\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$*"; }
@@ -41,7 +46,7 @@ if [ "$healthy" -ne 1 ]; then
   exit 1
 fi
 
-code="$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "{}" https://git.nayhein.com/api/v1/register)"
+code="$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "{}" "$NIXRE_HOST/api/v1/register")"
 if [ "$code" = "403" ]; then
   log "Registration is closed (POST /api/v1/register -> 403)."
 else

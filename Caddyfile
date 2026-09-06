@@ -1,19 +1,52 @@
+{
+	servers {
+		# Space-separated IPs/CIDRs of controlled tunnel peers only. Empty
+		# means no trusted edge; never trust all private networks by default.
+		trusted_proxies static {$NIXRE_TRUSTED_EDGE_CIDRS}
+		trusted_proxies_strict
+	}
+}
+
 :3000 {
-    # All API traffic flows through nixre-core; it owns auth + sync and
-    # transparently proxies not-yet-migrated endpoints to Gitness.
-    handle /api/* {
-        reverse_proxy nixre-core:3002
-    }
+	# Security headers for everything served on this site.
+	#
+	# The API sets its own baseline (backend/src/lib/securityHeaders.js); these
+	# cover the SPA and static assets, which Caddy serves directly. A CSP is the
+	# meaningful one here: the UI keeps its session token in localStorage, so an
+	# injected script would be able to read it. Restricting script/style/font
+	# sources to self (plus the inline styles Tailwind-classed markup relies on
+	# and the data: images the assistant renders) turns a would-be token theft
+	# into a blocked load.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=(), usb=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https: wss:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		-Server
+	}
 
-    # Git Smart HTTP transport served by nixre-core (bare repos + http-backend)
-    handle /git/* {
-        reverse_proxy nixre-core:3002
-    }
+	# All API traffic flows through nixre-core; it owns auth, sync, the
+	# assistant, and deployments.
+	handle /api/* {
+		reverse_proxy nixre-core:3002 {
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
 
-    # Serve Nixre SPA Web UI
-    handle {
-        root * /usr/share/caddy
-        try_files {path} /index.html
-        file_server
-    }
+	# Git Smart HTTP transport served by nixre-core (bare repos + http-backend)
+	handle /git/* {
+		reverse_proxy nixre-core:3002 {
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
+	# Serve Nixre SPA Web UI
+	handle {
+		root * /usr/share/caddy
+		try_files {path} /index.html
+		file_server
+	}
 }

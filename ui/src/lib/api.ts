@@ -296,8 +296,8 @@ class ApiClient {
       let msg = `HTTP error ${res.status}`;
       let body: Record<string, unknown> | undefined;
       try {
-        body = await res.json();
-        if (typeof body.message === "string") msg = body.message;
+        body = (await res.json()) as Record<string, unknown> | undefined;
+        if (body && typeof body.message === "string") msg = body.message;
       } catch {}
       const err = new Error(msg) as Error & { status?: number; body?: Record<string, unknown> };
       err.status = res.status;
@@ -493,8 +493,10 @@ class ApiClient {
   }
 
   // Git / Code Explorer
-  // Gitness serves repo content at /repos/{ref}/+/content/{path}?git_ref={ref}
-  // and nests the listing under `content.entries` with `file`/`dir` types.
+  // nixre-core serves repo content at /repos/{ref}/+/content/{path}?git_ref={ref}
+  // and nests the listing under `content.entries` with `file`/`dir` types. The
+  // shape is inherited from the Gitness API this client was written against,
+  // which is why `entries` is nested one level deep.
   async getTree(repoRef: string, gitRef = 'main', path = ''): Promise<{ entries: TreeEntry[] }> {
     const pathSegment = path ? `/${path.split('/').map(encodeURIComponent).join('/')}` : '';
     const res = await this.request<any>(`/repos/${repoRef}/+/content${pathSegment}?git_ref=${encodeURIComponent(gitRef)}`);
@@ -1039,6 +1041,20 @@ class ApiClient {
     );
   }
 
+  /** Prove ownership of an attached domain (DNS TXT challenge). */
+  verifyDomain(
+    space: string,
+    repo: string,
+    serviceId: number,
+    domainId: number,
+    force = false,
+  ): Promise<{ id: number; domain: string; verified: boolean; method?: string; message?: string }> {
+    return this.request(
+      `/repos/${space}/${repo}/+/deployments/services/${serviceId}/domains/${domainId}/verify`,
+      { method: 'POST', body: JSON.stringify({ force }) },
+    );
+  }
+
   deploymentsOverview(): Promise<DeployService[]> {
     return this.request('/deployments/overview');
   }
@@ -1133,6 +1149,8 @@ export interface DeployService {
   // Space-board-only fields:
   domains?: string[];
   tls_risk_domains?: string[];
+  /** Attached but not yet proven — these are NOT routed by the proxy. */
+  unverified_domains?: string[];
 }
 
 export interface DockerfileCandidate {
@@ -1230,6 +1248,16 @@ export interface DomainEntry {
   created: number;
   tls_risk?: boolean;
   dns?: DomainDnsStatus;
+  // Ownership gate: an unverified domain is attached but NOT routed. The
+  // proxy skips it entirely, so the UI must be explicit that attaching a
+  // hostname does not make it live.
+  verified?: boolean;
+  verification?: {
+    verified: boolean;
+    method?: 'txt' | 'admin';
+    note?: string;
+    record?: { type: 'TXT'; name: string; value: string };
+  };
   guidance: {
     dns: DomainGuidanceDns[];
     notes: string[];

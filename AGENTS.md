@@ -38,6 +38,8 @@ Plus:
 3. **Frontend changes:** edit in `ui/src`, then `npm run build` in `ui/`, then the new files land in `ui/dist/`. **You MUST commit `ui/dist`** (it's what gets served). Forgetting = web page show OLD version.
 4. **Backend changes:** rebuild the docker image: `docker compose up -d --build nixre-core`. The backend is baked into the image (not live-reloaded). Change code + rebuild + restart, else new code never runs.
 5. **Secrets live in `.env`** (local only). It is GITIGNORED. **NEVER commit `.env`** or past real tokens into commits — GitHub secret scanner blocks the push AND leaks password. If need doc, use `.env.example` (placeholder only). If a real secret got committed, `git filter-branch` it out and ROTATE the secret at the provider.
+   - `.env` is now **required**: `NIXRE_INTERNAL_TOKEN`, `NIXRE_AI_SECRET` and `POSTGRES_PASSWORD` have no defaults. Compose refuses to start without them, and core refuses to boot if the first two match a known published value (they used to fall back to `dev-internal-token-change-me`, which is in this public repo while `/api/v1/internal/*` is reachable through Caddy).
+   - Registration defaults to **CLOSED** when `NIXRE_REGISTRATION_CLOSED` is unset. Set it to `false` on purpose, not by accident.
 6. **Domain routing:** apps go through deploy proxy port `3003`, tunnel catches everything else. Don't wire A-records/port-forward — this router no port forward. All internet comes in via cloudflare tunnel.
 7. **`nixre.dev` marketing repo is SEPARATE** (github.com/Akicou/nixre.dev). It has the landing page `index.html` + its own `llms.txt`. The forge repo `README.md`/`llms.txt` ALSO say the live instance. Keep them in sync.
 
@@ -59,7 +61,8 @@ Plus:
 
 ### If add a feature to the UI
 - Edit `ui/src/...`, then `cd ui && npm run build`, then commit `ui/dist`.
-- Add a test in `ui/src/test/*.spec.tsx` (matches vibe of existing tests). Run `npx vitest run` before commit.
+- Add a test in `ui/src/test/*.spec.tsx` (matches vibe of existing tests). Run `cd ui && npx vitest run` before commit.
+- **You MUST `cd ui` first.** There is no root vite config, so `npx vitest run` from the repo root finds no jsdom environment and fails every UI test with `document is not defined`. `npm test` at the root does it correctly (it also runs the backend suite).
 - Rebuild backend if backend changed.
 
 ### If add a backend endpoint / logic
@@ -70,11 +73,13 @@ Plus:
 ### If change the deployment feature
 - Backend: `backend/src/routes/deployments.js`, `backend/src/lib/deploy*`.
 - Frontend: `ui/src/pages/DeploymentsPage.tsx`, `ui/src/components/SpaceDeployments.tsx`, `DeploymentsOverview.tsx`, `ui/src/lib/api.ts`, `ui/src/lib/deployEvents.ts`.
-- Docs: `docs/deployments.md`, README, llms.txt, plus `skills/nixre/references/deployments.md`.
+- Docs: `docs/deployments-runtime.md` (runtime options / bind-mount policy), README, llms.txt, plus `skills/nixre/references/deployments.md`.
 - Rebuild backend + frontend. Test via deploy proxy `:3003`.
 
 ### If someone says "pubic still says nayhein.com"
 - That stale text is in the `nixre.dev` REPO (`index.html`, `llms.txt`). Fix THERE, not in forge repo. Push `nixre.dev`. (Forge repo also needs the same fix in README/llms.)
+- Already fixed here once: `allow-registering.sh` / `no-more-register.sh` hard-coded `git.nayhein.com` in their verification curl, so BOTH exited 1 even when they succeeded. They now use `${NIXRE_HOST:-http://127.0.0.1:3000}` and `${NIXRE_DIR:-/opt/nixre}`. `ui/public/llms.txt` (and therefore `ui/dist/llms.txt`) had it too — rebuild the UI after editing it.
+- CI (`.github/workflows/ci.yml`) greps for `nayhein.com` and fails the build, so it cannot come back silently.
 
 ### If push to github fails with "secret scanner" / "permission denied"
 - **Permission denied 403:** the gh token (`github_pat_...`) probably no write. Switch remote to SSH (this server have a working `id_ed25519` key): `git remote set-url origin git@github.com:Akicou/Nixre.git`.

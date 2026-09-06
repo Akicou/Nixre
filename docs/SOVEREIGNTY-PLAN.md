@@ -1,11 +1,24 @@
 # Nixre Sovereignty Plan — Replacing Gitness End to End
 
+> **STATUS: COMPLETE.** This document is the plan that removed Gitness; it is
+> kept for historical context and is written in the present/future tense it was
+> authored in. Nixre today runs a single `nixre-core` backend (Node + Postgres
+> + on-disk bare git repos) serving `/api/v1` and `/git/*`, with no Gitness
+> image anywhere in `docker-compose.yml`.
+>
+> Do not use this file to reason about the current architecture — see
+> [`README.md`](../README.md) and [`llms.txt`](../llms.txt) for that. The only
+> surviving Gitness reference in the codebase is
+> `scripts/migrate-from-gitness.js`, a one-time tool for operators arriving
+> from a legacy install.
+
 **Goal:** Nixre becomes a sovereign forge with zero external forge dependencies.
 One codebase, one database, one git engine — all owned by Nixre. No Gitness.
 
-**Current state:** the UI (React SPA) talks to Gitness for auth, spaces, repos,
-git data, and pull requests; `nixre-sync` (Node + Postgres) already owns
-account-scoped UI state (prefs, chats, passkeys) with Gitness-delegated auth.
+**Original state (at the time of writing):** the UI (React SPA) talked to
+Gitness for auth, spaces, repos, git data, and pull requests; `nixre-sync`
+(Node + Postgres) already owned account-scoped UI state (prefs, chats,
+passkeys) with Gitness-delegated auth.
 
 **End state:** a single `nixre-core` backend (Node + Postgres + on-disk bare
 git repos) serves everything at `/api/v1` plus git transport at `/git/*`.
@@ -13,9 +26,9 @@ Gitness is removed from the stack entirely.
 
 ---
 
-## 1. What Gitness actually provides today (audit)
+## 1. What Gitness provided (audit)
 
-Every Gitness dependency in Nixre, from `ui/src/lib/api.ts` (28 methods):
+Every Gitness dependency Nixre had, from `ui/src/lib/api.ts` (28 methods):
 
 | Area | Methods | Where used |
 |---|---|---|

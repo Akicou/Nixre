@@ -4,5 +4,7 @@
 import pg from 'pg';
 
 export const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL || 'postgres://nixre:nixre@localhost:5432/nixre',
+  // Explicit URLs remain supported for external installations. Compose uses
+  // standard PG* variables so passwords need no URI escaping.
+  ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {}),
 });

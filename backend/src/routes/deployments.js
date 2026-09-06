@@ -25,9 +25,24 @@ import {
   findZoneId,
   tunnelCnameTarget,
 } from '../lib/cloudflareDns.js';
+import {
+  newVerifyToken,
+  verifyRecordName,
+  checkDomainChallenge,
+  reservedDomainSet,
+  reservedDomainReason,
+} from '../lib/domainVerify.js';
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DOMAIN_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
+// Bound the number of hostnames one service can claim.
+const MAX_DOMAINS_PER_SERVICE = 20;
+
+// Bound the number of services per repository. Each one reserves memory/CPU
+// limits and gets a container, so an uncapped count lets any space member
+// reserve unbounded host resources.
+const MAX_SERVICES_PER_REPO = Number(process.env.DEPLOY_MAX_SERVICES_PER_REPO || 20);
 
 export function deploymentRoutes(pool, authenticate) {
   const api = express.Router();
@@ -131,6 +146,7 @@ export function deploymentRoutes(pool, authenticate) {
       success_retention_hours: Number(s.success_retention_hours ?? 24),
       failure_retention_hours: Number(s.failure_retention_hours ?? 168),
       runtime_options: s.runtime_options ?? null,
+      security_policy_version: Number(s.security_policy_version ?? 1),
       created: Number(s.created),
       updated: Number(s.updated),
       ...extra,
@@ -180,6 +196,12 @@ export function deploymentRoutes(pool, authenticate) {
     const repo = await requireWriter(req, res);
     if (!repo) return;
     const body = req.body || {};
+    if (Object.hasOwn(body, 'security_policy_version')) {
+      res.status(req.auth.user.admin ? 400 : 403).json({
+        message: 'New services use the current security policy; only an instance admin can change an existing service via PATCH',
+      });
+      return;
+    }
     const name = sanitizeServiceName(body.name || '');
     let rootDir;
     try {
@@ -192,6 +214,21 @@ export function deploymentRoutes(pool, authenticate) {
     const containerPort = Number(body.container_port || 8080);
     if (!(Number.isInteger(containerPort) && containerPort > 0 && containerPort < 65536)) {
       res.status(400).json({ message: 'container_port must be a valid port number' });
+      return;
+    }
+
+    // Cap services per repository before doing any work — an uncapped count
+    // lets any space member reserve unlimited memory/CPU and containers.
+    const { rows: existingServices } = await pool.query(
+      'SELECT count(*)::int AS n FROM deploy_services WHERE repo_id = $1',
+      [repo.id],
+    );
+    if (Number(existingServices[0]?.n || 0) >= MAX_SERVICES_PER_REPO) {
+      res
+        .status(409)
+        .json({
+          message: `A repository can have at most ${MAX_SERVICES_PER_REPO} deployment services`,
+        });
       return;
     }
 
@@ -293,6 +330,7 @@ export function deploymentRoutes(pool, authenticate) {
     'failure_retention_hours',
     'env',
     'runtime_options',
+    'security_policy_version',
   ]);
 
   api.patch('/repos/:space/:repo/\\+/deployments/services/:id', auth, guard(async (req, res) => {
@@ -300,6 +338,18 @@ export function deploymentRoutes(pool, authenticate) {
     if (!ctx) return;
     const { service } = ctx;
     const body = req.body || {};
+    // Validate before processing env updates or other side effects. A policy
+    // downgrade requires an explicit admin request, never a reset of options.
+    if (Object.hasOwn(body, 'security_policy_version')) {
+      if (!req.auth.user.admin) {
+        res.status(403).json({ message: 'Only an instance admin can change the deployment security policy' });
+        return;
+      }
+      if (body.security_policy_version !== 1 && body.security_policy_version !== 2) {
+        res.status(400).json({ message: 'security_policy_version must be the number 1 or 2' });
+        return;
+      }
+    }
 
     const sets = {};
     for (const key of Object.keys(body)) {
@@ -321,8 +371,8 @@ export function deploymentRoutes(pool, authenticate) {
         value = Math.min(600, Math.max(100, Number(value)));
       }
       if (key === 'runtime_options') {
-        // Full replace when an object is provided; explicit null clears back
-        // to legacy behavior. Omitted = untouched (like every other field).
+        // Full replace when an object is provided; explicit null restores the
+        // selected security policy's defaults. Omitted = untouched.
         if (value === null) {
           sets[key] = { v: null };
           continue;
@@ -845,7 +895,7 @@ export function deploymentRoutes(pool, authenticate) {
         ],
         notes: [
           cloudflareConfigured()
-            ? 'This record is created/removed automatically via the Cloudflare API — no manual step needed.'
+            ? 'An instance admin can provision this record via the Cloudflare API. Other users must publish DNS and the TXT ownership challenge themselves.'
             : 'Create a Cloudflare Tunnel (Zero Trust → Networks → Tunnels) or run one with compose profile "tunnels".',
           'Add a public hostname mapping this domain to http://nixre-core:' + proxyPort + '.',
           'Point DNS at the tunnel with the CNAME shown.',
@@ -876,25 +926,34 @@ export function deploymentRoutes(pool, authenticate) {
 
   // DNS status blob for a deploy_domains row. `auto` + status drive the UI
   // badge; `guidance` stays for manual setups and operator reference.
-  function dnsStatus(row) {
+  function verificationStatus(row) {
+    if (row.verified === true) return { verified: true };
+    return {
+      verified: false,
+      method: 'txt',
+      record: { type: 'TXT', name: verifyRecordName(row.domain), value: row.verify_token },
+    };
+  }
+
+  function dnsStatus(row, user) {
     if (row.kind !== 'tunnel') return { auto: false, status: 'manual' };
     if (row.cf_record_id) {
       return { auto: true, status: 'created', target: tunnelCnameTarget() };
     }
-    if (cloudflareConfigured()) return { auto: true, status: 'pending', target: tunnelCnameTarget() };
+    if (cloudflareConfigured() && user?.admin) return { auto: true, status: 'pending', target: tunnelCnameTarget() };
     return { auto: false, status: 'manual' };
   }
 
   // Best-effort: create the proxied CNAME for a tunnel domain via the
   // Cloudflare API and persist the record ids. Never throws — failures come
   // back as { auto: true, status: 'failed', error } so the UI can offer retry.
-  async function provisionDns(row, domain) {
-    if (!cloudflareConfigured()) return { auto: false, status: 'manual' };
+  async function provisionDns(row, domain, user) {
+    if (row.kind !== 'tunnel' || !user?.admin || !cloudflareConfigured()) return { auto: false, status: 'manual' };
     try {
       const result = await createTunnelCname(domain);
       await pool.query(
-        'UPDATE deploy_domains SET cf_zone_id = $1, cf_record_id = $2 WHERE id = $3',
-        [result.zoneId, result.recordId, row.id],
+        'UPDATE deploy_domains SET cf_zone_id = $1, cf_record_id = $2, verified = TRUE, verified_at = $4 WHERE id = $3',
+        [result.zoneId, result.recordId, row.id, Date.now()],
       );
       return {
         auto: true,
@@ -912,7 +971,8 @@ export function deploymentRoutes(pool, authenticate) {
     const ctx = await loadService(req, res);
     if (!ctx) return;
     const { rows } = await pool.query(
-      'SELECT id, kind, domain, tls_risk, cf_zone_id, cf_record_id, created FROM deploy_domains WHERE service_id = $1 ORDER BY created',
+      `SELECT id, kind, domain, tls_risk, verified, verify_token, cf_zone_id, cf_record_id, created
+       FROM deploy_domains WHERE service_id = $1 ORDER BY created`,
       [ctx.service.id],
     );
     res.json(rows.map(r => ({
@@ -920,8 +980,10 @@ export function deploymentRoutes(pool, authenticate) {
       kind: r.kind,
       domain: r.domain,
       tls_risk: Boolean(r.tls_risk),
+      verified: Boolean(r.verified),
+      verification: verificationStatus(r),
       created: Number(r.created),
-      dns: dnsStatus(r),
+      dns: dnsStatus(r, req.auth.user),
       guidance: domainGuidance(r.domain, r.kind),
     })));
   }));
@@ -935,6 +997,20 @@ export function deploymentRoutes(pool, authenticate) {
       res.status(400).json({ message: 'Enter a concrete hostname like app.example.com' });
       return;
     }
+
+    // Hostname hijacking guard. Custom domains are matched before every other
+    // routing rule, so without this a space member could attach the forge's
+    // own hostname (or any third-party domain) and serve their container from
+    // it.
+    const reservedReason = reservedDomainReason(domain, {
+      baseDomain: process.env.DEPLOY_BASE_DOMAIN || '',
+      reserved: reservedDomainSet(),
+    });
+    if (reservedReason) {
+      res.status(409).json({ message: reservedReason });
+      return;
+    }
+
     const { rows: taken } = await pool.query(
       'SELECT 1 FROM deploy_domains WHERE domain = $1',
       [domain],
@@ -944,12 +1020,23 @@ export function deploymentRoutes(pool, authenticate) {
       return;
     }
 
+    const { rows: existing } = await pool.query(
+      'SELECT count(*)::int AS n FROM deploy_domains WHERE service_id = $1',
+      [ctx.service.id],
+    );
+    if (Number(existing[0]?.n || 0) >= MAX_DOMAINS_PER_SERVICE) {
+      res
+        .status(409)
+        .json({ message: `A service can attach at most ${MAX_DOMAINS_PER_SERVICE} domains` });
+      return;
+    }
+
     // TLS depth check (tunnel kind): Cloudflare Universal SSL covers only one
     // level of subdomain per zone on free plans — a.b.example.com gets TLS
     // handshake failures. Require an explicit confirmation for those instead
     // of silently attaching something that won't serve HTTPS.
     let tlsRisk = false;
-    if (kind === 'tunnel' && cloudflareConfigured()) {
+    if (kind === 'tunnel' && req.auth.user.admin && cloudflareConfigured()) {
       try {
         const zone = await findZoneId(domain);
         const depth = domain.split('.').length - zone.zoneName.split('.').length;
@@ -974,21 +1061,100 @@ export function deploymentRoutes(pool, authenticate) {
       }
     }
 
+    const verifyToken = newVerifyToken();
     const { rows } = await pool.query(
-      'INSERT INTO deploy_domains (service_id, kind, domain, tls_risk, created) VALUES ($1,$2,$3,$4,$5) RETURNING id',
-      [ctx.service.id, kind, domain, tlsRisk, Date.now()],
+      `INSERT INTO deploy_domains
+         (service_id, kind, domain, tls_risk, verified, verify_token, created)
+       VALUES ($1,$2,$3,$4,FALSE,$5,$6) RETURNING id`,
+      [ctx.service.id, kind, domain, tlsRisk, verifyToken, Date.now()],
     );
     const row = { id: rows[0].id, kind, domain };
-    const dns = await provisionDns(row, domain);
+    const dns = await provisionDns(row, domain, req.auth.user);
+
+    // Only an admin may provision with operator credentials. Other claims
+    // remain parked until their independently published TXT proof matches.
+    const verified = dns.status === 'created';
     await proxyInvalidate();
+
     res.status(201).json({
-      id: Number(rows[0].id),
+      id: Number(row.id),
       kind,
       domain,
       tls_risk: tlsRisk,
+      verified,
+      verification: verified
+        ? { verified: true }
+        : {
+            verified: false,
+            method: 'txt',
+            record: {
+              type: 'TXT',
+              name: verifyRecordName(domain),
+              value: verifyToken,
+            },
+          },
       dns,
       guidance: domainGuidance(domain, kind),
     });
+  }));
+
+  // POST .../domains/:domainId/verify — prove ownership with the TXT
+  // challenge, or (admin) mark a domain verified out of band.
+  api.post('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId/verify', auth, guard(async (req, res) => {
+    const ctx = await requireServiceWriter(req, res);
+    if (!ctx) return;
+    const { rows } = await pool.query(
+      'SELECT id, domain, verified, verify_token FROM deploy_domains WHERE id = $1 AND service_id = $2',
+      [Number(req.params.domainId), ctx.service.id],
+    );
+    const row = rows[0];
+    if (!row) {
+      res.status(404).json({ message: 'Domain not found' });
+      return;
+    }
+    const reservedReason = reservedDomainReason(row.domain, {
+      baseDomain: process.env.DEPLOY_BASE_DOMAIN || '', reserved: reservedDomainSet(),
+    });
+    if (reservedReason) { res.status(409).json({ message: reservedReason }); return; }
+    if (row.verified) {
+      res.json({ id: Number(row.id), domain: row.domain, verified: true });
+      return;
+    }
+
+    if (req.body?.force === true) {
+      if (!req.auth.user.admin) {
+        res.status(403).json({ message: 'Only an instance admin can skip domain verification' });
+        return;
+      }
+      await pool.query(
+        'UPDATE deploy_domains SET verified = TRUE, verified_at = $2 WHERE id = $1',
+        [row.id, Date.now()],
+      );
+      await proxyInvalidate();
+      res.json({ id: Number(row.id), domain: row.domain, verified: true, method: 'admin' });
+      return;
+    }
+
+    const check = await checkDomainChallenge(row.domain, row.verify_token);
+    if (!check.ok) {
+      res.status(409).json({
+        code: 'DOMAIN_VERIFICATION_FAILED',
+        verified: false,
+        message: check.detail,
+        record: {
+          type: 'TXT',
+          name: verifyRecordName(row.domain),
+          value: row.verify_token,
+        },
+      });
+      return;
+    }
+    await pool.query(
+      'UPDATE deploy_domains SET verified = TRUE, verified_at = $2 WHERE id = $1',
+      [row.id, Date.now()],
+    );
+    await proxyInvalidate();
+    res.json({ id: Number(row.id), domain: row.domain, verified: true, method: 'txt' });
   }));
 
   // Retry Cloudflare record creation for a tunnel domain whose first attempt
@@ -996,8 +1162,12 @@ export function deploymentRoutes(pool, authenticate) {
   api.post('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId/dns', auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
+    if (!req.auth.user.admin) {
+      res.status(403).json({ message: 'Only an instance admin can use DNS automation; publish the TXT challenge instead' });
+      return;
+    }
     const { rows } = await pool.query(
-      'SELECT id, kind, domain, cf_zone_id, cf_record_id FROM deploy_domains WHERE id = $1 AND service_id = $2',
+      'SELECT id, kind, domain, verified, verify_token, cf_zone_id, cf_record_id FROM deploy_domains WHERE id = $1 AND service_id = $2',
       [Number(req.params.domainId), ctx.service.id],
     );
     const row = rows[0];
@@ -1013,9 +1183,15 @@ export function deploymentRoutes(pool, authenticate) {
       res.status(400).json({ message: 'Cloudflare DNS automation is not configured on this instance' });
       return;
     }
-    const dns = await provisionDns(row, row.domain);
+    const reservedReason = reservedDomainReason(row.domain, {
+      baseDomain: process.env.DEPLOY_BASE_DOMAIN || '', reserved: reservedDomainSet(),
+    });
+    if (reservedReason) { res.status(409).json({ message: reservedReason }); return; }
+    const dns = await provisionDns(row, row.domain, req.auth.user);
+    const verified = row.verified === true || dns.status === 'created';
     await proxyInvalidate();
-    res.json({ id: Number(row.id), domain: row.domain, dns, guidance: domainGuidance(row.domain, row.kind) });
+    res.json({ id: Number(row.id), domain: row.domain, verified,
+      verification: verificationStatus({ ...row, verified }), dns, guidance: domainGuidance(row.domain, row.kind) });
   }));
 
   api.delete('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId', auth, guard(async (req, res) => {
@@ -1088,11 +1264,14 @@ export function deploymentRoutes(pool, authenticate) {
 
     const domainsByService = new Map();
     const tlsRiskByService = new Map();
+    // Domains that are attached but not yet proven — they are NOT routed, so
+    // the board must say so instead of listing a hostname that serves nothing.
+    const unverifiedByService = new Map();
     if (services.length) {
       const ids = services.map(s => s.id);
       const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
       const { rows: domainRows } = await pool.query(
-        `SELECT service_id, domain, tls_risk FROM deploy_domains WHERE service_id IN (${placeholders}) ORDER BY created`,
+        `SELECT service_id, domain, tls_risk, verified FROM deploy_domains WHERE service_id IN (${placeholders}) ORDER BY created`,
         ids,
       );
       for (const d of domainRows) {
@@ -1103,6 +1282,11 @@ export function deploymentRoutes(pool, authenticate) {
           const risky = tlsRiskByService.get(Number(d.service_id)) || [];
           risky.push(d.domain);
           tlsRiskByService.set(Number(d.service_id), risky);
+        }
+        if (d.verified === false) {
+          const parked = unverifiedByService.get(Number(d.service_id)) || [];
+          parked.push(d.domain);
+          unverifiedByService.set(Number(d.service_id), parked);
         }
       }
     }
@@ -1116,6 +1300,7 @@ export function deploymentRoutes(pool, authenticate) {
         alert: s.last_failed_deployment_id != null,
         domains: domainsByService.get(Number(s.id)) || [],
         tls_risk_domains: tlsRiskByService.get(Number(s.id)) || [],
+        unverified_domains: unverifiedByService.get(Number(s.id)) || [],
       }));
     }
 
@@ -1176,15 +1361,30 @@ export function deploymentRoutes(pool, authenticate) {
 
     const ids = services.map(s => s.id);
     const reqCounts = new Map();
+    // Attached-but-unproven domains are not routed, so the overview flags them
+    // rather than showing a hostname that serves nothing.
+    const unverifiedByService = new Map();
     if (ids.length) {
       const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
-      const { rows } = await pool.query(
-        `SELECT service_id, COUNT(*)::int AS n FROM deploy_http_logs
-         WHERE service_id IN (${placeholders}) AND ts > $${ids.length + 1}
-         GROUP BY service_id`,
-        [...ids, Date.now() - 24 * 3600_000],
-      );
+      const [{ rows }, { rows: domainRows }] = await Promise.all([
+        pool.query(
+          `SELECT service_id, COUNT(*)::int AS n FROM deploy_http_logs
+           WHERE service_id IN (${placeholders}) AND ts > $${ids.length + 1}
+           GROUP BY service_id`,
+          [...ids, Date.now() - 24 * 3600_000],
+        ),
+        pool.query(
+          `SELECT service_id, domain FROM deploy_domains
+           WHERE service_id IN (${placeholders}) AND verified = FALSE`,
+          ids,
+        ),
+      ]);
       for (const r of rows) reqCounts.set(Number(r.service_id), Number(r.n));
+      for (const d of domainRows) {
+        const list = unverifiedByService.get(Number(d.service_id)) || [];
+        list.push(d.domain);
+        unverifiedByService.set(Number(d.service_id), list);
+      }
     }
 
     const out = [];
@@ -1199,6 +1399,7 @@ export function deploymentRoutes(pool, authenticate) {
           requests_24h: reqCounts.get(Number(s.id)) || 0,
           alert: failed,
           live,
+          unverified_domains: unverifiedByService.get(Number(s.id)) || [],
         }),
         space: s.space,
         repo_uid: s.repo_uid,

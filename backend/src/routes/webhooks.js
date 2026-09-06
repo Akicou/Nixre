@@ -2,6 +2,8 @@
 
 import express from 'express';
 import crypto from 'node:crypto';
+import { assertPublicUrl } from '../lib/netGuard.js';
+import { encryptSecret } from '../lib/ai.js';
 
 export function webhookRoutes(pool, authenticate) {
   const api = express.Router();
@@ -30,10 +32,28 @@ export function webhookRoutes(pool, authenticate) {
     return rows.length > 0;
   }
 
+  // Shared visibility rule: admins, members, or a public repo. 404 (not 403)
+  // so we never confirm that a private repo exists.
+  async function canRead(pool, repo, user) {
+    if (user.admin) return true;
+    if (repo.is_public) return true;
+    const { rows } = await pool.query(
+      'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
+      [repo.space_uid, user.uid],
+    );
+    return rows.length > 0;
+  }
+
   // GET /repos/{space}/{repo}/+/webhooks
+  // Requires read access: webhook URLs are internal routing information and
+  // were previously readable by any authenticated user on any repo.
   api.get('/repos/:space/:repo/\\+/webhooks', auth, async (req, res) => {
     const repo = await loadRepo(req, res);
     if (!repo) return;
+    if (!(await canRead(pool, repo, req.auth.user))) {
+      res.status(404).json({ message: 'Repository not found' });
+      return;
+    }
     const { rows } = await pool.query(
       'SELECT id, url, events, active, created FROM repo_webhooks WHERE repo_id = $1 ORDER BY created DESC',
       [repo.id],
@@ -60,8 +80,12 @@ export function webhookRoutes(pool, authenticate) {
     const events = Array.isArray(req.body?.events)
       ? req.body.events.filter(e => ['push', 'pull_request'].includes(e))
       : ['push', 'pull_request'];
-    if (!/^https?:\/\//.test(url)) {
-      res.status(400).json({ message: 'url must be http(s)' });
+    // SSRF guard: the server will POST to this URL on every event, so it must
+    // resolve to a public address. A bare /^https?:\/\// check let a space
+    // member point webhooks at cloud metadata or docker-internal services.
+    const urlCheck = await assertPublicUrl(url);
+    if (!urlCheck.ok) {
+      res.status(400).json({ message: urlCheck.message });
       return;
     }
     if (events.length === 0) {
@@ -69,10 +93,12 @@ export function webhookRoutes(pool, authenticate) {
       return;
     }
     const secret = crypto.randomBytes(24).toString('base64url');
+    // Stored encrypted (decrypted only when signing a delivery). The plaintext
+    // is returned exactly once, here.
     const { rows } = await pool.query(
-      `INSERT INTO repo_webhooks (repo_id, url, secret, events, created_by, created)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-      [repo.id, url, secret, events, req.auth.user.uid, Date.now()],
+      `INSERT INTO repo_webhooks (repo_id, url, secret, secret_enc, events, created_by, created)
+       VALUES ($1, $2, '', $3, $4, $5, $6) RETURNING id`,
+      [repo.id, url, encryptSecret(secret), events, req.auth.user.uid, Date.now()],
     );
     res.status(201).json({ identifier: String(rows[0].id), url, events, secret, active: true });
   });
@@ -93,11 +119,17 @@ export function webhookRoutes(pool, authenticate) {
   });
 
   // GET /repos/{space}/{repo}/+/webhooks/{id}/deliveries
+  // Requires read access — delivery history reveals webhook endpoints and
+  // whether they are reachable.
   api.get('/repos/:space/:repo/\\+/webhooks/:id/deliveries', auth, async (req, res) => {
     const repo = await loadRepo(req, res);
     if (!repo) return;
+    if (!(await canRead(pool, repo, req.auth.user))) {
+      res.status(404).json({ message: 'Repository not found' });
+      return;
+    }
     const { rows } = await pool.query(
-      `SELECT d.id, d.event_type, d.status_code, d.ok, d.attempts, d.created, d.delivered
+      `SELECT d.id, d.event_type, d.status_code, d.ok, d.attempts, d.created, d.delivered, d.error
        FROM webhook_deliveries d
        JOIN repo_webhooks w ON w.id = d.webhook_id
        WHERE w.repo_id = $1 AND w.id = $2
@@ -112,6 +144,7 @@ export function webhookRoutes(pool, authenticate) {
       attempts: r.attempts,
       created: Number(r.created),
       delivered: r.delivered == null ? null : Number(r.delivered),
+      error: r.error || null,
     })));
   });
 

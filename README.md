@@ -21,24 +21,61 @@ Plugins are gated twice: the operator enables a plugin for the instance, and eac
 
 ## Quick start
 
+**Existing installation?** Follow [the security upgrade guide](docs/security-upgrade.md)
+before changing secrets or rebuilding. It covers legacy credential conversion,
+PostgreSQL password rotation, container migration, proxy trust, and rollback.
+
 ```bash
 git clone https://github.com/Akicou/Nixre.git
 cd Nixre
+cp .env.example .env
+# Generate the two required secrets and paste them into .env:
+#   openssl rand -hex 32     -> NIXRE_INTERNAL_TOKEN
+#   openssl rand -hex 32     -> NIXRE_AI_SECRET
+#   (also set POSTGRES_PASSWORD)
+# Then, to let people sign up, set NIXRE_REGISTRATION_CLOSED=false
+#   (it defaults to closed, so a fresh instance never opens by accident)
+
 docker compose up -d
 ```
 
+Compose refuses to start without `.env`: `NIXRE_INTERNAL_TOKEN`, `NIXRE_AI_SECRET`
+and `POSTGRES_PASSWORD` are all required, and core additionally refuses to boot
+on a known published default for the first two. That is deliberate —
+`/api/v1/internal/*` is reachable through the `/api/*` route, so a default token
+is a live credential rather than a convenience.
+
 Open `http://localhost:3000` and register. The first account becomes the instance admin.
+
+> Registration is **closed by default**. Set `NIXRE_REGISTRATION_CLOSED=false`
+> before the first boot (or flip it later from the admin console) to allow signups.
 
 ### The stack
 
 | Service | What it is |
 | --- | --- |
+| `nixre-agent-sandbox` | Build-only: produces the `nixre-agent-sandbox` image the assistant's `run_command` uses. Exits immediately (`entrypoint: true`), so it is not "running". |
 | `nixre-web` | Caddy: TLS entrypoint, reverse-proxies `/api/*` and `/git/*` to core, serves the static SPA |
 | `nixre-core` | The backend: REST API, auth, git Smart HTTP (via `git http-backend`), PR merges, webhook delivery |
 | `nixre-ssh` | SSH git transport: sshd with core-resolved keys (AuthorizedKeysCommand), each session locked to a per-key git-shell wrapper |
 | `nixre-db` | PostgreSQL: users, sessions, tokens, spaces, repos, pull requests, webhooks, plugin prefs, chats, passkeys |
 
+`nixre-tunnel` (cloudflared) is also defined but sits behind the `tunnels` profile — start it with `docker compose --profile tunnels up -d`.
+
 Git objects live as bare repositories on the `./data/repos` volume. Postgres holds metadata only, the same split Gitea and GitLab use.
+
+**Networks.** Postgres is isolated on the internal `nixre-data` network; only `nixre-core` can reach it. Deployed app containers run on `nixre-apps` (with core, which probes and proxies to them) and agent sandboxes on a non-database network — so neither can open a socket to Postgres. This matters because a deployment's Dockerfile is user-supplied code and creating one only requires write access to a space.
+
+**Custom domains are gated on ownership.** Attaching a hostname parks it until TXT proof or admin approval/provisioning. Cloudflare automation requires an admin and refuses conflicting records. `NIXRE_RESERVED_DOMAINS` protects your own hostnames across custom, automatic, and grandfathered routes.
+
+**Proxy identity.** Configure `TRUSTED_PROXY_CIDRS` on core and, for tunnels,
+`NIXRE_TRUSTED_EDGE_CIDRS` on Caddy with controlled peer addresses. Otherwise
+visitors share the proxy's rate-limit bucket. Never trust shared app subnets.
+Private AI/STT origins need explicit `NIXRE_AI_PRIVATE_ORIGINS` approval.
+
+**Runtime compatibility.** Existing deployments retain their capability policy
+on recreation; new services use least-privilege defaults. Admins can explicitly
+migrate old services after image testing. See [runtime options](docs/deployments-runtime.md).
 
 ### Cloning
 

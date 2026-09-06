@@ -1,9 +1,9 @@
 // Agent sandbox — Docker-backed persistent workspace for run_command.
 //
 // One container + named volume per (user, conversation, repo). While the
-// container runs, a single long-lived bash in nixre-core receives commands so
+// container runs, a single long-lived bash inside the sandbox receives commands so
 // cd, env, and installs persist between tool calls. No JSON session files:
-// on wake after idle stop we git-sync tracked files from the bare repo and
+// on wake after idle stop we fetch refs without overwriting local work and
 // spawn a fresh shell at /workspace/repo.
 //
 // Idle (default 15m): docker stop — volume kept. Next activity: docker start,
@@ -11,12 +11,14 @@
 
 import crypto from 'node:crypto';
 import os from 'node:os';
+import path from 'node:path';
 import { access, constants } from 'node:fs/promises';
 import { repoDir, REPOS_ROOT } from '../git/repo.js';
 import { pool } from '../db/pool.js';
 import { newPatSecret, sha256 } from './auth.js';
 import { getDecryptedSecret } from './userSecrets.js';
-import { parseWorkspacePath, workspaceGitDir } from './workspaces.js';
+import { parseWorkspacePath, workspaceGitDir, resolveWorkspace } from './workspaces.js';
+import { spawnedContainerNetwork } from './dockerNetwork.js';
 
 const DOCKER_SOCKET = process.env.DOCKER_HOST?.replace(/^unix:\/\//, '') || '/var/run/docker.sock';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'nixre-agent-sandbox:latest';
@@ -34,6 +36,11 @@ const GITHUB_TOKEN_FILE = '/workspace/.github-token';
 // container is attached to core's docker network so this name resolves.
 const CORE_GIT_URL = process.env.CORE_URL || 'http://nixre-core:3002';
 const MARKER = '__NIXRE_EXIT__';
+const SANDBOX_POLICY_VERSION = '2';
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
 
 // git-credential-store line. URL-scoped `credential.http://host:port.helper`
 // often never matches, so git push hits core with no Basic auth (401).
@@ -45,7 +52,6 @@ export function gitCredentialStoreLine(origin, username, password) {
 }
 
 let docker = null;
-let dockerChecked = false;
 let dockerAvailable = false;
 let sweeperStarted = false;
 
@@ -54,6 +60,20 @@ const shells = new Map();
 
 /** @type {Map<string, number>} */
 const lastActivity = new Map();
+
+const containerLifecycles = new Map();
+
+// Session container names also let the sweeper lock containers with missing
+// labels. Queue rather than share results: every caller must recheck access.
+async function withContainerLifecycle(name, operation) {
+  const pending = (containerLifecycles.get(name) || Promise.resolve()).catch(() => {}).then(operation);
+  containerLifecycles.set(name, pending);
+  try {
+    return await pending;
+  } finally {
+    if (containerLifecycles.get(name) === pending) containerLifecycles.delete(name);
+  }
+}
 
 function sessionKey(userId, conversationId, repoPath) {
   return `${userId}:${conversationId}:${repoPath}`;
@@ -83,7 +103,6 @@ export async function isSandboxEnabled() {
     docker = new Docker({ socketPath: DOCKER_SOCKET });
     await docker.ping();
     dockerAvailable = true;
-    dockerChecked = true;
   } catch {
     docker = null;
     dockerAvailable = false;
@@ -195,43 +214,44 @@ fi
       // Credential helper serves the PAT only to core's endpoint; the push URL
       // and `git remote -v` stay clean (no token in .git/config or transcripts).
       const storeLine = gitCredentialStoreLine(CORE_GIT_URL, uid, token);
-      bareBlock = `BARE=${JSON.stringify(repoDir(ws.space, ws.repo))}`;
+      bareBlock = `BARE=${shellQuote(repoDir(ws.space, ws.repo))}`;
       workSync = `
 if [ ! -d "$WORK/.git" ]; then
   git clone --quiet "$BARE" "$WORK"
 else
-  git -C "$WORK" fetch --quiet "$BARE" '+HEAD:refs/remotes/nixre/upstream' 2>/dev/null || git clone --quiet "$BARE" "$WORK"
-  git -C "$WORK" reset --hard refs/remotes/nixre/upstream 2>/dev/null || git -C "$WORK" reset --hard HEAD
+  if git --git-dir="$BARE" rev-parse --verify HEAD >/dev/null 2>&1; then
+    git -C "$WORK" fetch --quiet "$BARE" '+HEAD:refs/remotes/nixre/upstream'
+  fi
 fi
 `;
       credsSetup = `
-printf 'username=%s\\npassword=%s\\n' ${JSON.stringify(uid)} ${JSON.stringify(token)} > ${CREDS_FILE}
-printf '%s\\n' ${JSON.stringify(storeLine)} > ${GIT_CREDS_STORE}
+printf 'username=%s\\npassword=%s\\n' ${shellQuote(uid)} ${shellQuote(token)} > ${CREDS_FILE}
+printf '%s\\n' ${shellQuote(storeLine)} > ${GIT_CREDS_STORE}
 chmod 600 ${CREDS_FILE} ${GIT_CREDS_STORE}
 git -C "$WORK" config --unset-all credential.helper >/dev/null 2>&1 || true
-git -C "$WORK" config credential.helper ${JSON.stringify(`store --file=${GIT_CREDS_STORE}`)}
+git -C "$WORK" config credential.helper ${shellQuote(`store --file=${GIT_CREDS_STORE}`)}
 git -C "$WORK" config credential.useHttpPath false
-git -C "$WORK" remote set-url --push origin ${JSON.stringify(`${CORE_GIT_URL}/git/${ws.space}/${ws.repo}.git`)}
+git -C "$WORK" remote set-url --push origin ${shellQuote(`${CORE_GIT_URL}/git/${ws.space}/${ws.repo}.git`)}
 `;
     } catch (err) {
-      // DB unavailable — workspace still clones/fetches; push stays disabled.
-      console.warn('sandbox token mint failed, push disabled:', err.message);
+      throw new Error('Sandbox credential setup failed', { cause: err });
     }
   } else if (ws.kind === 'github') {
     // The mirror keeps refs/heads/* mirroring github.com, HEAD pointing at its
     // default branch — the same shape core's own bare repos have.
-    bareBlock = `BARE=${JSON.stringify(workspaceGitDir(ws))}`;
+    bareBlock = `BARE=${shellQuote(workspaceGitDir(ws))}`;
     workSync = `
 if [ ! -d "$WORK/.git" ]; then
   git clone --quiet "$BARE" "$WORK"
 else
-  git -C "$WORK" fetch --quiet "$BARE" '+HEAD:refs/remotes/nixre/upstream' 2>/dev/null || git clone --quiet "$BARE" "$WORK"
-  git -C "$WORK" reset --hard refs/remotes/nixre/upstream 2>/dev/null || git -C "$WORK" reset --hard HEAD
+  if git --git-dir="$BARE" rev-parse --verify HEAD >/dev/null 2>&1; then
+    git -C "$WORK" fetch --quiet "$BARE" '+HEAD:refs/remotes/nixre/upstream'
+  fi
 fi
 `;
     credsSetup = `
 # Pushes bypass core entirely — straight to github.com over https (PAT helper below).
-git -C "$WORK" remote set-url --push origin ${JSON.stringify(`https://github.com/${ws.fullName}.git`)}
+git -C "$WORK" remote set-url --push origin ${shellQuote(`https://github.com/${ws.fullName}.git`)}
 `;
   }
 
@@ -243,10 +263,10 @@ git -C "$WORK" config --unset-all credential.https://github.com.helper >/dev/nul
     const gh = uid ? await getDecryptedSecret(uid, 'github') : null;
     if (gh) {
       githubSetup = `
-printf 'username=%s\\npassword=%s\\n' 'x-access-token' ${JSON.stringify(gh)} > ${GITHUB_CREDS_FILE}
-printf '%s' ${JSON.stringify(gh)} > ${GITHUB_TOKEN_FILE}
+printf 'username=%s\\npassword=%s\\n' 'x-access-token' ${shellQuote(gh)} > ${GITHUB_CREDS_FILE}
+printf '%s' ${shellQuote(gh)} > ${GITHUB_TOKEN_FILE}
 chmod 600 ${GITHUB_CREDS_FILE} ${GITHUB_TOKEN_FILE}
-git -C "$WORK" config credential.https://github.com.helper "!f() { cat ${GITHUB_CREDS_FILE} 2>/dev/null; }; f"
+git -C "$WORK" config credential.https://github.com.helper ${shellQuote(`!f() { cat ${GITHUB_CREDS_FILE} 2>/dev/null; }; f`)}
 `;
     }
   } catch (err) {
@@ -254,13 +274,13 @@ git -C "$WORK" config credential.https://github.com.helper "!f() { cat ${GITHUB_
   }
   const script = `set -eu
 ${bareBlock}
-WORK=${JSON.stringify(WORK_DIR)}
+WORK=${shellQuote(WORK_DIR)}
 # The ro-mounted bare repos are owned by a different uid than the sandbox user.
 git config --global --add safe.directory '*' >/dev/null 2>&1 || true
 mkdir -p "$(dirname "$WORK")"
 ${workSync}
-git -C "$WORK" config user.name ${JSON.stringify(name)}
-git -C "$WORK" config user.email ${JSON.stringify(email)}
+git -C "$WORK" config user.name ${shellQuote(name)}
+git -C "$WORK" config user.email ${shellQuote(email)}
 ${credsSetup}
 ${githubSetup}`;
   const { output, code } = await dockerExec(containerId, ['bash', '-lc', script]);
@@ -271,18 +291,16 @@ ${githubSetup}`;
 
 // The sandbox needs to reach core (git push over smart HTTP). Attach it to the
 // same docker network core runs on; resolved once from core's own container.
-let coreNetworkName;
+// Network selection is shared with deployDrivers so the two call sites can
+// never drift apart (see lib/dockerNetwork.js for why "first network" is not
+// an acceptable answer).
 async function coreNetwork() {
-  if (coreNetworkName !== undefined) return coreNetworkName;
-  coreNetworkName = '';
-  try {
-    const info = await docker.getContainer(os.hostname()).inspect();
-    const names = Object.keys(info.NetworkSettings?.Networks || {});
-    coreNetworkName = names[0] || '';
-  } catch {
-    /* not containerized or docker unreachable — sandbox stays on default bridge */
-  }
-  return coreNetworkName;
+  const net = await spawnedContainerNetwork(docker, {
+    preferred: process.env.SANDBOX_NETWORK,
+    role: 'sandbox',
+  });
+  if (!net) throw new Error('No safe sandbox network configured');
+  return net;
 }
 
 // The sandbox needs /data/repos mounted from the same place core gets it.
@@ -304,87 +322,166 @@ async function reposBindSource() {
   return reposHostPath;
 }
 
-async function createContainer(key, userId, conversationId, repoPath, space, repo, user) {
-  const name = containerName(key);
+/**
+ * The one path the sandbox needs read-only, for a given workspace.
+ *
+ * The whole REPOS_ROOT used to be bind-mounted into every agent container,
+ * which meant `run_command` could read every private repository on the
+ * instance regardless of what the conversation was attached to. Now only the
+ * conversation's own repository (or the GitHub mirror it targets) is exposed.
+ * Unrestricted conversations get no repository at all.
+ */
+function workspaceRepoPath(repoPath) {
+  const ws = parseWorkspacePath(repoPath);
+  if (ws.kind === 'invalid') throw new Error('Invalid sandbox workspace');
+  const dir = workspaceGitDir(ws);
+  if (!dir) return null;
+  const root = path.resolve(REPOS_ROOT);
+  const abs = path.resolve(dir);
+  // Defence in depth: never mount anything outside REPOS_ROOT.
+  if (abs === root || !abs.startsWith(root + path.sep)) throw new Error('Unsafe sandbox repository mount');
+  return path.relative(root, abs);
+}
+
+async function containerPolicy(key, repoPath) {
   const vol = volumeName(key);
-  await ensureVolume(vol);
-  touch(key);
   const net = await coreNetwork();
   const reposSource = await reposBindSource();
+
+  // Only this conversation's repository, read-only.
+  const repoRel = workspaceRepoPath(repoPath);
+  const binds = [`${vol}:/workspace`];
+  if (repoRel) {
+    binds.push(`${path.join(reposSource, repoRel)}:${path.join(REPOS_ROOT, repoRel)}:ro`);
+  }
+  return { vol, net, binds, repoRel, reposSource };
+}
+
+function matchesPolicy(info, policy, userId, conversationId, repoPath) {
+  const labels = info.Config?.Labels || {};
+  const hc = info.HostConfig || {};
+  const mounts = info.Mounts || [];
+  const workspace = mounts.find(m => m.Destination === '/workspace');
+  const networks = Object.keys(info.NetworkSettings?.Networks || {});
+  return labels['nixre.sandbox.policy'] === SANDBOX_POLICY_VERSION &&
+    labels['nixre.user'] === userId && labels['nixre.conversation'] === conversationId &&
+    labels['nixre.repo'] === repoPath && info.Config?.Image === SANDBOX_IMAGE &&
+    !hc.Privileged && !hc.CapAdd?.length && hc.CapDrop?.includes('ALL') &&
+    hc.SecurityOpt?.length === 1 && hc.SecurityOpt[0] === 'no-new-privileges:true' &&
+    hc.Init === true && hc.PidsLimit === Number(process.env.SANDBOX_PIDS_LIMIT || 512) &&
+    hc.Memory === Number(process.env.SANDBOX_MEMORY_BYTES || 2 * 1024 * 1024 * 1024) &&
+    hc.NanoCpus === Number(process.env.SANDBOX_NANO_CPUS || 2 * 1e9) &&
+    !hc.PidMode && !hc.IpcMode?.startsWith('host') && !hc.IpcMode?.startsWith('container:') &&
+    !hc.UTSMode && !hc.UsernsMode && hc.CgroupnsMode !== 'host' &&
+    !hc.Devices?.length && !hc.DeviceRequests?.length && !hc.DeviceCgroupRules?.length && !hc.VolumesFrom?.length &&
+    hc.NetworkMode === policy.net && networks.length === 1 && networks[0] === policy.net &&
+    hc.Binds?.length === policy.binds.length && policy.binds.every(b => hc.Binds.includes(b)) &&
+    mounts.length === policy.binds.length && workspace?.Type === 'volume' &&
+    workspace.Name === policy.vol && workspace.RW === true &&
+    (!policy.repoRel || mounts.some(m => m.Type === 'bind' && m.RW === false &&
+      m.Source === path.join(policy.reposSource, policy.repoRel) &&
+      m.Destination === path.join(REPOS_ROOT, policy.repoRel)));
+}
+
+async function createContainer(key, userId, conversationId, repoPath, policy) {
+  await ensureVolume(policy.vol);
+
   const container = await docker.createContainer({
-    name,
+    name: containerName(key),
     Image: SANDBOX_IMAGE,
     WorkingDir: '/workspace',
     Labels: {
       'nixre.sandbox': 'true',
+      'nixre.sandbox.policy': SANDBOX_POLICY_VERSION,
       'nixre.user': userId,
       'nixre.conversation': conversationId,
       'nixre.repo': repoPath,
       'nixre.lastActivity': String(Date.now()),
     },
     HostConfig: {
-      Binds: [`${vol}:/workspace`, `${reposSource}:/data/repos:ro`],
+      Binds: policy.binds,
+      NetworkMode: policy.net,
       Memory: Number(process.env.SANDBOX_MEMORY_BYTES || 2 * 1024 * 1024 * 1024),
       NanoCpus: Number(process.env.SANDBOX_NANO_CPUS || 2 * 1e9),
       Init: true,
+      CgroupnsMode: 'private',
+      IpcMode: 'private',
+      // The sandbox is a place to run builds, not a privileged helper. Drop
+      // everything we do not need and block the escalation routes.
+      CapDrop: ['ALL'],
+      SecurityOpt: ['no-new-privileges:true'],
+      PidsLimit: Number(process.env.SANDBOX_PIDS_LIMIT || 512),
     },
-    ...(net ? { NetworkingConfig: { EndpointsConfig: { [net]: {} } } } : {}),
+    NetworkingConfig: { EndpointsConfig: { [policy.net]: {} } },
     Cmd: ['sleep', 'infinity'],
   });
-  await container.start();
-  try {
-    await syncRepo(container.id, repoPath, key, user);
-  } catch (err) {
-    // A half-provisioned container (clone failed) would be reused without a
-    // resync — remove it so the next attempt provisions cleanly.
-    await container.remove({ force: true }).catch(() => {});
-    throw err;
-  }
-  return container.id;
+  return container;
 }
 
-async function ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user) {
-  const name = containerName(key);
-  let container;
-  let created = false;
-  let resumed = false;
-
-  try {
-    container = docker.getContainer(name);
-    await container.inspect();
-  } catch {
-    container = null;
+async function ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user, createIfMissing = true) {
+  if (!userId || !conversationId || !repoPath || (user?.uid && user.uid !== userId)) {
+    throw new Error('Sandbox requires an authenticated conversation and matching user');
   }
-
-  if (!container) {
+  const name = containerName(key);
+  return withContainerLifecycle(name, async () => {
+    let policy;
     try {
-      const id = await createContainer(key, userId, conversationId, repoPath, space, repo, user);
-      container = docker.getContainer(id);
-      created = true;
+      // Pass only uid so persisted admin/blocked flags never bypass a fresh check.
+      await resolveWorkspace(pool, { uid: userId }, repoPath);
+      policy = await containerPolicy(key, repoPath);
     } catch (err) {
-      if (err.statusCode === 409) {
-        container = docker.getContainer(name);
-      } else {
+      closeShell(key);
+      await stopContainerByName(name);
+      await pool.query('DELETE FROM tokens WHERE id = $1', [`agent-sbx-${hashId(key)}`]).catch(() => {});
+      throw err;
+    }
+    let container;
+    let info;
+
+    try {
+      container = docker.getContainer(name);
+      info = await container.inspect();
+    } catch (err) {
+      if (err.statusCode !== 404) throw err;
+      if (!createIfMissing) return null;
+      container = null;
+    }
+
+    if (container && !matchesPolicy(info, policy, userId, conversationId, repoPath)) {
+      closeShell(key);
+      if (info.State.Running || info.State.Status === 'running') await container.stop({ t: 5 });
+      const workspace = info.Mounts?.find(m => m.Destination === '/workspace');
+      if (workspace?.Type !== 'volume' || workspace.Name !== policy.vol) {
+        throw new Error('Sandbox workspace volume does not match; container stopped for manual recovery (data retained)');
+      }
+      // Never remove volumes. The replacement uses the existing workspace as-is.
+      await container.remove({ force: true });
+      container = null;
+    }
+    if (!container) {
+      container = await createContainer(key, userId, conversationId, repoPath, policy);
+      info = await container.inspect();
+    }
+
+    if (!matchesPolicy(info, policy, userId, conversationId, repoPath)) {
+      closeShell(key);
+      await stopContainerByName(name);
+      throw new Error('Sandbox container does not meet security policy');
+    }
+    if (info.State.Status !== 'running') {
+      await container.start();
+      closeShell(key);
+      try {
+        await syncRepo(info.Id, repoPath, key, { ...user, uid: userId });
+      } catch (err) {
+        await stopContainerByName(name);
         throw err;
       }
     }
-  }
 
-  let info = await container.inspect();
-  if (info.State.Status !== 'running') {
-    await container.start();
-    info = await container.inspect();
-    resumed = true;
-    closeShell(key);
-  }
-
-  if (created || resumed) {
-    await syncRepo(info.Id, repoPath, key, user);
-    closeShell(key);
-  }
-
-  touch(key);
-  return info.Id;
+    touch(key);
+    return info.Id;
+  });
 }
 
 async function spawnShell(key, containerId) {
@@ -537,16 +634,7 @@ export async function touchSandbox({ userId, conversationId, repoPath, space, re
   if (!(await isSandboxEnabled())) return;
   if (!userId || !conversationId || !repoPath) return;
   const key = sessionKey(userId, conversationId, repoPath);
-  touch(key);
-  try {
-    const container = docker.getContainer(containerName(key));
-    const info = await container.inspect();
-    if (info.State.Status !== 'running') {
-      await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user);
-    }
-  } catch {
-    /* no container yet — created on first run_command */
-  }
+  await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user, false);
 }
 
 export async function runCommandInSandbox({ userId, conversationId, repoPath, space, repo, user, command }) {
@@ -585,7 +673,7 @@ export async function writeFileInSandbox({
   // core process). A dedicated exec also cannot collide with a busy
   // run_command shell.
   const b64 = Buffer.from(String(content ?? ''), 'utf8').toString('base64');
-  const script = `set -eu\nmkdir -p ${JSON.stringify(parent)}\nbase64 -d > ${JSON.stringify(target)}\n`;
+  const script = `set -eu\nmkdir -p ${shellQuote(parent)}\nbase64 -d > ${shellQuote(target)}\n`;
   const { output, code } = await dockerExec(containerId, ['bash', '-lc', script], { stdin: b64 });
   if (code !== 0) {
     throw new Error(output || `write_file failed (exit ${code})`);
@@ -647,7 +735,7 @@ export async function writeAttachmentFiles({
   // .nixre/ is local scratch (attachments, screenshots) — hide it from git
   // status without touching the repo's .gitignore.
   try {
-    const setup = `mkdir -p ${JSON.stringify(dir)} && grep -qxF '.nixre/' ${JSON.stringify(exclude)} 2>/dev/null || echo '.nixre/' >> ${JSON.stringify(exclude)}`;
+    const setup = `mkdir -p ${shellQuote(dir)} && { grep -qxF '.nixre/' ${shellQuote(exclude)} 2>/dev/null || echo '.nixre/' >> ${shellQuote(exclude)}; }`;
     const { code, output } = await dockerExec(containerId, ['bash', '-lc', setup]);
     if (code !== 0) throw new Error(output || `exclude setup failed (exit ${code})`);
   } catch (err) {
@@ -667,7 +755,7 @@ export async function writeAttachmentFiles({
       const rel = `${ATTACHMENTS_ROOT}/${group}/${stem}${n > 1 ? `-${n}` : ''}${ext}`;
       const target = `${WORK_DIR}/${rel}`;
       const b64 = Buffer.from(f.data).toString('base64');
-      const script = `base64 -d > ${JSON.stringify(target)}`;
+      const script = `base64 -d > ${shellQuote(target)}`;
       const { code, output } = await dockerExec(containerId, ['bash', '-lc', script], { stdin: b64 });
       if (code !== 0) throw new Error(output || `write failed (exit ${code})`);
       written.push({ name: f.name || rel, path: rel });
@@ -699,14 +787,8 @@ export async function readFileInSandbox({
   const key = sessionKey(userId, conversationId, repoPath);
   let containerId = null;
   try {
-    const info = await docker.getContainer(containerName(key)).inspect();
-    if (info.State.Status === 'running') {
-      containerId = info.Id;
-    } else {
-      // Wake it. The resync's reset --hard only touches tracked files —
-      // untracked files (screenshots) survive.
-      containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user);
-    }
+    containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user, false);
+    if (!containerId) return null;
   } catch {
     return null; // no sandbox provisioned for this conversation
   }
@@ -714,7 +796,7 @@ export async function readFileInSandbox({
   const target = `${WORK_DIR}/${rel}`;
   const b64Cap = Math.ceil((((maxBytes ?? 2 * 1024 * 1024) + 1) * 4) / 3) + 4;
   try {
-    const { output, code } = await dockerExec(containerId, ['bash', '-lc', `base64 ${JSON.stringify(target)} | head -c ${b64Cap}`]);
+    const { output, code } = await dockerExec(containerId, ['bash', '-lc', `base64 ${shellQuote(target)} | head -c ${b64Cap}`]);
     if (code !== 0) return null;
     return Buffer.from(String(output).replace(/\s+/g, ''), 'base64');
   } catch {
@@ -729,8 +811,10 @@ async function stopContainerByName(name) {
     if (info.State.Status === 'running') {
       await container.stop({ t: 5 });
     }
-  } catch {
-    /* already gone */
+  } catch (err) {
+    if (err.statusCode !== 404 && err.statusCode !== 304) {
+      console.error(`Failed to stop sandbox ${name}:`, err.message);
+    }
   }
 }
 
@@ -744,41 +828,68 @@ async function removeVolumeByName(name) {
 
 export function startSandboxSweeper() {
   if (!dockerAvailable) return;
-  setInterval(async () => {
+  const sweep = async () => {
     try {
       const listed = await docker.listContainers({
         all: true,
         filters: { label: ['nixre.sandbox=true'] },
       });
-      const now = Date.now();
       for (const row of listed) {
         const name = row.Names?.[0]?.replace(/^\//, '') || '';
-        const labels = row.Labels || {};
-        const keyGuess =
-          labels['nixre.user'] && labels['nixre.conversation'] && labels['nixre.repo']
-            ? sessionKey(labels['nixre.user'], labels['nixre.conversation'], labels['nixre.repo'])
-            : null;
-        const labelTime = Number(labels['nixre.lastActivity'] || 0);
-        const memTime = keyGuess ? lastActivity.get(keyGuess) || 0 : 0;
-        const last = Math.max(labelTime, memTime);
-        if (last && now - last > IDLE_MS && row.State === 'running') {
-          if (keyGuess) closeShell(keyGuess);
-          await stopContainerByName(name);
-        }
-        if (last && now - last > VOLUME_TTL_MS && row.State !== 'running') {
-          const vol = row.Mounts?.find(m => m.Destination === '/workspace')?.Name;
-          if (vol) await removeVolumeByName(vol);
+        await withContainerLifecycle(name, async () => {
+          const labels = row.Labels || {};
+          const keyGuess =
+            labels['nixre.user'] && labels['nixre.conversation'] && labels['nixre.repo']
+              ? sessionKey(labels['nixre.user'], labels['nixre.conversation'], labels['nixre.repo'])
+              : null;
+          // Boot/periodic quarantine: never leave an old broad-mount sandbox
+          // running until its owner next sends a command. Recreate on demand.
+          let info;
           try {
-            await docker.getContainer(row.Id).remove({ force: true });
-          } catch {
-            /* ignore */
+            info = await docker.getContainer(row.Id).inspect();
+            const policy = keyGuess && await containerPolicy(keyGuess, labels['nixre.repo']);
+            if (!policy || !matchesPolicy(info, policy, labels['nixre.user'], labels['nixre.conversation'], labels['nixre.repo'])) {
+              if (keyGuess) closeShell(keyGuess);
+              await stopContainerByName(row.Id);
+              return; // security remediation never deletes user data
+            }
+            if (info.State.Status === 'running') {
+              await resolveWorkspace(pool, { uid: labels['nixre.user'] }, labels['nixre.repo']);
+            }
+          } catch (err) {
+            if (!info && err.statusCode === 404) return; // replaced while waiting; never stop its successor
+            if (keyGuess) closeShell(keyGuess);
+            await stopContainerByName(row.Id);
+            if (keyGuess) await pool.query('DELETE FROM tokens WHERE id = $1', [`agent-sbx-${hashId(keyGuess)}`]).catch(() => {});
+            console.error('sandbox policy check:', err.message);
+            return;
           }
-        }
+          const now = Date.now();
+          const labelTime = Number(labels['nixre.lastActivity'] || 0);
+          const memTime = keyGuess ? lastActivity.get(keyGuess) || 0 : 0;
+          const last = Math.max(labelTime, memTime);
+          if (last && now - last > IDLE_MS && info.State.Status === 'running') {
+            if (keyGuess) closeShell(keyGuess);
+            await stopContainerByName(row.Id);
+          }
+          if (last && now - last > VOLUME_TTL_MS && info.State.Status !== 'running') {
+            const vol = info.Mounts?.find(m => m.Destination === '/workspace')?.Name;
+            if (vol) await removeVolumeByName(vol);
+            try {
+              await docker.getContainer(row.Id).remove({ force: true });
+            } catch {
+              /* ignore */
+            }
+          }
+        });
       }
     } catch (err) {
       console.error('sandbox sweeper:', err.message);
     }
-  }, SWEEP_MS).unref();
+  };
+  const initialSweep = sweep();
+  setInterval(sweep, SWEEP_MS).unref();
+  return initialSweep;
 }
 
 export async function initSandbox() {
@@ -786,7 +897,7 @@ export async function initSandbox() {
   if (ok) {
     console.log(`Agent sandbox enabled (image=${SANDBOX_IMAGE}, idle=${IDLE_MS / 1000}s)`);
   } else {
-    console.log('Agent sandbox not reachable yet — run_command falls back until Docker responds');
+    console.log('Agent sandbox not reachable yet; run_command is disabled until Docker responds');
   }
   return ok;
 }

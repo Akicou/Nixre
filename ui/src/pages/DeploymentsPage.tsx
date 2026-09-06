@@ -610,13 +610,16 @@ const HttpLogsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
 // Domains panel
 // ---------------------------------------------------------------------------
 
-const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
+// Exported for tests: the ownership gate is security-relevant UI and needs
+// direct coverage (see src/test/domainVerify.spec.tsx).
+export const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
   const [domains, setDomains] = useState<DomainEntry[]>([]);
   const [draft, setDraft] = useState('');
   const [kind, setKind] = useState<'caddy' | 'tunnel'>('caddy');
   const [err, setErr] = useState('');
   const [pendingConfirm, setPendingConfirm] = useState<{ domain: string; kind: string; message: string } | null>(null);
+  const [verifyingId, setVerifyingId] = useState<number | null>(null);
 
   const load = useCallback(() => {
     api.listDomains(space!, repoUid!, service.id).then(setDomains).catch(() => {});
@@ -660,6 +663,25 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
       load();
     } catch (e) {
       setErr((e as Error).message);
+    }
+  };
+
+  // Attaching a hostname is not proof that you control it, so a new domain is
+  // parked: the proxy will not route it until ownership is proven. This is the
+  // action that un-parks it.
+  const verify = async (d: DomainEntry, force = false) => {
+    setErr('');
+    setVerifyingId(d.id);
+    try {
+      const res = await api.verifyDomain(space!, repoUid!, service.id, d.id, force);
+      if (!res?.verified) {
+        setErr(res?.message || 'Verification failed — check the TXT record and try again.');
+      }
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setVerifyingId(null);
     }
   };
 
@@ -722,8 +744,43 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
       {domains.map(d => {
         const dns = d.dns || { auto: false, status: 'manual' as const };
         const autoCreated = dns.auto && dns.status === 'created';
+        const verification = d.verification;
+        const challenge = verification?.record;
         return (
         <div key={d.id} className="border border-border-subtle rounded-lg p-4 space-y-3" data-testid="domain-card">
+          {d.verified === false && challenge && (
+            <div
+              className="border border-amber-400/40 bg-amber-400/[0.06] rounded-lg p-3 space-y-2"
+              data-testid="domain-verify-panel"
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-amber-300">Prove you own {d.domain}</p>
+                  <p className="text-[11px] text-txt-secondary mt-1 leading-relaxed">
+                    {verification?.note ||
+                      'Publish this DNS record, then choose Verify ownership. The domain is not routed until it checks out — attaching a hostname is not proof that you control it.'}
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-wide font-mono text-txt-tertiary w-12">Type</span>
+                  <code className="font-mono text-[11px] text-txt-primary">{challenge.type}</code>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-wide font-mono text-txt-tertiary w-12">Name</span>
+                  <code className="font-mono text-[11px] text-txt-primary">{challenge.name}</code>
+                  <CopyButton text={challenge.name} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-wide font-mono text-txt-tertiary w-12">Value</span>
+                  <code className="font-mono text-[11px] text-txt-primary break-all">{challenge.value}</code>
+                  <CopyButton text={challenge.value} />
+                </div>
+              </div>
+            </div>
+          )}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 flex-wrap">
               <Globe className="w-4 h-4 text-brand" />
@@ -753,6 +810,23 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
                   <AlertTriangle className="w-3 h-3" /> TLS likely broken
                 </span>
               )}
+              {d.verified === false && (
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 border border-amber-400/30 bg-amber-400/10 rounded px-1.5 py-0.5"
+                  data-testid="domain-unverified-badge"
+                  title="Attached but not routed yet — prove ownership to start serving traffic on this hostname."
+                >
+                  <AlertTriangle className="w-3 h-3" /> Not verified — not routed
+                </span>
+              )}
+              {d.verified === true && (
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] font-medium text-green-500 border border-green-500/30 bg-green-500/10 rounded px-1.5 py-0.5"
+                  data-testid="domain-verified-badge"
+                >
+                  <Check className="w-3 h-3" /> Ownership verified
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-1.5">
               {dns.auto && (dns.status === 'failed' || dns.status === 'pending') && (
@@ -761,6 +835,17 @@ const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) => {
                   className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-border-subtle text-txt-secondary hover:text-txt-primary hover:border-txt-tertiary"
                 >
                   <RotateCcw className="w-3 h-3" /> Retry DNS
+                </button>
+              )}
+              {d.verified === false && (
+                <button
+                  onClick={() => verify(d)}
+                  disabled={verifyingId === d.id}
+                  data-testid="domain-verify"
+                  className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-brand/40 text-brand hover:bg-brand/10 disabled:opacity-40"
+                >
+                  <Check className="w-3 h-3" />
+                  {verifyingId === d.id ? 'Checking DNS…' : 'Verify ownership'}
                 </button>
               )}
               <button
@@ -1343,19 +1428,9 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
     }
   };
 
-  const reveal = async (key: string) => {
-    if (revealed[key]) {
-      setRevealed(r => ({ ...r, [key]: false }));
-      return;
-    }
-    try {
-      const out = await api.revealEnvVar(space!, repoUid!, service.id, key);
-      setValues(v => ({ ...v, [key]: out.value }));
-      setRevealed(r => ({ ...r, [key]: true }));
-    } catch {
-      /* permission */
-    }
-  };
+  // NOTE: a `reveal(key)` helper used to live here, but nothing called it —
+  // the row and .env editors both call api.revealEnvVar inline so they can
+  // handle their own loading/error state. Removed rather than left as a trap.
 
   const saveAll = async () => {
     // Build the explicit var set: anything the user touched in rows mode or

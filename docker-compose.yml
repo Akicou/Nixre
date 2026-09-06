@@ -1,3 +1,24 @@
+# Networks
+# --------
+# Three networks, so that user-supplied code is never next to the database.
+#
+# `nixre-data` carries database traffic only. nixre-db is attached to it
+# ALONE.
+#
+# `nixre-apps` carries deployed app containers. Creating a deployment only
+# needs write access to a space, and the Dockerfile is user-supplied code, so
+# these containers must not be able to open a socket to Postgres. nixre-core
+# is on it too (it health-probes containers and proxies to them by IP).
+#
+# Keep the legacy <project>_default identity for core, ssh, web and sandboxes.
+networks:
+  default: {}
+  nixre-data:
+    name: ${NIXRE_DATA_NETWORK:-${COMPOSE_PROJECT_NAME}_nixre-data}
+    internal: true
+  nixre-apps:
+    name: ${NIXRE_APPS_NETWORK:-nixre-apps}
+
 services:
   nixre-agent-sandbox:
     build: ./backend/agent-sandbox
@@ -9,14 +30,19 @@ services:
     image: postgres:16-alpine
     container_name: nixre-db
     restart: always
+    # No published port by design: Postgres is reachable only on nixre-data.
     environment:
-      POSTGRES_USER: nixre
-      POSTGRES_PASSWORD: nixre
-      POSTGRES_DB: nixre
+      POSTGRES_USER: ${POSTGRES_USER:-nixre}
+      # Required. The old hard-coded `nixre` password meant any process that
+      # reached the network (including an agent sandbox) owned the database.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-nixre}
     volumes:
       - ./data/pg:/var/lib/postgresql/data
+    networks:
+      - nixre-data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nixre"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nixre}"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -26,16 +52,37 @@ services:
     container_name: nixre-core
     restart: always
     environment:
-      DATABASE_URL: postgres://nixre:nixre@nixre-db:5432/nixre
+      PGHOST: nixre-db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-nixre}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      PGDATABASE: ${POSTGRES_DB:-nixre}
       REPOS_ROOT: /data/repos
-      INTERNAL_TOKEN: ${NIXRE_INTERNAL_TOKEN:-dev-internal-token-change-me}
-      AI_SECRET: ${NIXRE_AI_SECRET:-dev-ai-secret-change-me}
+      # Required, with no fallback. These used to default to
+      # `dev-internal-token-change-me` / `dev-ai-secret-change-me` — values
+      # printed in this public repository — while /api/v1/internal/* is
+      # reachable from the internet through the /api/* Caddy route. Core now
+      # refuses to boot on a known default (see assertRequiredSecrets).
+      INTERNAL_TOKEN: ${NIXRE_INTERNAL_TOKEN:?NIXRE_INTERNAL_TOKEN must be set in .env (openssl rand -hex 32)}
+      AI_SECRET: ${NIXRE_AI_SECRET:?NIXRE_AI_SECRET must be set in .env (openssl rand -hex 32)}
+      AI_SECRET_LEGACY: ${NIXRE_AI_SECRET_LEGACY:-}
+      NIXRE_SECRET_SALT_LEGACY: ${NIXRE_SECRET_SALT_LEGACY:-}
+      ALLOW_LEGACY_DEFAULT_SECRET_RECOVERY: ${ALLOW_LEGACY_DEFAULT_SECRET_RECOVERY:-}
+      # Salt rotation requires the old key/salt during verified migration;
+      # see docs/security-upgrade.md before changing these settings.
+      NIXRE_SECRET_SALT: ${NIXRE_SECRET_SALT:-nixre.instance.secret.v1}
       SANDBOX_IMAGE: nixre-agent-sandbox:latest
       SANDBOX_IDLE_MS: ${SANDBOX_IDLE_MS:-900000}
+      SANDBOX_MEMORY_BYTES: ${SANDBOX_MEMORY_BYTES:-2147483648}
+      SANDBOX_NANO_CPUS: ${SANDBOX_NANO_CPUS:-2000000000}
+      SANDBOX_NETWORK: ${SANDBOX_NETWORK:-${COMPOSE_PROJECT_NAME}_default}
       DOCKER_GID: ${DOCKER_GID:-}
       # Server-side signup kill switch: "true" makes POST /api/v1/register
       # return 403. Toggle via .env + `docker compose up -d nixre-core`.
-      NIXRE_REGISTRATION_CLOSED: ${NIXRE_REGISTRATION_CLOSED:-false}
+      # Empty when unset on purpose: core treats an unset value as CLOSED
+      # (see instanceSettings.js), so a fresh instance never opens signups by
+      # accident. Set NIXRE_REGISTRATION_CLOSED=false in .env to open them.
+      NIXRE_REGISTRATION_CLOSED: ${NIXRE_REGISTRATION_CLOSED:-}
       # --- Deployments -------------------------------------------------
       # Central reverse proxy for deployed apps. Public traffic path:
       #   your edge (host Caddy / Cloudflare Tunnel) -> this port -> container.
@@ -57,8 +104,32 @@ services:
       # on the zones users attach domains from.
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
       CLOUDFLARE_TUNNEL_ID: ${CLOUDFLARE_TUNNEL_ID:-}
+      # --- Deploy domain policy -----------------------------------------
+      # Comma-separated hostnames a deployment may never claim (the forge's
+      # own names). Custom domains are matched before every other routing
+      # rule, so without this a space member could hijack the panel itself.
+      NIXRE_RESERVED_DOMAINS: ${NIXRE_RESERVED_DOMAINS:-}
+      # --- Edge trust ----------------------------------------------------
+      # Only the controlled Caddy peer addresses, never an app/sandbox subnet.
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+      # --- Container network attachment ------------------------------------
+      # Deployed app containers join this network (never nixre-data).
+      NIXRE_APPS_NETWORK: ${NIXRE_APPS_NETWORK:-nixre-apps}
+      # Name of the internal database network, excluded from attachment.
+      NIXRE_DATA_NETWORK: ${NIXRE_DATA_NETWORK:-${COMPOSE_PROJECT_NAME}_nixre-data}
+      # --- Sandbox hardening ---------------------------------------------
+      SANDBOX_PIDS_LIMIT: ${SANDBOX_PIDS_LIMIT:-512}
+      DEPLOY_PIDS_LIMIT: ${DEPLOY_PIDS_LIMIT:-512}
+      DEPLOY_MAX_SERVICES_PER_REPO: ${DEPLOY_MAX_SERVICES_PER_REPO:-20}
+      NIXRE_VERIFY_RESOLVERS: ${NIXRE_VERIFY_RESOLVERS:-1.1.1.1,8.8.8.8,9.9.9.9}
+      BLOCKED_PEER_NAMES: ${BLOCKED_PEER_NAMES:-nixre-core,nixre-db,nixre-ssh,nixre-web,nixre-tunnel}
+      NIXRE_AI_PRIVATE_ORIGINS: ${NIXRE_AI_PRIVATE_ORIGINS:-}
     group_add:
       - ${DOCKER_GID:-999}
+    networks:
+      - default
+      - nixre-data
+      - nixre-apps
     volumes:
       # :z so Fedora/SELinux allows the container to write the bind mount.
       - ./data/repos:/data/repos:z
@@ -81,13 +152,17 @@ services:
     restart: always
     environment:
       CORE_URL: http://nixre-core:3002
-      INTERNAL_TOKEN: ${NIXRE_INTERNAL_TOKEN:-dev-internal-token-change-me}
+      INTERNAL_TOKEN: ${NIXRE_INTERNAL_TOKEN:?NIXRE_INTERNAL_TOKEN must be set in .env}
       REPOS_ROOT: /data/repos
     volumes:
       - ./data/repos:/data/repos:z
       - ./data/ssh-keys:/etc/ssh/keys:z
     ports:
       - "3022:3022"
+    # Deliberately NOT on nixre-data: the ssh container has no reason to reach
+    # Postgres, so a compromise there should not land on the database.
+    networks:
+      - default
     depends_on:
       - nixre-core
 
@@ -95,11 +170,15 @@ services:
     image: caddy:2-alpine
     container_name: nixre-web
     restart: always
+    environment:
+      NIXRE_TRUSTED_EDGE_CIDRS: ${NIXRE_TRUSTED_EDGE_CIDRS:-}
     ports:
       - "3000:3000"
     volumes:
       - ./ui/dist:/usr/share/caddy
       - ./Caddyfile:/etc/caddy/Caddyfile
+    networks:
+      - default
     depends_on:
       - nixre-core
 

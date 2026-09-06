@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# AGENTS.md requires "build the UI, run the tests, commit ui/dist" before every
+# push. Nothing enforced it, so a broken or stale build reached main. This
+# workflow is that enforcement.
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nixre_test
+          POSTGRES_PASSWORD: disposable-ci-password
+          POSTGRES_DB: nixre_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nixre_test -d nixre_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NIXRE_TEST_DATABASE_URL: postgres://nixre_test:disposable-ci-password@127.0.0.1:5432/nixre_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        working-directory: backend
+        # `npm ci` so CI runs exactly the locked tree (the Dockerfile does too).
+        run: npm ci
+
+      - name: Test
+        working-directory: backend
+        run: npm test
+
+      - name: Validate Compose and production Caddy configuration
+        run: |
+          docker compose --env-file .env.example -p nixre-ci config --quiet
+          docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker run --rm -e NIXRE_TRUSTED_EDGE_CIDRS="127.0.0.1/32 ::1/128" -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  docker-upgrade:
+    name: Isolated Docker upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build and verify the real stack in a disposable daemon
+        run: |
+          mkdir -p "$RUNNER_TEMP/nixre-docker-check"
+          node scripts/test-docker-upgrade.mjs --run --socket-gid 1000 --temp-root "$RUNNER_TEMP/nixre-docker-check"
+
+      - name: Preserve isolated test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-upgrade-diagnostics
+          path: |
+            ${{ runner.temp }}/nixre-docker-check/**/*.log
+            ${{ runner.temp }}/nixre-docker-check/**/report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ui:
+    name: UI tests + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install
+        working-directory: ui
+        run: npm ci
+
+      - name: Test
+        working-directory: ui
+        run: npx vitest run
+
+      - name: Build
+        working-directory: ui
+        run: npm run build
+
+      # ui/dist is what Caddy serves, so it is committed. If a source change
+      # landed without a rebuild, the built output no longer matches — fail
+      # here rather than shipping a stale SPA.
+      - name: Verify ui/dist is in sync with ui/src
+        working-directory: ui
+        run: |
+          npm run build
+          if [ -n "$(git status --porcelain dist)" ]; then
+            echo "::error::ui/dist is out of date. Run 'cd ui && npm run build' and commit the result."
+            git --no-pager diff --stat dist
+            exit 1
+          fi
+          echo "ui/dist is up to date."
+
+  # Cheap guardrails for the rules that are easiest to break by accident.
+  hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: llms.txt copies are in sync
+        # ui/public/llms.txt is copied into ui/dist and served at /llms.txt, so
+        # it IS the public-facing agent documentation. It had drifted badly
+        # (missing the whole Deployments section, and claiming there was no
+        # server-side registration flag). AGENTS.md requires these stay in sync.
+        run: |
+          if ! diff -q <(sed 's/\r$//' llms.txt) <(sed 's/\r$//' ui/public/llms.txt) >/dev/null; then
+            echo "::error::ui/public/llms.txt differs from llms.txt. Copy the root file over it and rebuild ui/dist."
+            diff -u llms.txt ui/public/llms.txt | head -40
+            exit 1
+          fi
+          echo "llms.txt copies are in sync."
+
+      - name: No secrets committed
+        run: |
+          # .env must never be tracked (AGENTS.md rule 5).
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "::error::.env is tracked. Remove it and rotate every secret in it."
+            exit 1
+          fi
+          echo "No .env in the index."
+
+      - name: No stale hostnames
+        # The previous instance hostname no longer resolves; it silently broke
+        # the register/unregister operator scripts once already. This step and
+        # the check itself are the only allowed mentions.
+        run: |
+          STALE=$(git grep -In "nayhein.com" -- . ':!AGENTS.md' ':!.github/workflows/ci.yml' || true)
+          if [ -n "$STALE" ]; then
+            echo "::error::found a stale nayhein.com reference (see AGENTS.md)"
+            echo "$STALE"
+            exit 1
+          fi
+          echo "No stale hostnames."

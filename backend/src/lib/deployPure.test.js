@@ -168,3 +168,67 @@ test('sanitizeServiceName lowercases and slugifies service names', () => {
   assert.equal(sanitizeServiceName('--weird__name--'), 'weird-name');
   assert.equal(sanitizeServiceName('a'.repeat(100)).length <= 40, true);
 });
+
+// --- proxy routing: custom domains -------------------------------------------
+//
+// Regression: buildRoutes used to route every attached custom domain with no
+// ownership check, so any space writer could claim a hostname (including the
+// forge's own) and the proxy — which matches custom domains first — would serve
+// their container from it.
+
+import { buildRoutes } from './deployProxy.js';
+
+test('buildRoutes skips unverified custom domains', () => {
+  const routes = buildRoutes(
+    [
+      { domain: 'verified.example.com', service_id: 1, verified: true },
+      { domain: 'parked.example.com', service_id: 2, verified: false },
+    ],
+    [],
+    '',
+  );
+  const hosts = routes.map(r => r.host);
+  assert.ok(hosts.includes('verified.example.com'));
+  assert.ok(!hosts.includes('parked.example.com'), 'unverified domains must not be routed');
+});
+
+test('buildRoutes keeps explicitly grandfathered rows but fails closed on missing verification', () => {
+  const routes = buildRoutes([
+    { domain: 'legacy.example.com', service_id: 1, verified: true },
+    { domain: 'unknown.example.com', service_id: 2 },
+  ], [], '');
+  assert.ok(routes.some(r => r.host === 'legacy.example.com'));
+  assert.ok(!routes.some(r => r.host === 'unknown.example.com'));
+});
+
+test('final route table reserves custom, vanity and deterministic hostnames', t => {
+  const previous = process.env.NIXRE_RESERVED_DOMAINS;
+  process.env.NIXRE_RESERVED_DOMAINS = 'git.example.com,svc-8.example.com';
+  t.after(() => {
+    if (previous === undefined) delete process.env.NIXRE_RESERVED_DOMAINS;
+    else process.env.NIXRE_RESERVED_DOMAINS = previous;
+  });
+  const routes = buildRoutes([
+    { domain: 'git.example.com', service_id: 99, verified: true },
+    { domain: 'svc-7.example.com', service_id: 99, verified: true },
+  ], [{ id: 7, name: 'git' }, { id: 8, name: 'web' }], 'example.com');
+  assert.equal(resolveRoute('git.example.com', routes), null);
+  assert.equal(resolveRoute('svc-8.example.com', routes), null);
+  assert.equal(resolveRoute('svc-7.example.com', routes), 7);
+  assert.equal(resolveRoute('web.example.com', routes), 8);
+});
+
+test('a vanity name cannot shadow another service deterministic address', () => {
+  const routes = buildRoutes([], [{ id: 8, name: 'svc-7' }, { id: 7, name: 'web' }], 'apps.example.com');
+  assert.equal(resolveRoute('svc-7.apps.example.com', routes), 7);
+});
+
+test('resolveRoute still prefers an exact custom domain', () => {
+  const routes = [
+    { host: 'api.example.com', serviceId: 7 },
+    { host: 'svc-7.apps.example.com', serviceId: 7 },
+  ];
+  assert.equal(resolveRoute('API.Example.com', routes), 7, 'host matching is case-insensitive');
+  assert.equal(resolveRoute('svc-7.apps.example.com:443', routes), 7, 'port is stripped');
+  assert.equal(resolveRoute('nope.example.com', routes), null);
+});

@@ -288,7 +288,9 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
 
   // Workspace resolution can hit the network (first GitHub clone) and fail
   // with a user-facing message — surface it instead of running the turn blind.
-  const ws = await resolveWorkspace(pool, job.userId, job.repoPath);
+  // job.user carries the caller's uid/admin/blocked, which workspace
+  // resolution needs to enforce repository visibility.
+  const ws = await resolveWorkspace(pool, job.user, job.repoPath);
   const info = parseWorkspacePath(job.repoPath);
   const space = info.space;
   const repo = info.repo;
