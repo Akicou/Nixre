@@ -1,0 +1,12 @@
+{
+  "name": "nixre",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Nixre — self-hosted Git forge, AI assistant and deploy platform. Root helper scripts only; the real packages live in backend/ and ui/.",
+  "scripts": {
+    "test": "npm run test:backend && npm run test:ui",
+    "test:backend": "cd backend && node --test \"src/lib/*.test.js\" \"src/test/*.test.js\"",
+    "test:ui": "cd ui && vitest run",
+    "build:ui": "cd ui && npm run build"
+  }
+}

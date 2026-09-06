@@ -30,7 +30,11 @@ import { Markdown, isMarkdownFile } from '../components/Markdown';
 import { Avatar } from '../components/Avatar';
 import { DeploymentsSection } from '../pages/DeploymentsPage';
 export const RepoView: React.FC = () => {
-  const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
+  // useParams values are `string | undefined`; the route only renders with
+  // both segments present, so default them rather than casting away the type.
+  const params = useParams();
+  const space = params.space ?? '';
+  const repoUid = params.repo ?? '';
   const [searchParams, setSearchParams] = useSearchParams();
   const repoPath = `${space}/${repoUid}`;
 

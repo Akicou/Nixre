@@ -2,7 +2,14 @@
 // (flat user JSON, {access_token} on login/register).
 
 import express from 'express';
-import { rowToUser, hashPassword, verifyPassword, newSessionToken } from '../lib/auth.js';
+import {
+  rowToUser,
+  hashPassword,
+  verifyPassword,
+  newSessionToken,
+  newSessionId,
+  sha256,
+} from '../lib/auth.js';
 import {
   newChallenge,
   takeChallenge,
@@ -42,11 +49,25 @@ function publicUser(user) {
 
 async function createSession(pool, uid) {
   const token = newSessionToken();
+  // Only the hash is persisted: `id` is a fresh opaque row key, never the
+  // token. A database read therefore yields no usable credential.
+  const id = newSessionId();
   await pool.query(
-    'INSERT INTO sessions (id, user_uid, created, expires) VALUES ($1, $2, $3, $4)',
-    [token, uid, Date.now(), Date.now() + SESSION_TTL_MS],
+    'INSERT INTO sessions (id, token_hash, user_uid, created, expires) VALUES ($1, $2, $3, $4, $5)',
+    [id, sha256(token), uid, Date.now(), Date.now() + SESSION_TTL_MS],
   );
   return token;
+}
+
+// A real argon2id hash of a value nobody can supply. Verified against when the
+// account does not exist so that "no such user" and "wrong password" take the
+// same time — otherwise response latency enumerates registered accounts.
+let dummyHashPromise = null;
+function dummyHash() {
+  if (!dummyHashPromise) {
+    dummyHashPromise = hashPassword(`nixre-no-such-account-${newSessionToken()}`);
+  }
+  return dummyHashPromise;
 }
 
 export function authRoutes(pool, authenticate) {
@@ -65,9 +86,14 @@ export function authRoutes(pool, authenticate) {
       [identifier],
     );
     const user = rows[0];
-    // Always run a verify to keep timing flat.
-    const ok = user && !user.blocked ? await verifyPassword(user.password_hash, password) : false;
-    if (!ok) {
+    // Always run an argon2 verify, even when the account is unknown or
+    // blocked, so the response time does not reveal which. `user` is only
+    // consulted after the timing-equivalent work is done.
+    const ok = await verifyPassword(
+      user ? user.password_hash : await dummyHash(),
+      password,
+    );
+    if (!ok || !user || user.blocked) {
       res.status(401).json({ message: 'Invalid credentials' });
       return;
     }
@@ -132,12 +158,18 @@ export function authRoutes(pool, authenticate) {
       return;
     }
 
+    // The credential's registered owner (p.user_id) must BE the account it
+    // authenticates (p.user_uid). Without this, a row whose user_uid pointed
+    // at another account would mint a session for that account after a
+    // successful assertion. (sync.js pins user_uid to the caller at
+    // registration time; this is the belt to that braces.)
     const { rows } = await pool.query(
       `SELECT p.*, u.uid AS account_uid, u.email AS account_email, u.display_name AS account_name,
               u.admin AS account_admin, u.blocked AS account_blocked, u.created AS account_created,
               u.updated AS account_updated, u.avatar_data AS account_avatar
        FROM passkeys p JOIN users u ON u.uid = p.user_uid
-       WHERE p.id = $1 AND p.public_key IS NOT NULL AND COALESCE(p.rp_id, '') = $2`,
+       WHERE p.id = $1 AND p.public_key IS NOT NULL AND COALESCE(p.rp_id, '') = $2
+         AND p.user_id = p.user_uid`,
       [credentialId, rpId],
     );
     const cred = rows[0];
@@ -239,37 +271,56 @@ export function authRoutes(pool, authenticate) {
     }
 
     // The first account on a fresh instance becomes admin.
-    const count = await pool.query('SELECT count(*)::int AS n FROM users');
-    const admin = count.rows[0].n === 0;
-
+    //
+    // This used to be a bare `SELECT count(*)` followed by a separate INSERT,
+    // so two simultaneous registrations could both observe zero users and both
+    // be created as admin. The count and the insert now share one
+    // SERIALIZABLE transaction: concurrent signups serialise, and exactly one
+    // of them sees an empty table.
     const now = Date.now();
     const passwordHash = await hashPassword(password);
-    const { rows } = await pool.query(
-      `INSERT INTO users (uid, email, display_name, password_hash, admin, blocked, created, updated)
-       VALUES ($1, $2, $3, $4, $5, FALSE, $6, $6) RETURNING *`,
-      [uid, email, displayName, passwordHash, admin, now],
-    );
-    const token = await createSession(pool, uid);
-
-    // Provision the user's personal namespace (GitHub-style profile owner).
-    // uid === space.uid; repos created here live at /{uid}/{repo}. Idempotent
-    // so a retry after a partial failure never double-creates.
+    const client = await pool.connect();
+    let rows;
+    let token;
     try {
-      await pool.query(
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const count = await client.query('SELECT count(*)::int AS n FROM users');
+      const admin = count.rows[0].n === 0;
+      const inserted = await client.query(
+        `INSERT INTO users (uid, email, display_name, password_hash, admin, blocked, created, updated)
+         VALUES ($1, $2, $3, $4, $5, FALSE, $6, $6) RETURNING *`,
+        [uid, email, displayName, passwordHash, admin, now],
+      );
+      rows = inserted.rows;
+
+      // Provision the user's personal namespace (GitHub-style profile owner).
+      // uid === space.uid; repos created here live at /{uid}/{repo}.
+      await client.query(
         `INSERT INTO spaces (uid, description, is_public, is_personal, created_by, created, updated)
          VALUES ($1, '', TRUE, TRUE, $1, $2, $2)
          ON CONFLICT (uid) DO NOTHING`,
         [uid, now],
       );
-      await pool.query(
+      await client.query(
         `INSERT INTO space_members (space_uid, user_uid, role, created)
          VALUES ($1, $1, 'owner', $2)
          ON CONFLICT (space_uid, user_uid) DO NOTHING`,
         [uid, now],
       );
+      await client.query('COMMIT');
+      token = await createSession(pool, uid);
     } catch (err) {
-      console.error('Failed to provision personal space for', uid, err.message);
+      await client.query('ROLLBACK').catch(() => {});
+      client.release();
+      if (err.code === '23505' || err.code === '40001') {
+        // 23505: uid/email taken between the check and the insert.
+        // 40001: serialization failure — another signup won the race.
+        res.status(409).json({ message: 'Username or email already taken' });
+        return;
+      }
+      throw err;
     }
+    client.release();
 
     res.status(201).json({
       access_token: token,
@@ -304,36 +355,12 @@ export function authRoutes(pool, authenticate) {
     res.json(publicUser(rowToUser(rows[0])));
   });
 
-  // --- WebAuthn login --------------------------------------------------------
-  // The browser performs the ceremony against the vault (passkeys table);
-  // on success the client posts the credential id and we issue a session.
-  // The ceremony signature itself is verified by the authenticator + rp.id
-  // check in the browser flow; this endpoint trusts an authenticated
-  // challenge-exchange (see /webauthn/login-challenge).
-
-  api.post('/webauthn/login', async (req, res) => {
-    const credentialId = String(req.body?.credential_id || '');
-    if (!credentialId) {
-      res.status(400).json({ message: 'credential_id is required' });
-      return;
-    }
-    const { rows } = await pool.query(
-      `SELECT u.* FROM passkeys p JOIN users u ON u.uid = p.user_id
-       WHERE p.id = $1 AND u.blocked = FALSE`,
-      [credentialId],
-    );
-    const user = rows[0];
-    if (!user) {
-      res.status(401).json({ message: 'Unknown passkey' });
-      return;
-    }
-    await pool.query('UPDATE passkeys SET last_used_at = $2 WHERE id = $1', [
-      credentialId,
-      Date.now(),
-    ]);
-    const token = await createSession(pool, user.uid);
-    res.json({ access_token: token, user: publicUser(rowToUser(user)) });
-  });
+  // NOTE: a second `POST /webauthn/login` handler used to be registered here.
+  // It minted a session from a bare `credential_id` with no assertion and no
+  // signature check — an unauthenticated "log me in as anyone" endpoint. It
+  // only ever stayed harmless because the real handler above is registered
+  // first and never calls next(). It is removed rather than reordered: the
+  // verified handler at the top of this router is the only passkey login.
 
   return api;
 }

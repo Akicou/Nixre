@@ -19,6 +19,7 @@ import {
   commitFiles,
 } from '../git/repo.js';
 import { openPrCounts } from './pullreq.js';
+import { canReadRepo, loadReadableRepo } from '../lib/repoAccess.js';
 
 function now() {
   return Date.now();
@@ -99,6 +100,18 @@ async function canAccessSpace(pool, spaceUid, user) {
 
 async function canWriteRepo(pool, spaceUid, user) {
   return canAccessSpace(pool, spaceUid, user);
+}
+
+// Read access for a loaded repo row. Every content/commits/branches read goes
+// through here — the git transport enforced is_public but these endpoints used
+// to check nothing at all.
+async function assertReadable(res, repo, user) {
+  if (!(await canReadRepo(pool, repo, user))) {
+    // 404 rather than 403: a 403 would confirm a private repo exists.
+    res.status(404).json({ message: 'Repository not found' });
+    return false;
+  }
+  return true;
 }
 
 async function ownerCount(pool, spaceUid) {
@@ -715,6 +728,7 @@ export function forgeRoutes(pool, authenticate) {
       res.status(404).json({ message: 'Repository not found' });
       return;
     }
+    if (!(await assertReadable(res, repo, req.auth.user))) return;
     const counts = await openPrCounts(pool, [Number(repo.id)]);
     res.json({
       ...rowToRepo(repo, { openPulls: counts.get(Number(repo.id)) ?? 0 }),
@@ -834,16 +848,29 @@ export function forgeRoutes(pool, authenticate) {
 
   // --- git data ------------------------------------------------------------------
 
+  // Express 5 names its wildcard `splat` and hands it back as an ARRAY of
+  // path segments (Express 4 exposed the whole tail as params[0], a string).
+  // These two endpoints are the only wildcard routes in the codebase.
+  const splatPath = req =>
+    Array.isArray(req.params.splat)
+      ? req.params.splat.join('/')
+      : String(req.params.splat ?? req.params[0] ?? '');
+
   // Content listing: GET /repos/{space}/{repo}/+/content/{path}?git_ref=
-  // (both forms registered: bare /content for the root listing, /* for paths)
+  // (both forms registered: bare /content for the root listing, /*splat for paths)
   const contentHandler = async (req, res) => {
-    const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
-    if (!repo) {
-      res.status(404).json({ message: 'Repository not found' });
+    const { repo, error } = await loadReadableRepo(
+      pool,
+      req.params.space,
+      req.params.repo,
+      req.auth.user,
+    );
+    if (error) {
+      res.status(error.status).json({ message: error.message });
       return;
     }
     const ref = String(req.query.git_ref || repo.default_branch);
-    const dirPath = String(req.params[0] || '');
+    const dirPath = splatPath(req);
     try {
       const entries = await listTree(repo.space_uid, repo.uid, ref, dirPath);
       res.json({
@@ -863,7 +890,7 @@ export function forgeRoutes(pool, authenticate) {
     }
   };
   api.get('/repos/:space/:repo/\\+/content', auth, contentHandler);
-  api.get('/repos/:space/:repo/\\+/content/*', auth, contentHandler);
+  api.get('/repos/:space/:repo/\\+/content/*splat', auth, contentHandler);
 
   // Web UI commit: POST /repos/{space}/{repo}/+/commits
   api.post('/repos/:space/:repo/\\+/commits', auth, async (req, res) => {
@@ -893,17 +920,26 @@ export function forgeRoutes(pool, authenticate) {
   });
 
   // Raw blob: GET /repos/{space}/{repo}/+/raw/{path}?git_ref=
-  api.get('/repos/:space/:repo/\\+/raw/*', auth, async (req, res) => {
-    const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
-    if (!repo) {
-      res.status(404).json({ message: 'Repository not found' });
+  api.get('/repos/:space/:repo/\\+/raw/*splat', auth, async (req, res) => {
+    const { repo, error } = await loadReadableRepo(
+      pool,
+      req.params.space,
+      req.params.repo,
+      req.auth.user,
+    );
+    if (error) {
+      res.status(error.status).json({ message: error.message });
       return;
     }
     const ref = String(req.query.git_ref || repo.default_branch);
-    const filePath = String(req.params[0] || '');
+    const filePath = splatPath(req);
     try {
       const { content, size } = await readBlob(repo.space_uid, repo.uid, ref, filePath);
+      // Served from a user-controlled repo, so it must never be sniffed into
+      // an active content type by the browser.
       res.set('Content-Type', 'application/octet-stream');
+      res.set('X-Content-Type-Options', 'nosniff');
+      res.set('Content-Disposition', 'attachment');
       res.send(content);
       void size;
     } catch {
@@ -913,9 +949,14 @@ export function forgeRoutes(pool, authenticate) {
 
   // Commits: GET /repos/{space}/{repo}/+/commits?git_ref=&path=&page=&limit=
   api.get('/repos/:space/:repo/\\+/commits', auth, async (req, res) => {
-    const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
-    if (!repo) {
-      res.status(404).json({ message: 'Repository not found' });
+    const { repo, error } = await loadReadableRepo(
+      pool,
+      req.params.space,
+      req.params.repo,
+      req.auth.user,
+    );
+    if (error) {
+      res.status(error.status).json({ message: error.message });
       return;
     }
     const ref = String(req.query.git_ref || repo.default_branch);
@@ -933,9 +974,14 @@ export function forgeRoutes(pool, authenticate) {
 
   // Commit detail: GET /repos/{space}/{repo}/+/commits/{sha}
   api.get('/repos/:space/:repo/\\+/commits/:sha', auth, async (req, res) => {
-    const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
-    if (!repo) {
-      res.status(404).json({ message: 'Repository not found' });
+    const { repo, error } = await loadReadableRepo(
+      pool,
+      req.params.space,
+      req.params.repo,
+      req.auth.user,
+    );
+    if (error) {
+      res.status(error.status).json({ message: error.message });
       return;
     }
     try {
@@ -949,9 +995,14 @@ export function forgeRoutes(pool, authenticate) {
 
   // Branches: GET /repos/{space}/{repo}/+/branches
   api.get('/repos/:space/:repo/\\+/branches', auth, async (req, res) => {
-    const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
-    if (!repo) {
-      res.status(404).json({ message: 'Repository not found' });
+    const { repo, error } = await loadReadableRepo(
+      pool,
+      req.params.space,
+      req.params.repo,
+      req.auth.user,
+    );
+    if (error) {
+      res.status(error.status).json({ message: error.message });
       return;
     }
     try {

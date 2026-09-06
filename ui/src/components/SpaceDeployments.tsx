@@ -156,11 +156,24 @@ export const SpaceDeployments: React.FC<{ spaceUid: string }> = ({ spaceUid }) =
                       )}
                       {svc.domains[0]}
                     </p>
-                  ) : (
+                  ) : null}
+                  {/* Attached but unproven domains are parked: say so rather than show a hostname that serves nothing. */}
+                  {svc.unverified_domains?.length ? (
+                    <p
+                      className="text-[10px] text-amber-400 truncate flex items-center gap-1"
+                      data-testid="space-unverified-domains"
+                      title={`Not routed until ownership is proven: ${svc.unverified_domains.join(', ')}`}
+                    >
+                      <AlertTriangle className="w-3 h-3 shrink-0" />
+                      {svc.unverified_domains.length} domain
+                      {svc.unverified_domains.length === 1 ? '' : 's'} awaiting verification
+                    </p>
+                  ) : null}
+                  {!svc.domains?.length ? (
                     <p className="text-[11px] font-mono text-txt-tertiary truncate">
                       {svc.repo_uid} · {svc.branch}
                     </p>
-                  )}
+                  ) : null}
                   <p className={`text-xs flex items-center gap-1.5 ${line.cls}`}>
                     <StatusIcon svc={svc} />
                     {line.text}

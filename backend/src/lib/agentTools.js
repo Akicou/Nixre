@@ -505,10 +505,52 @@ export async function runCommand(space, repo, args, _permissions = {}, context =
   }
 }
 
+/**
+ * Environment handed to `sh -c` for run_command.
+ *
+ * The process environment used to be forwarded wholesale, which handed every
+ * agent shell INTERNAL_TOKEN, AI_SECRET, DATABASE_URL, CLOUDFLARE_API_TOKEN
+ * and the Cloudflare tunnel id — `env | grep TOKEN` was full instance
+ * compromise from a single tool call. Only a small allowlist of build-time
+ * variables is passed now; anything operator-supplied stays out.
+ */
+const SANDBOX_ENV_ALLOWLIST = [
+  'PATH',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+  'TZ',
+  'SHELL',
+  'TMPDIR',
+  // Proxy settings are legitimate build configuration and contain no secret
+  // unless the operator puts credentials in them.
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  // Package registries the agent may need to reach.
+  'NPM_CONFIG_REGISTRY',
+  'PIP_INDEX_URL',
+];
+
+function sandboxEnv(extraEnv = {}) {
+  const env = { CI: '1' };
+  for (const key of SANDBOX_ENV_ALLOWLIST) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  return { ...env, ...extraEnv };
+}
+
 /** Run `command` in `cwd` with a hard timeout and output cap. */
 function runShellCommand(command, cwd, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('sh', ['-c', command], { cwd, env: { ...process.env, CI: '1', ...extraEnv } });
+    const child = spawn('sh', ['-c', command], {
+      cwd,
+      env: sandboxEnv(extraEnv),
+    });
     let out = '';
     let truncated = false;
     const timer = setTimeout(() => {

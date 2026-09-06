@@ -470,20 +470,34 @@ export function createDeploymentEngine({
     const ro = getRuntimeOptions(service);
     const hc = ro?.host_config || null;
 
+    // A deployment's Dockerfile is user-supplied code, and creating one only
+    // requires write access to a space — so the defaults are the locked-down
+    // ones. Every loosening below is either admin-gated (privileged, caps,
+    // devices, binds) or explicitly requested by the service owner.
+    //
+    // Contrast with the agent sandbox, which runs as an interactive shell:
+    // same principle, tighter knobs.
+    const privileged = Boolean(hc?.privileged);
     const hostConfig = {
       Memory: Number(service.memory_bytes),
       NanoCpus: Number(service.cpu_nano_cpus),
       RestartPolicy: { Name: 'unless-stopped' },
       Init: true,
+      // Drop everything by default; cap_add (admin-only) re-adds selectively.
+      CapDrop: hc?.cap_drop?.length ? hc.cap_drop : ['ALL'],
+      // Block setuid/setgid escalation. Omitted for privileged containers,
+      // where it would be meaningless anyway.
+      SecurityOpt: privileged ? undefined : ['no-new-privileges:true'],
+      // Fork-bomb ceiling. Generous for ordinary web apps and build tools.
+      PidsLimit: Number(process.env.DEPLOY_PIDS_LIMIT || 512),
     };
     if (hc) {
       // Values here were validated by normalizeRuntimeOptions at API time;
       // getRuntimeOptions is the defensive re-read. An explicit network_mode
       // (host/none/container:*) replaces the default core-network attachment.
       if (hc.binds.length) hostConfig.Binds = hc.binds;
-      if (hc.privileged) hostConfig.Privileged = true;
+      if (privileged) hostConfig.Privileged = true;
       if (hc.cap_add.length) hostConfig.CapAdd = hc.cap_add;
-      if (hc.cap_drop.length) hostConfig.CapDrop = hc.cap_drop;
       if (hc.devices.length) hostConfig.Devices = hc.devices;
       if (hc.group_add.length) hostConfig.GroupAdd = hc.group_add;
       if (hc.extra_hosts.length) hostConfig.ExtraHosts = hc.extra_hosts;
@@ -491,6 +505,8 @@ export function createDeploymentEngine({
       if (Object.keys(hc.tmpfs).length) hostConfig.Tmpfs = hc.tmpfs;
       if (hc.network_mode) hostConfig.NetworkMode = hc.network_mode;
     }
+    // `undefined` values are not valid in the Docker API payload.
+    if (hostConfig.SecurityOpt === undefined) delete hostConfig.SecurityOpt;
 
     const createOpts = {
       name,

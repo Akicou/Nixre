@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Navbar } from './components/Navbar';
 import { Dashboard } from './pages/Dashboard';
 import { SpaceView } from './pages/SpaceView';
@@ -71,6 +72,11 @@ const AppShell: React.FC<{
       <Navbar currentUser={currentUser} onLogout={onLogout} />
 
       <main className={immersive ? 'flex-1 min-h-0 min-w-0 overflow-hidden' : 'flex-1 min-w-0 overflow-x-clip'}>
+        {/* Without a boundary a single render error anywhere below unmounts the
+            whole tree and leaves a blank page. Keyed by pathname so navigating
+            away from a broken view resets the boundary instead of staying
+            stuck on the error card. */}
+        <ErrorBoundary key={location.pathname}>
         <Routes>
           <Route path="/" element={currentUser ? <Dashboard user={currentUser} /> : <Navigate to="/login" />} />
           <Route path="/new-repo" element={currentUser ? <NewRepo /> : <Navigate to="/login" />} />
@@ -88,6 +94,7 @@ const AppShell: React.FC<{
           <Route path="/:space/:repo" element={<RepoView />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
+        </ErrorBoundary>
       </main>
 
       {!immersive && (

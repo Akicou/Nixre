@@ -34,6 +34,7 @@ import {
   resolveWorkspace,
 } from '../lib/workspaces.js';
 import { getDecryptedSecret } from '../lib/userSecrets.js';
+import { assertPublicUrl } from '../lib/netGuard.js';
 
 const MODEL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const MAX_MSG = 64_000;
@@ -207,6 +208,17 @@ export function aiRoutes(pool, authenticate) {
       res.status(400).json({ message: 'A base URL is required for custom providers' });
       return;
     }
+    // SSRF guard: core fetches this URL on every chat and model request, so it
+    // must resolve to a public address. Without it a user can add a "provider"
+    // pointed at cloud metadata (169.254.169.254) or at core's docker peers and
+    // read the response back through the model list / chat stream.
+    if (baseUrl) {
+      const urlCheck = await assertPublicUrl(baseUrl);
+      if (!urlCheck.ok) {
+        res.status(400).json({ message: `Provider base URL rejected: ${urlCheck.message}` });
+        return;
+      }
+    }
     const apiKey = String(req.body?.apiKey || '').trim();
     if (!apiKey && def.local !== true) {
       res.status(400).json({ message: 'An API key is required' });
@@ -279,6 +291,15 @@ export function aiRoutes(pool, authenticate) {
 
     const label = req.body?.label !== undefined ? String(req.body.label).trim() : row.label;
     const baseUrl = req.body?.baseUrl !== undefined ? String(req.body.baseUrl).trim() || null : row.base_url;
+    // Same guard as creation: a provider's endpoint is attacker-controlled and
+    // core will fetch it.
+    if (req.body?.baseUrl !== undefined && baseUrl) {
+      const urlCheck = await assertPublicUrl(baseUrl);
+      if (!urlCheck.ok) {
+        res.status(400).json({ message: `Provider base URL rejected: ${urlCheck.message}` });
+        return;
+      }
+    }
     const enabledModels = Array.isArray(req.body?.enabledModels)
       ? req.body.enabledModels.filter(m => typeof m === 'string')
       : row.enabled_models;
@@ -555,7 +576,9 @@ export function aiRoutes(pool, authenticate) {
 
     let workspace = null;
     try {
-      workspace = await resolveWorkspace(pool, uid, repoPath);
+      // Passes the caller (not just the uid) so workspace resolution can
+      // enforce repository visibility — see lib/workspaces.js.
+      workspace = await resolveWorkspace(pool, req.auth.user, repoPath);
     } catch (err) {
       res.status(err.status || 400).json({ message: err.message });
       return;

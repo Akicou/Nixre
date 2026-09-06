@@ -168,3 +168,43 @@ test('sanitizeServiceName lowercases and slugifies service names', () => {
   assert.equal(sanitizeServiceName('--weird__name--'), 'weird-name');
   assert.equal(sanitizeServiceName('a'.repeat(100)).length <= 40, true);
 });
+
+// --- proxy routing: custom domains -------------------------------------------
+//
+// Regression: buildRoutes used to route every attached custom domain with no
+// ownership check, so any space writer could claim a hostname (including the
+// forge's own) and the proxy — which matches custom domains first — would serve
+// their container from it.
+
+import { buildRoutes } from './deployProxy.js';
+
+test('buildRoutes skips unverified custom domains', () => {
+  const routes = buildRoutes(
+    [
+      { domain: 'verified.example.com', service_id: 1, verified: true },
+      { domain: 'parked.example.com', service_id: 2, verified: false },
+    ],
+    [],
+    '',
+  );
+  const hosts = routes.map(r => r.host);
+  assert.ok(hosts.includes('verified.example.com'));
+  assert.ok(!hosts.includes('parked.example.com'), 'unverified domains must not be routed');
+});
+
+test('buildRoutes keeps legacy rows that predate the verified column', () => {
+  // Rows written before migration 025 have no `verified` field at all; they are
+  // grandfathered in by the migration, so the reader must not drop them.
+  const routes = buildRoutes([{ domain: 'legacy.example.com', service_id: 1 }], [], '');
+  assert.ok(routes.some(r => r.host === 'legacy.example.com'));
+});
+
+test('resolveRoute still prefers an exact custom domain', () => {
+  const routes = [
+    { host: 'api.example.com', serviceId: 7 },
+    { host: 'svc-7.apps.example.com', serviceId: 7 },
+  ];
+  assert.equal(resolveRoute('API.Example.com', routes), 7, 'host matching is case-insensitive');
+  assert.equal(resolveRoute('svc-7.apps.example.com:443', routes), 7, 'port is stripped');
+  assert.equal(resolveRoute('nope.example.com', routes), null);
+});

@@ -7,8 +7,11 @@ RUN apk add --no-cache git git-daemon su-exec
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install --omit=dev
+# `npm ci` from the committed lockfile, not `npm install`: the image should be
+# byte-identical on every build. `npm install` silently re-resolves semver
+# ranges, so the lockfile in git did not actually pin what shipped.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 COPY src ./src
 COPY entrypoint.sh /app/entrypoint.sh

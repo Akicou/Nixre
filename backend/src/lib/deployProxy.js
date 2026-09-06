@@ -24,6 +24,10 @@ const ROUTE_CACHE_MS = 5000;
 export function buildRoutes(domainRows, serviceRows, baseDomain) {
   const routes = [];
   for (const row of domainRows || []) {
+    // Ownership gate: an unverified domain is attached but parked. Routing it
+    // anyway would let any space writer serve their container from a hostname
+    // they do not control — including this instance's own.
+    if (row.verified === false) continue;
     // Custom domains stay routable even while a service is stopped so the
     // user gets an explicit "not accepting traffic" page instead of 404.
     routes.push({ host: String(row.domain).toLowerCase(), serviceId: row.service_id });
@@ -62,7 +66,7 @@ export function createDeployProxy({ pool, engine }) {
     try {
       const [{ rows: domains }, { rows: services }] = await Promise.all([
         pool.query(
-          `SELECT d.domain, d.service_id FROM deploy_domains d
+          `SELECT d.domain, d.service_id, d.verified FROM deploy_domains d
            JOIN deploy_services s ON s.id = d.service_id`,
         ),
         pool.query(
@@ -73,8 +77,11 @@ export function createDeployProxy({ pool, engine }) {
       cachedRoutes = buildRoutes(domains, services, baseDomain);
       cachedAt = nowMs;
     } catch (err) {
-      console.error('deploy proxy route refresh failed:', err.message);
-      cachedRoutes = [];
+      // Fail OPEN, not closed. A transient database error used to wipe the
+      // route table, which 404s every deployed app at once. Keeping the last
+      // known-good table means a brief DB blip costs staleness (a few
+      // seconds), not an outage.
+      console.error('deploy proxy route refresh failed, keeping stale routes:', err.message);
       cachedAt = nowMs;
     }
     return cachedRoutes;
@@ -110,6 +117,20 @@ export function createDeployProxy({ pool, engine }) {
     }
   }
 
+  /**
+   * Drop the query string (and fragment) before a path is persisted.
+   *
+   * Query strings routinely carry access tokens, password-reset codes and
+   * personal data, and these rows are rendered in the HTTP log UI — storing
+   * them put secrets into the database and onto the screen.
+   */
+  function redactPath(url) {
+    const raw = String(url || '');
+    const cut = raw.search(/[?#]/);
+    const path = cut === -1 ? raw : raw.slice(0, cut);
+    return path.slice(0, 500);
+  }
+
   function recordLog(service_id, req, statusCode, t0) {
     if (logBuffer.length >= LOG_BUFFER_CAP) {
       logBuffer.shift();
@@ -118,7 +139,7 @@ export function createDeployProxy({ pool, engine }) {
     logBuffer.push({
       service_id,
       method: req.method,
-      path: req.url,
+      path: redactPath(req.url),
       status_code: statusCode ?? null,
       duration_ms: Date.now() - t0,
       ts: Date.now(),
@@ -243,6 +264,42 @@ export function createDeployProxy({ pool, engine }) {
     });
   }
 
+  /**
+   * Flatten request headers into safe `Name: value` strings.
+   * Hop-by-hop headers are dropped (they describe our connection, not the
+   * upstream one) and anything containing CR/LF — i.e. a header-injection
+   * attempt — is discarded rather than escaped.
+   */
+  function safeHeaderLines(headers) {
+    // Only headers that describe OUR hop, or that we set ourselves below.
+    // `upgrade` and `sec-websocket-*` are deliberately forwarded — a WebSocket
+    // proxy that drops them does not proxy WebSockets.
+    const hopByHop = new Set([
+      'connection',
+      'keep-alive',
+      'proxy-connection',
+      'transfer-encoding',
+      'proxy-authenticate',
+      'proxy-authorization',
+      'te',
+      'trailer',
+    ]);
+    const out = [];
+    for (const [rawKey, rawValue] of Object.entries(headers || {})) {
+      const key = String(rawKey).toLowerCase();
+      if (hopByHop.has(key)) continue;
+      if (!/^[a-z0-9-]+$/.test(key)) continue;
+      const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+      for (const v of values) {
+        const value = String(v ?? '');
+        // A newline here would terminate the header block early. Refuse it.
+        if (/[\r\n\0]/.test(value)) continue;
+        out.push(`${key}: ${value}`);
+      }
+    }
+    return out;
+  }
+
   const server = http.createServer((req, res) => {
     handle(req, res).catch(err => {
       console.error('deploy proxy handler crashed:', err.message);
@@ -263,10 +320,13 @@ export function createDeployProxy({ pool, engine }) {
       const upstream = net.connect(routed.target.port, routed.target.ip, () => {
         const lines = [
           `${req.method} ${req.url} HTTP/1.1`,
-          ...Object.entries(req.headers)
-            .filter(([k]) => k !== 'connection')
-            .map(([k, v]) => `${k}: ${v}`),
-          `x-forwarded-for: ${req.socket.remoteAddress || ''}`,
+          // Rebuilt header block. Previously every client header was splatted
+          // straight into a raw request line, so an array-valued header or an
+          // embedded CR/LF let the client inject extra headers or entire
+          // requests into the upstream stream. Each value is now flattened and
+          // checked.
+          ...safeHeaderLines(req.headers),
+          `x-forwarded-for: ${(req.socket.remoteAddress || '').replace(/[\r\n]/g, '')}`,
           'connection: Upgrade',
           '',
         ];

@@ -175,8 +175,12 @@ export function syncRoutes(pool, authenticate) {
     const b = req.body || {};
     const id = String(b.id || '');
     const name = String(b.name || 'Passkey').slice(0, 128);
-    const userUid = String(b.userUid || req.auth.user.uid);
-    const userEmail = String(b.userEmail || '');
+    // The account this credential can authenticate as is ALWAYS the caller.
+    // It used to be taken from the request body, which let any authenticated
+    // user register a credential under someone else's uid and then log in as
+    // them (the login endpoint joins passkeys.user_uid -> users.uid). Any
+    // client-supplied value is now ignored.
+    const userEmail = String(req.auth.user.email || '');
     // Optional WebAuthn material (current UI): COSE public key + alg + the
     // rpId the credential was created for. Without a public key the entry is
     // vault metadata only and cannot be used for passkey login.
@@ -187,17 +191,31 @@ export function syncRoutes(pool, authenticate) {
       res.status(400).json({ message: 'id is required' });
       return;
     }
+    // Both ownership columns are pinned to the caller: `user_id` owns the row,
+    // `user_uid` is the account the credential authenticates. Login requires
+    // them to agree, so a row can never mint a session for another account.
+    //
+    // The ON CONFLICT clause is scoped to rows the caller already owns —
+    // otherwise re-registering someone else's credential id would overwrite
+    // their public key (credential id is a global primary key) and hand the
+    // attacker a valid login for that account.
     const { rows } = await pool.query(
       `INSERT INTO passkeys (id, user_id, name, user_uid, user_email, public_key, alg, rp_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       VALUES ($1, $2, $3, $2, $4, $5, $6, $7, $8)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
+         user_email = EXCLUDED.user_email,
          public_key = COALESCE(EXCLUDED.public_key, passkeys.public_key),
          alg = COALESCE(EXCLUDED.alg, passkeys.alg),
          rp_id = COALESCE(EXCLUDED.rp_id, passkeys.rp_id)
+       WHERE passkeys.user_id = EXCLUDED.user_id
        RETURNING *`,
-      [id, uid(req), name, userUid, userEmail, publicKey, alg, rpId, nowMs()],
+      [id, uid(req), name, userEmail, publicKey, alg, rpId, nowMs()],
     );
+    if (!rows[0]) {
+      res.status(409).json({ message: 'That credential id is already registered' });
+      return;
+    }
     res.status(201).json(rowToPasskey(rows[0]));
   });
 

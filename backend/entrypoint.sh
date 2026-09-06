@@ -2,7 +2,7 @@
 # Bind-mounted ./data/repos hides the image's chown and is often root-owned
 # on the host. Core and ssh share the volume as uid 1000. Fix ownership
 # before dropping privileges, otherwise mkdir of a new space (e.g.
-# /data/repos/Nayhein) fails with EACCES.
+# /data/repos/<space>) fails with EACCES.
 set -eu
 
 ROOT="${REPOS_ROOT:-/data/repos}"

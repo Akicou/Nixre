@@ -47,6 +47,22 @@ if [ -z "$SPACE" ] || [ -z "$REPO" ] || [ "$SPACE" = "$REPO" ]; then
   exit 1
 fi
 
+# Both segments are interpolated into a `git shell -c` command line and into
+# the access-check URL, so constrain them to the same charset the forge API
+# enforces for space and repo names. Without this, SSH_ORIGINAL_COMMAND is an
+# attacker-controlled string that reaches a shell and a curl URL: path
+# traversal ("../../"), a stray quote, or a stray metacharacter all end up
+# inside the command git shell executes.
+SEG_RE='^[a-z0-9][a-z0-9._-]{0,62}$'
+if ! printf '%s' "$SPACE" | grep -Eiq "$SEG_RE"; then
+  echo "nixre: invalid space name" >&2
+  exit 1
+fi
+if ! printf '%s' "$REPO" | grep -Eiq "$SEG_RE"; then
+  echo "nixre: invalid repo name" >&2
+  exit 1
+fi
+
 ACCESS=$(curl -sf -H "Authorization: Bearer $TOKEN" \
   "$CORE/api/v1/internal/access/$OWNER/$SPACE/$REPO" || echo '{"exists":false,"read":false,"write":false}')
 

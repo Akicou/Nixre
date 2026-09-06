@@ -11,12 +11,14 @@
 
 import crypto from 'node:crypto';
 import os from 'node:os';
+import path from 'node:path';
 import { access, constants } from 'node:fs/promises';
 import { repoDir, REPOS_ROOT } from '../git/repo.js';
 import { pool } from '../db/pool.js';
 import { newPatSecret, sha256 } from './auth.js';
 import { getDecryptedSecret } from './userSecrets.js';
 import { parseWorkspacePath, workspaceGitDir } from './workspaces.js';
+import { spawnedContainerNetwork } from './dockerNetwork.js';
 
 const DOCKER_SOCKET = process.env.DOCKER_HOST?.replace(/^unix:\/\//, '') || '/var/run/docker.sock';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'nixre-agent-sandbox:latest';
@@ -271,18 +273,14 @@ ${githubSetup}`;
 
 // The sandbox needs to reach core (git push over smart HTTP). Attach it to the
 // same docker network core runs on; resolved once from core's own container.
-let coreNetworkName;
+// Network selection is shared with deployDrivers so the two call sites can
+// never drift apart (see lib/dockerNetwork.js for why "first network" is not
+// an acceptable answer).
 async function coreNetwork() {
-  if (coreNetworkName !== undefined) return coreNetworkName;
-  coreNetworkName = '';
-  try {
-    const info = await docker.getContainer(os.hostname()).inspect();
-    const names = Object.keys(info.NetworkSettings?.Networks || {});
-    coreNetworkName = names[0] || '';
-  } catch {
-    /* not containerized or docker unreachable — sandbox stays on default bridge */
-  }
-  return coreNetworkName;
+  return spawnedContainerNetwork(docker, {
+    preferred: process.env.SANDBOX_NETWORK,
+    role: 'sandbox',
+  });
 }
 
 // The sandbox needs /data/repos mounted from the same place core gets it.
@@ -304,6 +302,26 @@ async function reposBindSource() {
   return reposHostPath;
 }
 
+/**
+ * The one path the sandbox needs read-only, for a given workspace.
+ *
+ * The whole REPOS_ROOT used to be bind-mounted into every agent container,
+ * which meant `run_command` could read every private repository on the
+ * instance regardless of what the conversation was attached to. Now only the
+ * conversation's own repository (or the GitHub mirror it targets) is exposed.
+ * Unrestricted conversations get no repository at all.
+ */
+function workspaceRepoPath(repoPath) {
+  const ws = parseWorkspacePath(repoPath);
+  const dir = workspaceGitDir(ws);
+  if (!dir) return null;
+  const root = path.resolve(REPOS_ROOT);
+  const abs = path.resolve(dir);
+  // Defence in depth: never mount anything outside REPOS_ROOT.
+  if (abs !== root && !abs.startsWith(root + path.sep)) return null;
+  return path.relative(root, abs);
+}
+
 async function createContainer(key, userId, conversationId, repoPath, space, repo, user) {
   const name = containerName(key);
   const vol = volumeName(key);
@@ -311,6 +329,14 @@ async function createContainer(key, userId, conversationId, repoPath, space, rep
   touch(key);
   const net = await coreNetwork();
   const reposSource = await reposBindSource();
+
+  // Only this conversation's repository, read-only.
+  const repoRel = workspaceRepoPath(repoPath);
+  const binds = [`${vol}:/workspace`];
+  if (repoRel) {
+    binds.push(`${path.join(reposSource, repoRel)}:${path.join(REPOS_ROOT, repoRel)}:ro`);
+  }
+
   const container = await docker.createContainer({
     name,
     Image: SANDBOX_IMAGE,
@@ -323,10 +349,15 @@ async function createContainer(key, userId, conversationId, repoPath, space, rep
       'nixre.lastActivity': String(Date.now()),
     },
     HostConfig: {
-      Binds: [`${vol}:/workspace`, `${reposSource}:/data/repos:ro`],
+      Binds: binds,
       Memory: Number(process.env.SANDBOX_MEMORY_BYTES || 2 * 1024 * 1024 * 1024),
       NanoCpus: Number(process.env.SANDBOX_NANO_CPUS || 2 * 1e9),
       Init: true,
+      // The sandbox is a place to run builds, not a privileged helper. Drop
+      // everything we do not need and block the escalation routes.
+      CapDrop: ['ALL'],
+      SecurityOpt: ['no-new-privileges:true'],
+      PidsLimit: Number(process.env.SANDBOX_PIDS_LIMIT || 512),
     },
     ...(net ? { NetworkingConfig: { EndpointsConfig: { [net]: {} } } } : {}),
     Cmd: ['sleep', 'infinity'],

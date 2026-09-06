@@ -14,10 +14,38 @@
 import crypto from 'node:crypto';
 
 // --- key encryption (AES-256-GCM, key derived from AI_SECRET) ---------------
+//
+// The key used to be sha256(AI_SECRET || INTERNAL_TOKEN || 'nixre-dev-ai-secret')
+// — a literal fallback published in this repository, so an operator who never
+// set AI_SECRET encrypted every stored credential (provider keys, service env
+// vars, GitHub PATs, webhook secrets) with a key anyone could read off GitHub.
+//
+// There is no silent fallback any more. server.js refuses to boot without a
+// real AI_SECRET (see assertRequiredSecrets). If the variable is somehow
+// absent — a unit test importing this module, say — the key is random per
+// process, which fails loudly and safely: values encrypted this way cannot be
+// decrypted after a restart, and they certainly cannot be decrypted by an
+// attacker who read the source.
+//
+// Derivation is HKDF-SHA256 rather than a bare hash, with a deploy-specific
+// salt (NIXRE_SECRET_SALT). Rotating the salt rotates every stored secret, so
+// it is documented as an operationally significant value, not a tunable.
+const SECRET_SALT =
+  process.env.NIXRE_SECRET_SALT || 'nixre.instance.secret.v1';
 
-const KEY = crypto.createHash('sha256')
-  .update(process.env.AI_SECRET || process.env.INTERNAL_TOKEN || 'nixre-dev-ai-secret')
-  .digest();
+function deriveKey() {
+  const material = process.env.AI_SECRET;
+  if (!material) {
+    // Random per process: anything encrypted without a configured AI_SECRET is
+    // unrecoverable after a restart, which is the intended loud failure.
+    return crypto.randomBytes(32);
+  }
+  return Buffer.from(
+    crypto.hkdfSync('sha256', material, SECRET_SALT, 'nixre-secret-encryption-v1', 32),
+  );
+}
+
+const KEY = deriveKey();
 
 export function encryptSecret(plain) {
   const iv = crypto.randomBytes(12);

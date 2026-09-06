@@ -4,8 +4,8 @@
 
 import { spawn } from 'node:child_process';
 import http from 'node:http';
-import os from 'node:os';
 import { repoDir } from '../git/repo.js';
+import { spawnedContainerNetwork } from './dockerNetwork.js';
 
 const DOCKER_SOCKET = process.env.DOCKER_HOST?.replace(/^unix:\/\//, '') || '/var/run/docker.sock';
 
@@ -55,9 +55,31 @@ function gitRun(bareDir, args, signal) {
   });
 }
 
+/**
+ * Reject a git ref that could be parsed as an option instead of a revision.
+ *
+ * `git` is invoked with an argument array, so there is no shell injection —
+ * but a ref beginning with `-` is still read as a flag (`--upload-pack=…`,
+ * `--output=…`), which turns a user-supplied ref into option injection. Refs
+ * reach here from API query strings and deploy service config.
+ */
+export function assertSafeRef(ref, label = 'ref') {
+  const value = String(ref ?? '').trim();
+  if (!value) throw new Error(`${label} is required`);
+  if (value.startsWith('-')) {
+    throw new Error(`${label} may not start with '-' (${value.slice(0, 40)})`);
+  }
+  if (/[\0\r\n]/.test(value)) {
+    throw new Error(`${label} may not contain control characters`);
+  }
+  if (value.length > 400) throw new Error(`${label} is too long`);
+  return value;
+}
+
 export async function resolveRef(space, repo, ref) {
   const dir = repoDir(space, repo);
-  const sha = (await gitRun(dir, ['rev-parse', '--verify', `${ref}^{commit}`])).trim();
+  const safe = assertSafeRef(ref);
+  const sha = (await gitRun(dir, ['rev-parse', '--verify', `${safe}^{commit}`])).trim();
   let message = '';
   try {
     message = (
@@ -112,39 +134,55 @@ function gitStream(bareDir, args, signal) {
 
 export async function listTree(space, repo, ref) {
   const dir = repoDir(space, repo);
-  const out = await gitRun(dir, ['ls-tree', '-r', '--name-only', ref]);
+  const safe = assertSafeRef(ref);
+  // `--` ends option parsing so a ref is always treated as a revision.
+  const out = await gitRun(dir, ['ls-tree', '-r', '--name-only', '--', safe]);
   return out.split('\n').filter(Boolean).map(l => l.replace(/^"|"$/g, ''));
 }
 
-// Any HTTP response counts as "app is up" — the goal is reaching a listening
-// socket, not validating app semantics. Connection-level failures throw.
+// A release is only healthy when the app answers with a non-error status.
+//
+// This used to treat ANY HTTP response as healthy (`ok: Boolean(statusCode)`),
+// so an app returning 500 or 503 on first request passed its health check and
+// was promoted over the container already serving traffic — a blue/green swap
+// that replaced a working release with a broken one. 2xx and 3xx pass (a
+// redirect is a listening, configured app); 4xx is tolerated so apps that
+// require auth on `/` still release; 5xx is a failure.
 export function probeHttp() {
-  return ({ host, port, path, timeoutMs }) =>
+  return ({ host, port, path, timeoutMs, signal } = {}) =>
     new Promise((resolve, reject) => {
       const req = http.get(
         { host, port, path: path || '/', timeout: timeoutMs || 2500 },
         res => {
           res.resume();
-          resolve({ ok: Boolean(res.statusCode), status: res.statusCode ?? null });
+          const status = res.statusCode ?? null;
+          const ok = status != null && status < 500;
+          resolve({ ok, status });
         },
       );
       req.on('timeout', () => {
         req.destroy(new Error(`probe timed out after ${timeoutMs}ms`));
       });
       req.on('error', reject);
+      // Honour cancellation: a cancelled deploy must not keep probing for the
+      // rest of its health budget.
+      if (signal) {
+        if (signal.aborted) req.destroy(new Error('probe cancelled'));
+        else signal.addEventListener('abort', () => req.destroy(new Error('probe cancelled')), { once: true });
+      }
     });
 }
 
-// Attach app containers to core's own network so names/IPs resolve.
-let coreNetworkName;
+// Network for deployed app containers. Must be a network core is on (core
+// probes the container and proxies to it by IP) and must NEVER be the database
+// network — a deployment's Dockerfile is user-supplied code, and creating one
+// only needs write access to a space.
+//
+// Deliberately not cached across calls: the operator can change
+// NIXRE_APPS_NETWORK and core picks it up on the next release.
 export async function networkName(docker) {
-  if (coreNetworkName !== undefined) return coreNetworkName;
-  coreNetworkName = '';
-  try {
-    const info = await docker.getContainer(os.hostname()).inspect();
-    coreNetworkName = Object.keys(info.NetworkSettings?.Networks || {})[0] || '';
-  } catch {
-    /* not containerized — default bridge still works via resolved IPs */
-  }
-  return coreNetworkName;
+  return spawnedContainerNetwork(docker, {
+    preferred: process.env.NIXRE_APPS_NETWORK,
+    role: 'app',
+  });
 }

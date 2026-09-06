@@ -73,7 +73,7 @@ instance policy. An empty allowlist disables bind mounts entirely.
   "host_config": {
     "binds": [
       "/var/run/docker.sock:/var/run/docker.sock",
-      "/var/lib/nayhein-sandbox:/var/lib/nayhein-sandbox"
+      "/var/lib/nixre-sandbox:/var/lib/nixre-sandbox"
     ],
     "group_add": [998]
   }
@@ -83,7 +83,7 @@ instance policy. An empty allowlist disables bind mounts entirely.
 With compose `.env`:
 
 ```
-NIXRE_DEPLOY_BIND_ALLOWLIST=/var/run/docker.sock,/var/lib/nayhein-sandbox
+NIXRE_DEPLOY_BIND_ALLOWLIST=/var/run/docker.sock,/var/lib/nixre-sandbox
 ```
 
 The bind-mounted host path must be identical inside the container when the

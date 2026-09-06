@@ -14,8 +14,21 @@ import { pool } from '../db/pool.js';
 let registrationClosed = false;
 let loaded = false;
 
+/**
+ * Signup default when the admin console has never set a value.
+ *
+ * Fails closed: an operator who never mentions registration gets a closed
+ * instance rather than an open one. This used to be `false`, so a default
+ * deployment accepted public signups while the README advertised a closed
+ * personal instance — and any account is one step from the admin escalation
+ * that the passkey flow used to allow.
+ *
+ * Set NIXRE_REGISTRATION_CLOSED=false in .env to open signups deliberately.
+ */
 function envDefaultClosed() {
-  return String(process.env.NIXRE_REGISTRATION_CLOSED || '').toLowerCase() === 'true';
+  const raw = String(process.env.NIXRE_REGISTRATION_CLOSED || '').trim().toLowerCase();
+  if (raw === '') return true;
+  return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
 }
 
 export async function loadInstanceSettings() {

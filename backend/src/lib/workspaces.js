@@ -19,6 +19,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { REPOS_ROOT } from '../git/repo.js';
 import { getDecryptedSecret } from './userSecrets.js';
+import { canReadRepo } from './repoAccess.js';
 
 const exec = promisify(execFile);
 
@@ -196,27 +197,87 @@ export async function ensureGithubMirror(userId, owner, repo, { waitTimeoutMs = 
 }
 
 /**
- * Resolve a repoPath into everything tools need. GitHub resolution hits the
- * network on first use; failures carry `.status` for HTTP mapping.
+ * Resolve a repoPath into everything tools need, and prove the caller may
+ * read the target. GitHub resolution hits the network on first use; failures
+ * carry `.status` for HTTP mapping.
+ *
+ * `user` is the caller (a rowToUser object: uid, admin, blocked). It used to
+ * be a bare uid and the function ignored its `pool` argument entirely, which
+ * meant /ai/tools would happily read any private repository on the instance
+ * for any authenticated caller. Access is now enforced here, once, for every
+ * tool — read-only and shell alike.
+ *
+ * Missing pool or user is a programming error, not permission: fail closed.
  */
-export async function resolveWorkspace(pool, userId, repoPath) {
+export async function resolveWorkspace(pool, user, repoPath) {
   const ws = parseWorkspacePath(repoPath);
   if (ws.kind === 'invalid') {
     throw Object.assign(new Error(`Invalid workspace target '${ws.repoPath}'`), { status: 400 });
   }
+  if (!pool || !user?.uid) {
+    throw Object.assign(
+      new Error('Workspace resolution requires a database pool and a caller'),
+      { status: 500 },
+    );
+  }
+
+  const caller = await resolveCaller(pool, user);
+  if (caller.blocked) {
+    throw Object.assign(new Error('This account is blocked'), { status: 403 });
+  }
+
   if (ws.kind === 'unrestricted') {
     ws.dir = null;
     return ws;
   }
+
+  if (ws.kind === 'nixre') {
+    await assertHostedReadable(pool, ws, caller);
+  }
+
   // Attach the git dir the read/clone tools expect (see lib/agentTools.js
   // contract: context.workspace.dir). For a github target this must come
   // AFTER the mirror is provisioned so the dir exists. Unrestricted has no
   // repo, so dir is null.
   if (ws.kind === 'github') {
-    await ensureGithubMirror(userId, ws.owner, ws.repo);
+    // The mirror is cloned with the caller's own GitHub PAT, so access to the
+    // upstream is whatever github.com decides — Nixre has nothing to check.
+    await ensureGithubMirror(caller.uid, ws.owner, ws.repo);
   }
   ws.dir = workspaceGitDir(ws);
   return ws;
+}
+
+/**
+ * Fill in admin/blocked for callers that only carry a uid (agent jobs started
+ * from a stored user object, etc.). One indexed lookup per turn.
+ */
+async function resolveCaller(pool, user) {
+  if (user.admin !== undefined && user.blocked !== undefined) return user;
+  const { rows } = await pool.query(
+    'SELECT uid, admin, blocked FROM users WHERE uid = $1',
+    [user.uid],
+  );
+  return rows[0] || { uid: user.uid, admin: false, blocked: true };
+}
+
+/**
+ * Hosted (nixre-kind) targets go through the same visibility rules as the
+ * forge API. 404 rather than 403 so the error does not confirm that a private
+ * repository with that name exists.
+ */
+async function assertHostedReadable(pool, ws, caller) {
+  const { rows } = await pool.query(
+    'SELECT space_uid, is_public FROM repos WHERE space_uid = $1 AND uid = $2',
+    [ws.space, ws.repo],
+  );
+  const repo = rows[0];
+  if (!repo) {
+    throw Object.assign(new Error(`Repository '${ws.repoPath}' not found`), { status: 404 });
+  }
+  if (!(await canReadRepo(pool, repo, caller))) {
+    throw Object.assign(new Error(`Repository '${ws.repoPath}' not found`), { status: 404 });
+  }
 }
 
 // --- prompt block --------------------------------------------------------------
