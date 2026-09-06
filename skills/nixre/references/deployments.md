@@ -33,14 +33,26 @@ Each `deploy_service` row pins: `name` (UNIQUE per repo), `root_dir`, `dockerfil
 - **A failed build/release never touches the serving container** — traffic stays on the previous healthy release and a red banner warns (`last_failed_deployment_id`). From history: inspect logs, redeploy, roll back to an older healthy release, or delete records.
 - On restart (server reboot included), core reconciles and recreates service containers from stored images.
 
-## Domains & routing (no base-domain restriction)
+## Domains & routing
 
 App containers are never port-published; they sit on core's docker network behind the central **deploy proxy on port 3003**, which routes by **Host header**. Route your edge to 3003:
 
-- **Cloudflare Tunnel:** the tunnel's **catch-all** ingress forwards every unmatched hostname to `http://localhost:3003`. Attach a domain in **Deployments → Domains → tunnel kind**. When `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_TUNNEL_ID` are set, core **creates the proxied CNAME (`<domain>` → `<tunnel-id>.cfargotunnel.com`) automatically via the Cloudflare API** and removes it on detach. The UI shows DNS status per domain (auto-managed / failed + retry / manual guidance).
+- **Cloudflare Tunnel:** forward intended app hostnames to `http://localhost:3003`. Admins may use the configured Cloudflare token for automatic CNAME provisioning; other users must publish TXT proof and configure DNS themselves. Conflicting records are never overwritten. The UI shows DNS status and manual guidance.
 - **Host Caddy/Nginx:** add an A record then a host block `reverse_proxy 127.0.0.1:3003` (TLS at the edge). The UI generates the exact DNS table + snippet.
 
-**No `DEPLOY_BASE_DOMAIN` is used here** — users attach arbitrary domains, and there's no base-domain restriction (any zone the CF token can read works).
+Custom domains require TXT ownership proof or admin approval. Cloudflare
+automation is admin-only and never overwrites conflicting records. Reserved
+hostnames apply to all route types; `DEPLOY_BASE_DOMAIN` supplies automatic app
+addresses and its namespace cannot be claimed as a custom domain.
+
+## Security upgrades
+
+Follow `docs/security-upgrade.md` before changing keys or networks. Boot converts
+legacy encrypted values transactionally; keep the old key until verification.
+Existing apps are reconnected without deleting volumes. Existing services retain
+capability policy 1; new services default to policy 2. Admins may explicitly PATCH
+`security_policy_version` and redeploy after testing image requirements. Outdated
+agent sandboxes are replaced while retaining their named workspace volumes.
 
 ### TLS depth gate
 

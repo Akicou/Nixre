@@ -1,13 +1,21 @@
 # Deployment runtime options
 
 Every deploy service runs with sane defaults: memory/CPU caps, `unless-stopped`
-restart policy, `init`, and an attachment to core's Docker network. Services
+restart policy, `init`, and an attachment to the approved apps network. Services
 with special needs (Docker-outside-of-Docker sandboxes, custom health
 endpoints, device access) can override parts of that via **runtime options** —
 a JSON blob stored per service and merged into the container create payload at
 launch time.
 
 ## Where to set them
+
+New services use security policy `2` (drop all capabilities and enable
+`no-new-privileges` by default). Migration 026 preserves policy `1` for existing
+services so recreation and rollback do not silently break root-started images.
+Only an instance admin can PATCH `security_policy_version` to `1` or `2`.
+Test the image and explicitly redeploy to apply a policy change; ordinary config
+edits and clearing runtime options preserve the selected policy. See
+[the upgrade guide](security-upgrade.md) for network and secret migration.
 
 - **Create wizard** → "Show advanced runtime options" (JSON textarea).
 - **Service detail → Runtime tab** → JSON editor with live summary chips.

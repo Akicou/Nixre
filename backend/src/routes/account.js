@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { sha256, newPatSecret } from '../lib/auth.js';
 import { encryptSecret, maskSecret } from '../lib/ai.js';
 import { assertPublicUrl } from '../lib/netGuard.js';
+import { aiNetworkPolicy } from '../lib/aiNetwork.js';
 
 function fingerprintKey(content) {
   // ssh key line: "<type> <base64> [comment]"
@@ -204,7 +205,7 @@ export function accountRoutes(pool, authenticate) {
       res.status(400).json({ message: 'A valid base URL is required' });
       return;
     }
-    const urlCheck = await assertPublicUrl(baseUrl);
+    const urlCheck = await assertPublicUrl(baseUrl, aiNetworkPolicy());
     if (!urlCheck.ok) {
       res.status(400).json({ message: `STT endpoint rejected: ${urlCheck.message}` });
       return;

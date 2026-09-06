@@ -34,142 +34,117 @@ import { createDeployProxy } from './lib/deployProxy.js';
 import { mkdir, access, constants } from 'node:fs/promises';
 import { createRateLimiter, clientKey } from './lib/rateLimit.js';
 import { securityHeaders } from './lib/securityHeaders.js';
+import { pathToFileURL } from 'node:url';
 
 const PORT = Number(process.env.PORT || 3002);
 
 const pool = sharedPool;
 
-// --- rate limits ---------------------------------------------------------------
-// Auth endpoints are the brute-force target; small body endpoints do not need
-// a 64 MB parser in front of them.
-const loginLimiter = createRateLimiter({ windowMs: 60_000, max: 10, name: 'login attempts' });
-const registerLimiter = createRateLimiter({ windowMs: 60_000, max: 5, name: 'registrations' });
-const passkeyLimiter = createRateLimiter({ windowMs: 60_000, max: 20, name: 'passkey attempts' });
-const deployLimiter = createRateLimiter({ windowMs: 60_000, max: 30, name: 'deploy triggers' });
-const toolsLimiter = createRateLimiter({ windowMs: 60_000, max: 120, name: 'assistant tool calls' });
-
 // ---------------------------------------------------------------------------
 // Auth middleware — first-party bearer resolution (session or PAT).
 // ---------------------------------------------------------------------------
 
-function authenticate(required = true) {
-  return async (req, res, next) => {
-    const auth = req.headers.authorization || '';
-    if (auth.startsWith('Bearer ')) {
-      try {
-        const resolved = await resolveBearer(pool, auth.slice('Bearer '.length));
-        if (resolved) {
-          req.auth = resolved;
-          next();
+export function createApp({ pool = sharedPool, authenticate: authenticateOverride } = {}) {
+  function authenticate(required = true) {
+    if (authenticateOverride) return authenticateOverride(required);
+    return async (req, res, next) => {
+      if (req.auth) return next();
+      const auth = req.headers.authorization || '';
+      if (auth.startsWith('Bearer ')) {
+        try {
+          const resolved = await resolveBearer(pool, auth.slice('Bearer '.length));
+          if (resolved) {
+            req.auth = resolved;
+            next();
+            return;
+          }
+        } catch (err) {
+          console.error('auth resolution failed:', err.message);
+          res.status(500).json({ message: 'Auth lookup failed' });
           return;
         }
-      } catch (err) {
-        console.error('auth resolution failed:', err.message);
-        res.status(500).json({ message: 'Auth lookup failed' });
+      }
+      if (required) {
+        res.status(401).json({ message: 'Missing or invalid bearer token' });
         return;
       }
-    }
-    if (required) {
-      res.status(401).json({ message: 'Missing or invalid bearer token' });
-      return;
-    }
-    next();
-  };
+      next();
+    };
+  }
+
+  const app = express();
+  // No hop counts: a directly connected caller must not be able to supply XFF.
+  app.set('trust proxy', String(process.env.TRUSTED_PROXY_CIDRS || '').split(',').map(s => s.trim()).filter(Boolean));
+  app.use(securityHeaders);
+  app.use(['/api/v1', '/api/sync/v1'], createRequestMiddleware(authenticate));
+
+  app.get('/healthz', (_req, res) => res.json({ ok: true }));
+  app.use('/api/v1', authRoutes(pool, authenticate));
+
+  // Per-route authentication inside each router.
+  const syncApi = syncRoutes(pool, authenticate);
+  app.use('/api/v1', syncApi);
+  app.use('/api/sync/v1', syncApi); // compat alias
+  app.use('/api/v1', adminRoutes(pool, authenticate));
+  app.use('/api/v1', accountRoutes(pool, authenticate));
+  app.use('/api/v1', avatarRoutes(pool, authenticate));
+  app.use('/api/v1', forgeRoutes(pool, authenticate));
+  app.use('/api/v1', pullRequestRoutes(pool, authenticate));
+  app.use('/api/v1', internalRoutes(pool, authenticate));
+  app.use('/api/v1', webhookRoutes(pool, authenticate));
+  app.use('/api/v1', aiRoutes(pool, authenticate));
+  app.use('/api/v1', deploymentRoutes(pool, authenticate));
+
+  // Git streams never enter the API body parser.
+  app.use('/git', smartHttp(pool, authenticate));
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ message: 'No such API route' });
+  });
+  app.use(requestErrorHandler);
+  return app;
 }
 
-// ---------------------------------------------------------------------------
-// App
-// ---------------------------------------------------------------------------
+// Shared by production and HTTP tests; route matching has Express's case and
+// trailing-slash semantics. Limits run before buffering/parsing request bodies.
+export function createRequestMiddleware(authenticate) {
+  const api = express.Router();
+  const limit = (max, name) => createRateLimiter({ windowMs: 60_000, max, name })(clientKey);
+  api.post('/login', limit(10, 'login attempts'));
+  api.post('/register', limit(5, 'registrations'));
+  api.post(['/webauthn/login-challenge', '/webauthn/login'], limit(20, 'passkey attempts'));
+  api.post('/ai/tools', limit(120, 'assistant tool calls'));
+  api.post([
+    '/repos/:space/:repo/\\+/deployments/services/:id/deploy',
+    '/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/redeploy',
+    '/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/rollback',
+  ], limit(30, 'deploy triggers'));
 
-// Apply a limiter to one method+path before the routers see it. Keeps the
-// rate-limit table in one place instead of threading limiters into every
-// route file.
-function limitOn(method, path, limiter) {
-  const limit = limiter(clientKey);
-  return (req, res, next) => {
-    if (req.method === method && req.path === path) return limit(req, res, next);
-    next();
-  };
+  const auth = authenticate(true);
+  const json64mb = express.json({ limit: '64mb' });
+  api.post(['/login', '/register', '/webauthn/login-challenge', '/webauthn/login'], express.json({ limit: '16kb' }));
+  api.post(['/user/avatar', '/spaces/:uid/avatar'], auth, express.json({ limit: '3mb' }));
+  api.post('/ai/transcribe', auth, express.json({ limit: '12mb' }));
+  api.post([
+    '/ai/chat', '/ai/jobs', '/ai/jobs/:conversationId/queue', '/ai/tools',
+    '/conversations', '/repos/:space/:repo/\\+/commits',
+  ], auth, json64mb);
+  api.put('/conversations/:id', auth, json64mb);
+  // A parsed stream is not parsed again by body-parser. Git streams never
+  // enter this API-only middleware.
+  api.use(express.json({ limit: '1mb' }));
+  return api;
 }
 
-// Same, but matching the tail of the path (route params make exact matching
-// impractical for nested deploy endpoints).
-function limitOnSuffix(method, suffix, limiter) {
-  const limit = limiter(clientKey);
-  return (req, res, next) => {
-    if (req.method === method && req.path.endsWith(suffix)) return limit(req, res, next);
-    next();
-  };
-}
-
-const app = express();
-
-app.use(securityHeaders);
-
-// A 64 MB body parser in front of every route is a cheap way to exhaust the
-// process, so only the endpoints that legitimately carry images get it and
-// everything else is capped at 1 MB.
-//
-// The assistant endpoints that accept base64 data URLs: chat (inline images)
-// and jobs / queue (the same, plus file attachments). Anything else — /login,
-// /register, deploy payloads — stays at 1 MB.
-//
-// Order matters: these are registered BEFORE the 1 MB parser, because the
-// first parser to see a request sets the limit. Registered afterwards, the
-// global 1 MB parser would reject an image-bearing body with 413 before the
-// larger one ever ran.
-const LARGE_BODY_SUFFIXES = ['/ai/chat', '/ai/jobs', '/ai/tools'];
-const json1mb = express.json({ limit: '1mb' });
-for (const suffix of LARGE_BODY_SUFFIXES) {
-  app.use(`/api/v1${suffix}`, express.json({ limit: '64mb' }));
-  app.use(`/api/sync/v1${suffix}`, express.json({ limit: '64mb' }));
-}
-app.use((req, res, next) => {
-  // Already parsed by a route-specific parser above.
-  if (LARGE_BODY_SUFFIXES.some(s => req.path.endsWith(s))) return next();
-  return json1mb(req, res, next);
-});
-
-// Brute-force and abuse limits, before any route handling.
-app.use('/api/v1', limitOn('POST', '/login', loginLimiter));
-app.use('/api/v1', limitOn('POST', '/register', registerLimiter));
-app.use('/api/v1', limitOn('POST', '/webauthn/login-challenge', passkeyLimiter));
-app.use('/api/v1', limitOn('POST', '/webauthn/login', passkeyLimiter));
-app.use('/api/v1', limitOn('POST', '/ai/tools', toolsLimiter));
-app.use('/api/v1', limitOnSuffix('POST', '/deploy', deployLimiter));
-
-app.get('/healthz', (_req, res) => res.json({ ok: true }));
-
-app.use('/api/v1', authRoutes(pool, authenticate));
-
-// Per-route authentication inside each router.
-const syncApi = syncRoutes(pool, authenticate);
-app.use('/api/v1', syncApi);
-app.use('/api/sync/v1', syncApi); // compat alias
-
-app.use('/api/v1', adminRoutes(pool, authenticate));
-app.use('/api/v1', accountRoutes(pool, authenticate));
-app.use('/api/v1', avatarRoutes(pool, authenticate));
-app.use('/api/v1', forgeRoutes(pool, authenticate));
-app.use('/api/v1', pullRequestRoutes(pool, authenticate));
-app.use('/api/v1', internalRoutes(pool, authenticate));
-app.use('/api/v1', webhookRoutes(pool, authenticate));
-app.use('/api/v1', aiRoutes(pool, authenticate));
-app.use('/api/v1', deploymentRoutes(pool, authenticate));
-
-// Git Smart HTTP transport. No body parser — the request stream is piped
-// straight into git http-backend (CGI).
-app.use('/git', smartHttp(pool, authenticate));
-
-// Anything else under /api is simply unknown now — there is no proxy.
-app.use('/api', (_req, res) => {
-  res.status(404).json({ message: 'No such API route' });
-});
-
-app.use((err, _req, res, _next) => {
+export function requestErrorHandler(err, _req, res, next) {
+  if (res.headersSent) return next(err);
+  if (err.type === 'entity.too.large') return res.status(413).json({ message: 'Request body is too large' });
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ message: 'Invalid JSON body' });
+  if (err.status >= 400 && err.status < 500 && err.expose) {
+    return res.status(err.status).json({ message: err.message });
+  }
   console.error(err);
   res.status(500).json({ message: 'Internal nixre-core error' });
-});
+}
 
 // ---------------------------------------------------------------------------
 // Secret hygiene — fail closed on published defaults.
@@ -210,21 +185,21 @@ function assertRequiredSecrets() {
     problems.push('AI_SECRET must be at least 32 characters');
   }
 
-  // Postgres ships with nixre/nixre in compose. Warn (do not block) so a
-  // development checkout still boots, but make the risk explicit.
+  // Permit a maintenance boot with legacy DB credentials so operators can
+  // migrate deliberately, but make the required rotation visible.
   const dbUrl = String(process.env.DATABASE_URL || '');
-  if (/\/\/[^:@/]*:nixre@/.test(dbUrl)) {
+  if (process.env.PGPASSWORD === 'nixre' || /\/\/[^:@/]*:nixre@/.test(dbUrl)) {
     console.warn(
-      '[core] WARNING: DATABASE_URL uses the default postgres password. ' +
-        'Set a real one in .env before exposing this instance.',
+      '[core] WARNING: database uses the legacy default password. ' +
+        'Rotate the PostgreSQL role password and configuration before reopening ingress.',
     );
   }
 
-  if (problems.length && String(process.env.ALLOW_INSECURE_DEFAULTS || '') !== '1') {
+  if (problems.length) {
     throw new Error(
       `Refusing to start with weak secrets:\n  - ${problems.join('\n  - ')}\n` +
         'Generate them with: openssl rand -hex 32\n' +
-        'Set ALLOW_INSECURE_DEFAULTS=1 to override (local development only).',
+        'For legacy encrypted data, follow docs/security-upgrade.md.',
     );
   }
 }
@@ -240,6 +215,9 @@ async function ensureReposRoot() {
 
 async function boot() {
   assertRequiredSecrets();
+  if (!String(process.env.TRUSTED_PROXY_CIDRS || '').trim()) {
+    console.warn('[core] No trusted proxy peers configured. Behind an edge proxy, users share its rate-limit budget; see docs/security-upgrade.md.');
+  }
   try {
     await ensureReposRoot();
   } catch (err) {
@@ -250,9 +228,8 @@ async function boot() {
   let retries = 30;
   while (retries-- > 0) {
     try {
-      const client = await pool.connect();
+      // migrate owns and releases its connection, including secret upgrades.
       await migrate(pool);
-      client.release();
       break;
     } catch (err) {
       if (retries === 0) throw err;
@@ -265,7 +242,7 @@ async function boot() {
   await sweepStaleRuns(pool);
   await initSandbox();
   await bootDeployments();
-  app.listen(PORT, () => {
+  createApp().listen(PORT, () => {
     console.log(`nixre-core listening on :${PORT} — sovereign, no forge dependency`);
   });
 }
@@ -299,19 +276,21 @@ async function bootDeployments() {
   setInterval(() => void deployEngine.metricsTick().catch(() => {}), metricsMs).unref();
 }
 
-boot().catch(err => {
-  console.error('Failed to start nixre-core:', err);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  boot().catch(err => {
+    console.error('Failed to start nixre-core:', err);
+    process.exit(1);
+  });
 
 // A stray rejected promise must not take down core — every active agent job
 // dies with it and comes back as "Job lost on core restart". Log loudly and
 // keep serving. Uncaught exceptions remain fatal (state may be inconsistent):
 // logged with full stack, then exit(1) so docker restarts us cleanly.
-process.on('unhandledRejection', err => {
-  console.error('[core] unhandled rejection:', err?.stack || err);
-});
-process.on('uncaughtException', err => {
-  console.error('[core] uncaught exception:', err?.stack || err);
-  process.exit(1);
-});
+  process.on('unhandledRejection', err => {
+    console.error('[core] unhandled rejection:', err?.stack || err);
+  });
+  process.on('uncaughtException', err => {
+    console.error('[core] uncaught exception:', err?.stack || err);
+    process.exit(1);
+  });
+}

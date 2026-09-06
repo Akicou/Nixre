@@ -48,6 +48,7 @@ class FakePool {
       container_port: 8080,
       cpu_nano_cpus: 1e9,
       memory_bytes: 512 * 1024 * 1024,
+      security_policy_version: 2,
       desired_state: 'running',
       status: 'idle',
       current_deployment_id: null,
@@ -233,6 +234,7 @@ class FakeDocker {
       starts: 0,
       stops: 0,
       removes: 0,
+      networks: { nixre: { IPAddress: ip } },
     };
     this.containers.set(name, rec);
     return rec;
@@ -278,7 +280,7 @@ class FakeDocker {
         Id: rec.id,
         Name: `/${name}`,
         State: { Status: rec.running ? 'running' : 'exited' },
-        NetworkSettings: { Networks: { nixre: { IPAddress: rec.ip } } },
+        NetworkSettings: { Networks: rec.networks },
         Labels: rec.labels,
       }),
       start: async () => {
@@ -303,6 +305,20 @@ class FakeDocker {
       Labels: r.labels,
       State: r.running ? 'running' : 'exited',
     }));
+  }
+
+  getNetwork(network) {
+    return {
+      connect: async ({ Container }) => {
+        if (this.connectError) throw new Error(this.connectError);
+        const rec = [...this.containers.values()].find(r => r.id === Container);
+        rec.networks[network] = { IPAddress: rec.ip };
+      },
+      disconnect: async ({ Container }) => {
+        const rec = [...this.containers.values()].find(r => r.id === Container);
+        delete rec.networks[network];
+      },
+    };
   }
 
   getImage(tag) {
@@ -405,6 +421,170 @@ test('create options inject decrypted env, limits, labels, restart policy', asyn
   assert.equal(create.Labels['nixre.service'], String(svc.id));
   assert.match(create.Labels['nixre.deployment'], /^\d+$/);
   assert.ok(create.NetworkingConfig.EndpointsConfig.nixre, 'joins core network');
+  assert.deepEqual(create.HostConfig.CapDrop, ['ALL']);
+  assert.deepEqual(create.HostConfig.SecurityOpt, ['no-new-privileges:true']);
+});
+
+test('503 health response does not replace the serving deployment', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({ current_deployment_id: 9 });
+  const docker = new FakeDocker();
+  const old = docker.seedContainer(containerName(svc.id, 9));
+  const { engine } = makeEngine(pool, { docker, probe: async () => ({ ok: false, status: 503 }) });
+  await engine.startDeployment(svc.id);
+  await engine.waitAllIdle();
+  assert.equal(pool.services.get(svc.id).current_deployment_id, 9);
+  assert.equal(pool.deployments.get(100).status, 'failed');
+  assert.equal(old.removes, 0);
+  assert.equal(old.stops, 0);
+});
+
+test('legacy services retain default/add-only caps and escalation semantics on recreation', async () => {
+  for (const runtime_options of [null, {}, { host_config: { cap_drop: [], cap_add: ['NET_ADMIN'] } }]) {
+    const pool = new FakePool();
+    pool.addRepo('a', 'b');
+    const svc = pool.addService({ security_policy_version: 1, runtime_options });
+    const docker = new FakeDocker();
+    const { engine } = makeEngine(pool, { docker });
+    await engine.startDeployment(svc.id, { _reuseImage: 'old-image:latest' });
+    await engine.waitAllIdle();
+    const config = docker.createCalls[0].HostConfig;
+    assert.equal(config.CapDrop, undefined);
+    assert.equal(config.SecurityOpt, undefined);
+    assert.deepEqual(config.CapAdd, runtime_options?.host_config?.cap_add);
+  }
+});
+
+test('new policy applies with null, empty and add-only options but respects explicit drops', async () => {
+  for (const runtime_options of [null, {}, { host_config: { cap_add: ['NET_ADMIN'], cap_drop: [] } },
+    { host_config: { cap_drop: ['NET_RAW'] } }]) {
+    const pool = new FakePool();
+    pool.addRepo('a', 'b');
+    const svc = pool.addService({ security_policy_version: 2, runtime_options });
+    const docker = new FakeDocker();
+    const { engine } = makeEngine(pool, { docker });
+    await engine.startDeployment(svc.id, { _reuseImage: 'image:latest' });
+    await engine.waitAllIdle();
+    const config = docker.createCalls[0].HostConfig;
+    assert.deepEqual(config.CapDrop, runtime_options?.host_config?.cap_drop?.length ? ['NET_RAW'] : ['ALL']);
+    assert.deepEqual(config.SecurityOpt, ['no-new-privileges:true']);
+  }
+});
+
+test('redeploy after an explicit policy 1-to-2 update uses hardened caps without modifying the old container in place', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({ security_policy_version: 1 });
+  const docker = new FakeDocker();
+  const { engine } = makeEngine(pool, { docker });
+  await engine.startDeployment(svc.id, { _reuseImage: 'image:latest' });
+  await engine.waitAllIdle();
+  assert.equal(docker.createCalls[0].HostConfig.CapDrop, undefined);
+  const old = docker.containers.get(docker.createCalls[0].name);
+  // This is the persisted field written by the admin-only PATCH route.
+  await pool.query('UPDATE deploy_services SET security_policy_version = $1 WHERE id = $2', [2, svc.id]);
+  assert.equal(old.removes, 0);
+  assert.equal(old.stops, 0);
+  await engine.redeploy(svc.id);
+  await engine.waitAllIdle();
+  assert.deepEqual(docker.createCalls.at(-1).HostConfig.CapDrop, ['ALL']);
+  assert.deepEqual(docker.createCalls.at(-1).HostConfig.SecurityOpt, ['no-new-privileges:true']);
+});
+
+test('legacy app network migration keeps the container and joins before disconnecting', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({ security_policy_version: 1, current_deployment_id: 9 });
+  pool.seedDeployment(9, { service_id: svc.id, image_tag: 'old:latest' });
+  const docker = new FakeDocker();
+  const rec = docker.seedContainer(containerName(svc.id, 9));
+  rec.networks = { old_default: { IPAddress: rec.ip }, 'old_nixre-data': { IPAddress: '10.2.0.1' } };
+  const { engine } = makeEngine(pool, { docker });
+  await engine.sweep();
+  assert.deepEqual(Object.keys(rec.networks), ['nixre']);
+  assert.equal(rec.removes, 0);
+  assert.equal(rec.stops, 0);
+  assert.equal(docker.createCalls.length, 0);
+});
+
+test('failed network migration does not delete the container or disconnect its old network', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({ current_deployment_id: 9 });
+  pool.seedDeployment(9, { service_id: svc.id, image_tag: 'old:latest' });
+  const docker = new FakeDocker();
+  const rec = docker.seedContainer(containerName(svc.id, 9));
+  rec.networks = { old_default: { IPAddress: rec.ip } };
+  docker.connectError = 'network unavailable';
+  const { engine } = makeEngine(pool, { docker });
+  await engine.sweep();
+  assert.deepEqual(Object.keys(rec.networks), ['old_default']);
+  assert.equal(rec.removes, 0);
+  assert.equal(pool.services.get(svc.id).status, 'failed');
+});
+
+test('invalid network selection fails closed rather than creating a default-bridge container', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({});
+  const docker = new FakeDocker();
+  const { engine } = makeEngine(pool, { docker, drivers: { networkName: async () => { throw new Error('unsafe network'); } } });
+  await engine.startDeployment(svc.id, { _reuseImage: 'image:latest' });
+  await engine.waitAllIdle();
+  assert.equal(docker.createCalls.length, 0);
+  assert.equal(pool.deployments.get(100).status, 'failed');
+});
+
+test('a pre-existing candidate is not deleted by a conflicting create attempt', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({});
+  const docker = new FakeDocker();
+  const existing = docker.seedContainer(containerName(svc.id, 100));
+  const { engine } = makeEngine(pool, { docker });
+  await engine.startDeployment(svc.id, { _reuseImage: 'old-image:latest' });
+  await engine.waitAllIdle();
+  assert.equal(existing.removes, 0);
+  assert.equal(existing.stops, 0);
+  assert.equal(docker.createCalls.length, 0);
+  assert.equal(pool.deployments.get(100).status, 'failed');
+});
+
+test('explicit admin network modes bypass migration even when approved-network discovery would fail', async () => {
+  for (const mode of ['host', 'bridge', 'none', 'container:custom-service']) {
+    const pool = new FakePool();
+    pool.addRepo('a', 'b');
+    const svc = pool.addService({ current_deployment_id: 9, runtime_options: { host_config: { network_mode: mode } } });
+    pool.seedDeployment(9, { service_id: svc.id, image_tag: 'old-image:latest' });
+    const docker = new FakeDocker();
+    const rec = docker.seedContainer(containerName(svc.id, 9));
+    rec.networks = { custom: {} };
+    const { engine } = makeEngine(pool, { docker, drivers: { networkName: async () => { throw new Error('must not discover'); } } });
+    await engine.sweep();
+    assert.deepEqual(rec.networks, { custom: {} });
+    assert.equal(rec.removes, 0);
+    assert.equal(pool.services.get(svc.id).status, 'running');
+  }
+});
+
+test('legacy boot recreation retains policy while new privileged services omit no-new-privileges', async () => {
+  const pool = new FakePool();
+  pool.addRepo('a', 'b');
+  const svc = pool.addService({ current_deployment_id: 9, security_policy_version: 1,
+    runtime_options: JSON.stringify({ host_config: { cap_add: ['NET_ADMIN'], cap_drop: [] } }) });
+  pool.seedDeployment(9, { service_id: svc.id, image_tag: 'old-image:latest' });
+  const docker = new FakeDocker();
+  const { engine } = makeEngine(pool, { docker });
+  await engine.sweep();
+  assert.equal(docker.createCalls[0].HostConfig.CapDrop, undefined);
+  assert.equal(docker.createCalls[0].HostConfig.SecurityOpt, undefined);
+  assert.deepEqual(docker.createCalls[0].HostConfig.CapAdd, ['NET_ADMIN']);
+  const privileged = pool.addService({ runtime_options: { host_config: { privileged: true } } });
+  await engine.startDeployment(privileged.id, { _reuseImage: 'image:latest' });
+  await engine.waitAllIdle();
+  assert.equal(docker.createCalls.at(-1).HostConfig.Privileged, true);
+  assert.equal(docker.createCalls.at(-1).HostConfig.SecurityOpt, undefined);
 });
 
 test('runtime options merge into the docker create payload', async () => {

@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 # AGENTS.md requires "build the UI, run the tests, commit ui/dist" before every
 # push. Nothing enforced it, so a broken or stale build reached main. This
 # workflow is that enforcement.
@@ -12,6 +15,22 @@ jobs:
   backend:
     name: Backend tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nixre_test
+          POSTGRES_PASSWORD: disposable-ci-password
+          POSTGRES_DB: nixre_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nixre_test -d nixre_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NIXRE_TEST_DATABASE_URL: postgres://nixre_test:disposable-ci-password@127.0.0.1:5432/nixre_test
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +48,39 @@ jobs:
       - name: Test
         working-directory: backend
         run: npm test
+
+      - name: Validate Compose and production Caddy configuration
+        run: |
+          docker compose --env-file .env.example -p nixre-ci config --quiet
+          docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker run --rm -e NIXRE_TRUSTED_EDGE_CIDRS="127.0.0.1/32 ::1/128" -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  docker-upgrade:
+    name: Isolated Docker upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build and verify the real stack in a disposable daemon
+        run: |
+          mkdir -p "$RUNNER_TEMP/nixre-docker-check"
+          node scripts/test-docker-upgrade.mjs --run --socket-gid 1000 --temp-root "$RUNNER_TEMP/nixre-docker-check"
+
+      - name: Preserve isolated test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-upgrade-diagnostics
+          path: |
+            ${{ runner.temp }}/nixre-docker-check/**/*.log
+            ${{ runner.temp }}/nixre-docker-check/**/report.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   ui:
     name: UI tests + build

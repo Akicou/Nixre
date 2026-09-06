@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createRateLimiter, resetRateLimits, clientKey } from './rateLimit.js';
+import { createRateLimiter, clientKey } from './rateLimit.js';
 
 function fakeRes() {
   const headers = {};
@@ -27,7 +27,6 @@ function fakeRes() {
 }
 
 test('allows up to the limit, then blocks with 429', () => {
-  resetRateLimits();
   const limit = createRateLimiter({ windowMs: 60_000, max: 3, name: 'logins' });
   const mw = limit(() => 'k');
 
@@ -55,7 +54,6 @@ test('allows up to the limit, then blocks with 429', () => {
 });
 
 test('counts are per key', () => {
-  resetRateLimits();
   const limit = createRateLimiter({ windowMs: 60_000, max: 1 });
   const mw = limit(req => req.key);
 
@@ -71,7 +69,6 @@ test('counts are per key', () => {
 });
 
 test('emits rate-limit headers on allowed requests', () => {
-  resetRateLimits();
   const limit = createRateLimiter({ windowMs: 60_000, max: 5 });
   const mw = limit(() => 'k');
   const res = fakeRes();
@@ -80,20 +77,25 @@ test('emits rate-limit headers on allowed requests', () => {
   assert.equal(res.headers['x-ratelimit-remaining'], '4');
 });
 
-test('clientKey ignores X-Forwarded-For unless TRUST_PROXY is set', () => {
-  const prev = process.env.TRUST_PROXY;
-
+test('clientKey uses Express identity, never raw forwarded headers', () => {
   const req = {
     socket: { remoteAddress: '203.0.113.9' },
     headers: { 'x-forwarded-for': '1.2.3.4, 5.6.7.8' },
   };
 
-  process.env.TRUST_PROXY = '';
   assert.equal(clientKey(req), '203.0.113.9', 'untrusted: use the socket address');
-
-  process.env.TRUST_PROXY = '1';
-  // With one trusted hop the address appended by our own edge is used.
+  req.ip = '5.6.7.8';
   assert.equal(clientKey(req), '5.6.7.8');
+});
 
-  process.env.TRUST_PROXY = prev ?? '';
+test('limiter instances have independent counters; one instance can share a budget', () => {
+  const login = createRateLimiter({ windowMs: 60_000, max: 1 });
+  const tools = createRateLimiter({ windowMs: 60_000, max: 1 });
+  login(() => 'caller')({}, fakeRes(), () => {});
+  const independent = fakeRes();
+  tools(() => 'caller')({}, independent, () => {});
+  assert.equal(independent.statusCode, null);
+  const shared = fakeRes();
+  login(() => 'caller')({}, shared, () => {});
+  assert.equal(shared.statusCode, 429);
 });

@@ -14,7 +14,9 @@
 // Cloudflare Tunnel, direct port).
 
 import http from 'node:http';
+import net from 'node:net';
 import { resolveRoute } from './deployPure.js';
+import { reservedDomainSet, reservedDomainReason } from './domainVerify.js';
 
 const LOG_FLUSH_MS = 2000;
 const LOG_BUFFER_CAP = 10_000;
@@ -23,11 +25,12 @@ const ROUTE_CACHE_MS = 5000;
 // Pure: builds the routing table consumed by resolveRoute from DB rows.
 export function buildRoutes(domainRows, serviceRows, baseDomain) {
   const routes = [];
+  const reserved = reservedDomainSet();
   for (const row of domainRows || []) {
     // Ownership gate: an unverified domain is attached but parked. Routing it
     // anyway would let any space writer serve their container from a hostname
     // they do not control — including this instance's own.
-    if (row.verified === false) continue;
+    if (row.verified !== true || reservedDomainReason(row.domain, { baseDomain, reserved })) continue;
     // Custom domains stay routable even while a service is stopped so the
     // user gets an explicit "not accepting traffic" page instead of 404.
     routes.push({ host: String(row.domain).toLowerCase(), serviceId: row.service_id });
@@ -40,14 +43,14 @@ export function buildRoutes(domainRows, serviceRows, baseDomain) {
     }
     for (const svc of serviceRows || []) {
       // Vanity form only when unambiguous among serving services…
-      if (nameCounts.get(svc.name) === 1) {
+      if (nameCounts.get(svc.name) === 1 && !/^svc-\d+$/i.test(svc.name)) {
         routes.push({ host: `${String(svc.name).toLowerCase()}.${base}`, serviceId: svc.id });
       }
       // …and the deterministic id form always exists.
       routes.push({ host: `svc-${svc.id}.${base}`, serviceId: svc.id });
     }
   }
-  return routes;
+  return routes.filter(route => !reserved.has(route.host.replace(/\.$/, '')));
 }
 
 export function createDeployProxy({ pool, engine }) {
@@ -309,15 +312,23 @@ export function createDeployProxy({ pool, engine }) {
 
   // Best-effort WebSocket pass-through for apps that need it.
   server.on('upgrade', (req, socket, head) => {
+    let upstream;
+    const timer = setTimeout(() => {
+      upstream?.destroy(new Error('WebSocket upstream connect timed out'));
+      socket.destroy();
+    }, 5000);
+    timer.unref();
+    socket.on('error', () => upstream?.destroy());
+    socket.on('close', () => { clearTimeout(timer); upstream?.destroy(); });
     void (async () => {
       const routed = await routeHost(req.headers.host).catch(() => ({ target: null }));
+      if (socket.destroyed) return;
       if (!routed.target) {
         socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
       }
-      const { default: net } = await import('node:net');
-      const upstream = net.connect(routed.target.port, routed.target.ip, () => {
+      upstream = net.connect(routed.target.port, routed.target.ip, () => {
         const lines = [
           `${req.method} ${req.url} HTTP/1.1`,
           // Rebuilt header block. Previously every client header was splatted
@@ -333,9 +344,12 @@ export function createDeployProxy({ pool, engine }) {
         upstream.write(lines.join('\r\n') + '\r\n');
         if (head?.length) upstream.write(head);
         socket.pipe(upstream).pipe(socket);
-        socket.on('error', () => upstream.destroy());
-        upstream.on('error', () => socket.destroy());
       });
+      // Connect failures happen BEFORE the connect callback. Always install
+      // handlers immediately, including while a client is still handshaking.
+      upstream.once('connect', () => clearTimeout(timer));
+      upstream.on('error', () => socket.destroy());
+      upstream.on('close', () => { clearTimeout(timer); socket.destroy(); });
     })().catch(() => socket.destroy());
   });
 

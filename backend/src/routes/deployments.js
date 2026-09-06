@@ -146,6 +146,7 @@ export function deploymentRoutes(pool, authenticate) {
       success_retention_hours: Number(s.success_retention_hours ?? 24),
       failure_retention_hours: Number(s.failure_retention_hours ?? 168),
       runtime_options: s.runtime_options ?? null,
+      security_policy_version: Number(s.security_policy_version ?? 1),
       created: Number(s.created),
       updated: Number(s.updated),
       ...extra,
@@ -195,6 +196,12 @@ export function deploymentRoutes(pool, authenticate) {
     const repo = await requireWriter(req, res);
     if (!repo) return;
     const body = req.body || {};
+    if (Object.hasOwn(body, 'security_policy_version')) {
+      res.status(req.auth.user.admin ? 400 : 403).json({
+        message: 'New services use the current security policy; only an instance admin can change an existing service via PATCH',
+      });
+      return;
+    }
     const name = sanitizeServiceName(body.name || '');
     let rootDir;
     try {
@@ -323,6 +330,7 @@ export function deploymentRoutes(pool, authenticate) {
     'failure_retention_hours',
     'env',
     'runtime_options',
+    'security_policy_version',
   ]);
 
   api.patch('/repos/:space/:repo/\\+/deployments/services/:id', auth, guard(async (req, res) => {
@@ -330,6 +338,18 @@ export function deploymentRoutes(pool, authenticate) {
     if (!ctx) return;
     const { service } = ctx;
     const body = req.body || {};
+    // Validate before processing env updates or other side effects. A policy
+    // downgrade requires an explicit admin request, never a reset of options.
+    if (Object.hasOwn(body, 'security_policy_version')) {
+      if (!req.auth.user.admin) {
+        res.status(403).json({ message: 'Only an instance admin can change the deployment security policy' });
+        return;
+      }
+      if (body.security_policy_version !== 1 && body.security_policy_version !== 2) {
+        res.status(400).json({ message: 'security_policy_version must be the number 1 or 2' });
+        return;
+      }
+    }
 
     const sets = {};
     for (const key of Object.keys(body)) {
@@ -351,8 +371,8 @@ export function deploymentRoutes(pool, authenticate) {
         value = Math.min(600, Math.max(100, Number(value)));
       }
       if (key === 'runtime_options') {
-        // Full replace when an object is provided; explicit null clears back
-        // to legacy behavior. Omitted = untouched (like every other field).
+        // Full replace when an object is provided; explicit null restores the
+        // selected security policy's defaults. Omitted = untouched.
         if (value === null) {
           sets[key] = { v: null };
           continue;
@@ -875,7 +895,7 @@ export function deploymentRoutes(pool, authenticate) {
         ],
         notes: [
           cloudflareConfigured()
-            ? 'This record is created/removed automatically via the Cloudflare API — no manual step needed.'
+            ? 'An instance admin can provision this record via the Cloudflare API. Other users must publish DNS and the TXT ownership challenge themselves.'
             : 'Create a Cloudflare Tunnel (Zero Trust → Networks → Tunnels) or run one with compose profile "tunnels".',
           'Add a public hostname mapping this domain to http://nixre-core:' + proxyPort + '.',
           'Point DNS at the tunnel with the CNAME shown.',
@@ -906,25 +926,34 @@ export function deploymentRoutes(pool, authenticate) {
 
   // DNS status blob for a deploy_domains row. `auto` + status drive the UI
   // badge; `guidance` stays for manual setups and operator reference.
-  function dnsStatus(row) {
+  function verificationStatus(row) {
+    if (row.verified === true) return { verified: true };
+    return {
+      verified: false,
+      method: 'txt',
+      record: { type: 'TXT', name: verifyRecordName(row.domain), value: row.verify_token },
+    };
+  }
+
+  function dnsStatus(row, user) {
     if (row.kind !== 'tunnel') return { auto: false, status: 'manual' };
     if (row.cf_record_id) {
       return { auto: true, status: 'created', target: tunnelCnameTarget() };
     }
-    if (cloudflareConfigured()) return { auto: true, status: 'pending', target: tunnelCnameTarget() };
+    if (cloudflareConfigured() && user?.admin) return { auto: true, status: 'pending', target: tunnelCnameTarget() };
     return { auto: false, status: 'manual' };
   }
 
   // Best-effort: create the proxied CNAME for a tunnel domain via the
   // Cloudflare API and persist the record ids. Never throws — failures come
   // back as { auto: true, status: 'failed', error } so the UI can offer retry.
-  async function provisionDns(row, domain) {
-    if (!cloudflareConfigured()) return { auto: false, status: 'manual' };
+  async function provisionDns(row, domain, user) {
+    if (row.kind !== 'tunnel' || !user?.admin || !cloudflareConfigured()) return { auto: false, status: 'manual' };
     try {
       const result = await createTunnelCname(domain);
       await pool.query(
-        'UPDATE deploy_domains SET cf_zone_id = $1, cf_record_id = $2 WHERE id = $3',
-        [result.zoneId, result.recordId, row.id],
+        'UPDATE deploy_domains SET cf_zone_id = $1, cf_record_id = $2, verified = TRUE, verified_at = $4 WHERE id = $3',
+        [result.zoneId, result.recordId, row.id, Date.now()],
       );
       return {
         auto: true,
@@ -954,7 +983,7 @@ export function deploymentRoutes(pool, authenticate) {
       verified: Boolean(r.verified),
       verification: verificationStatus(r),
       created: Number(r.created),
-      dns: dnsStatus(r),
+      dns: dnsStatus(r, req.auth.user),
       guidance: domainGuidance(r.domain, r.kind),
     })));
   }));
@@ -1007,7 +1036,7 @@ export function deploymentRoutes(pool, authenticate) {
     // handshake failures. Require an explicit confirmation for those instead
     // of silently attaching something that won't serve HTTPS.
     let tlsRisk = false;
-    if (kind === 'tunnel' && cloudflareConfigured()) {
+    if (kind === 'tunnel' && req.auth.user.admin && cloudflareConfigured()) {
       try {
         const zone = await findZoneId(domain);
         const depth = domain.split('.').length - zone.zoneName.split('.').length;
@@ -1040,25 +1069,11 @@ export function deploymentRoutes(pool, authenticate) {
       [ctx.service.id, kind, domain, tlsRisk, verifyToken, Date.now()],
     );
     const row = { id: rows[0].id, kind, domain };
-    const dns = await provisionDns(row, domain);
+    const dns = await provisionDns(row, domain, req.auth.user);
 
-    // Ownership proof: when auto-DNS created the record, control of the zone
-    // is itself the proof. Otherwise the domain stays parked (unrouted) until
-    // the challenge record appears — or an admin marks it verified.
-    let verified = false;
-    if (dns.status === 'created' && req.auth.user.admin) {
-      verified = true;
-    } else if (dns.status === 'created' && cloudflareConfigured()) {
-      // The operator's token holds DNS:Edit on this zone, so writing the
-      // CNAME proves the operator controls it.
-      verified = true;
-    }
-    if (verified) {
-      await pool.query(
-        'UPDATE deploy_domains SET verified = TRUE, verified_at = $2 WHERE id = $1',
-        [row.id, Date.now()],
-      );
-    }
+    // Only an admin may provision with operator credentials. Other claims
+    // remain parked until their independently published TXT proof matches.
+    const verified = dns.status === 'created';
     await proxyInvalidate();
 
     res.status(201).json({
@@ -1097,6 +1112,10 @@ export function deploymentRoutes(pool, authenticate) {
       res.status(404).json({ message: 'Domain not found' });
       return;
     }
+    const reservedReason = reservedDomainReason(row.domain, {
+      baseDomain: process.env.DEPLOY_BASE_DOMAIN || '', reserved: reservedDomainSet(),
+    });
+    if (reservedReason) { res.status(409).json({ message: reservedReason }); return; }
     if (row.verified) {
       res.json({ id: Number(row.id), domain: row.domain, verified: true });
       return;
@@ -1143,8 +1162,12 @@ export function deploymentRoutes(pool, authenticate) {
   api.post('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId/dns', auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
+    if (!req.auth.user.admin) {
+      res.status(403).json({ message: 'Only an instance admin can use DNS automation; publish the TXT challenge instead' });
+      return;
+    }
     const { rows } = await pool.query(
-      'SELECT id, kind, domain, cf_zone_id, cf_record_id FROM deploy_domains WHERE id = $1 AND service_id = $2',
+      'SELECT id, kind, domain, verified, verify_token, cf_zone_id, cf_record_id FROM deploy_domains WHERE id = $1 AND service_id = $2',
       [Number(req.params.domainId), ctx.service.id],
     );
     const row = rows[0];
@@ -1160,9 +1183,15 @@ export function deploymentRoutes(pool, authenticate) {
       res.status(400).json({ message: 'Cloudflare DNS automation is not configured on this instance' });
       return;
     }
-    const dns = await provisionDns(row, row.domain);
+    const reservedReason = reservedDomainReason(row.domain, {
+      baseDomain: process.env.DEPLOY_BASE_DOMAIN || '', reserved: reservedDomainSet(),
+    });
+    if (reservedReason) { res.status(409).json({ message: reservedReason }); return; }
+    const dns = await provisionDns(row, row.domain, req.auth.user);
+    const verified = row.verified === true || dns.status === 'created';
     await proxyInvalidate();
-    res.json({ id: Number(row.id), domain: row.domain, dns, guidance: domainGuidance(row.domain, row.kind) });
+    res.json({ id: Number(row.id), domain: row.domain, verified,
+      verification: verificationStatus({ ...row, verified }), dns, guidance: domainGuidance(row.domain, row.kind) });
   }));
 
   api.delete('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId', auth, guard(async (req, res) => {

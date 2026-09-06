@@ -105,7 +105,7 @@ async function canWriteRepo(pool, spaceUid, user) {
 // Read access for a loaded repo row. Every content/commits/branches read goes
 // through here — the git transport enforced is_public but these endpoints used
 // to check nothing at all.
-async function assertReadable(res, repo, user) {
+async function assertReadable(pool, res, repo, user) {
   if (!(await canReadRepo(pool, repo, user))) {
     // 404 rather than 403: a 403 would confirm a private repo exists.
     res.status(404).json({ message: 'Repository not found' });
@@ -383,21 +383,38 @@ export function forgeRoutes(pool, authenticate) {
       res.status(400).json({ message: 'Invalid space uid' });
       return;
     }
-    const exists = await pool.query('SELECT uid FROM spaces WHERE uid = $1', [uid]);
-    if (exists.rows.length > 0) {
-      res.status(409).json({ message: 'Space already exists' });
-      return;
-    }
     const ts = now();
-    const { rows } = await pool.query(
-      `INSERT INTO spaces (uid, description, is_public, created_by, created, updated)
-       VALUES ($1, $2, $3, $4, $5, $5) RETURNING *`,
-      [uid, description, isPublic, req.auth.user.uid, ts],
-    );
-    await pool.query(
-      'INSERT INTO space_members (space_uid, user_uid, role, created) VALUES ($1, $2, $3, $4)',
-      [uid, req.auth.user.uid, 'owner', ts],
-    );
+    const client = await pool.connect();
+    let rows;
+    try {
+      await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+      // Shared with registration: allocation spans both users and spaces.
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended('nixre.identity-namespace', 0))");
+      const exists = await client.query(
+        `SELECT uid FROM spaces WHERE lower(uid) = lower($1)
+         UNION ALL SELECT uid FROM users WHERE lower(uid) = lower($1)`, [uid],
+      );
+      if (exists.rows.length) throw Object.assign(new Error('Namespace already exists'), { code: '23505' });
+      ({ rows } = await client.query(
+        `INSERT INTO spaces (uid, description, is_public, created_by, created, updated)
+         VALUES ($1, $2, $3, $4, $5, $5) RETURNING *`,
+        [uid, description, isPublic, req.auth.user.uid, ts],
+      ));
+      await client.query(
+        'INSERT INTO space_members (space_uid, user_uid, role, created) VALUES ($1, $2, $3, $4)',
+        [uid, req.auth.user.uid, 'owner', ts],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      if (err.code === '23505') {
+        res.status(409).json({ message: 'Space or username already exists' });
+        return;
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
     res.status(201).json(rowToSpace(rows[0]));
   });
 
@@ -728,7 +745,7 @@ export function forgeRoutes(pool, authenticate) {
       res.status(404).json({ message: 'Repository not found' });
       return;
     }
-    if (!(await assertReadable(res, repo, req.auth.user))) return;
+    if (!(await assertReadable(pool, res, repo, req.auth.user))) return;
     const counts = await openPrCounts(pool, [Number(repo.id)]);
     res.json({
       ...rowToRepo(repo, { openPulls: counts.get(Number(repo.id)) ?? 0 }),

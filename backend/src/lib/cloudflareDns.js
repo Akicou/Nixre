@@ -67,13 +67,7 @@ export async function createTunnelCname(domain) {
     if (rec.content === target && rec.proxied) {
       return { recordId: rec.id, zoneId, zoneName, existed: true };
     }
-    // A stale/conflicting record exists — update it instead of piling up
-    // duplicates (Cloudflare rejects duplicate CNAMEs on the same name).
-    const updated = await cfFetch(`/zones/${zoneId}/dns_records/${rec.id}`, {
-      method: 'PUT',
-      body: JSON.stringify({ type: 'CNAME', name: domain, content: target, proxied: true, ttl: 1 }),
-    });
-    return { recordId: updated.id, zoneId, zoneName, existed: true };
+    throw new Error(`DNS record for '${domain}' already points elsewhere; refusing to overwrite it`);
   }
   const rec = await cfFetch(`/zones/${zoneId}/dns_records`, {
     method: 'POST',

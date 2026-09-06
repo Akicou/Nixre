@@ -12,14 +12,15 @@
 // straight path from "ordinary member of any space" to "read/write every
 // table in the instance".
 //
-// Resolution is now explicit and refuses the data network outright.
+// Resolution is explicit, validates the daemon's identity and core membership,
+// and never falls back to the daemon's default bridge on a policy error.
 
 /** Name of the internal database network, never used for spawned containers. */
 export const DATA_NETWORK = process.env.NIXRE_DATA_NETWORK || 'nixre-data';
 
 /**
- * The network a spawned container should join, or '' when it cannot be
- * determined (callers then fall back to the daemon default).
+ * The approved network a spawned container should join. Throws on an absent,
+ * unsafe, or unreachable network; callers must not swallow this failure.
  *
  * @param {object} [docker]  dockerode instance, used to discover core's networks
  * @param {object} [opts]
@@ -27,33 +28,21 @@ export const DATA_NETWORK = process.env.NIXRE_DATA_NETWORK || 'nixre-data';
  * @param {string} [opts.role]       'sandbox' | 'app' — for log messages
  */
 export async function spawnedContainerNetwork(docker, { preferred, role = 'container' } = {}) {
-  const configured = String(preferred ?? process.env.SANDBOX_NETWORK ?? '').trim();
-  if (configured) {
-    if (configured === DATA_NETWORK) {
-      console.error(
-        `[dockerNetwork] refusing to attach ${role} containers to the database network ` +
-          `('${DATA_NETWORK}'). Check SANDBOX_NETWORK / NIXRE_APPS_NETWORK.`,
-      );
-      return '';
-    }
-    return configured;
+  const configured = String(preferred ?? (role === 'app' ? process.env.NIXRE_APPS_NETWORK : process.env.SANDBOX_NETWORK) ?? '').trim();
+  if (!configured || !docker) throw new Error(`Configure an explicit Docker network for ${role} containers`);
+  const network = await docker.getNetwork(configured).inspect();
+  if (!network.Name || !network.Id ||
+      network.Name === DATA_NETWORK || network.Id === DATA_NETWORK ||
+      network.Name === 'nixre-data' || network.Name.endsWith('_nixre-data') ||
+      network.Labels?.['com.docker.compose.network'] === 'nixre-data' ||
+      ['host', 'null'].includes(network.Driver) || ['bridge', 'host', 'none'].includes(network.Name)) {
+    throw new Error(`Refusing unsafe ${role} network '${configured}'`);
   }
-
-  if (!docker) return '';
-  try {
-    const { default: os } = await import('node:os');
-    const info = await docker.getContainer(os.hostname()).inspect();
-    const networks = Object.keys(info.NetworkSettings?.Networks || {});
-    const safe = networks.filter(n => n !== DATA_NETWORK);
-    if (networks.length && !safe.length) {
-      console.warn(
-        `[dockerNetwork] core is only attached to '${DATA_NETWORK}'; refusing to put ` +
-          `${role} containers there. Set the network name explicitly.`,
-      );
-    }
-    return safe[0] || '';
-  } catch {
-    // Not containerized, or docker unreachable — caller falls back.
-    return '';
+  const { default: os } = await import('node:os');
+  const info = await docker.getContainer(os.hostname()).inspect();
+  const memberships = info.NetworkSettings?.Networks || {};
+  if (!Object.values(memberships).some(n => n.NetworkID === network.Id)) {
+    throw new Error(`Core must be attached to ${role} network '${network.Name}'`);
   }
+  return network.Name;
 }

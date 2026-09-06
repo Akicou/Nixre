@@ -6,7 +6,7 @@
 // process needed for the self-hosted scale this targets).
 
 import crypto from 'node:crypto';
-import { guardedFetch } from './netGuard.js';
+import { guardedFetch, isNetPolicyError } from './netGuard.js';
 import { decryptSecret } from './ai.js';
 
 const MAX_ATTEMPTS = 5;
@@ -37,7 +37,7 @@ export function signingSecretFor(row) {
   if (row.secret_enc) {
     const decrypted = decryptSecret(row.secret_enc);
     if (decrypted != null) return decrypted;
-    // Fall through: if decryption fails, the legacy column may still hold it.
+    throw new Error('Webhook signing secret could not be decrypted');
   }
   return row.secret ?? '';
 }
@@ -91,11 +91,12 @@ export async function sweep(pool) {
 
   for (const d of due) {
     const body = JSON.stringify(d.payload);
-    const secret = signingSecretFor(d);
     let statusCode = null;
     let ok = false;
     let lastError = null;
+    let blocked = false;
     try {
+      const secret = signingSecretFor(d);
       // guardedFetch resolves the host and refuses loopback, link-local
       // (cloud metadata), RFC1918 and docker-internal targets, and
       // re-validates every redirect hop. A webhook URL is user-supplied, so
@@ -116,16 +117,14 @@ export async function sweep(pool) {
       );
       statusCode = r.status;
       ok = r.ok;
+      await r.body?.cancel();
     } catch (err) {
       ok = false;
       lastError = err.message;
+      blocked = isNetPolicyError(err);
     }
     // A URL that is refused outright can never succeed, so stop retrying it
     // instead of hammering a blocked target five times.
-    const blocked = !ok && /[Rr]efusing|Not a valid URL|Only http\(s\)|Could not resolve|credentials/.test(
-      lastError || '',
-    );
-
     const attempts = d.attempts + 1;
     const done = ok || blocked || attempts >= MAX_ATTEMPTS;
     const nextRetry = done ? null : Date.now() + RETRY_DELAYS_MS[Math.min(attempts, RETRY_DELAYS_MS.length - 1)];

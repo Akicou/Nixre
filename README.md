@@ -21,6 +21,10 @@ Plugins are gated twice: the operator enables a plugin for the instance, and eac
 
 ## Quick start
 
+**Existing installation?** Follow [the security upgrade guide](docs/security-upgrade.md)
+before changing secrets or rebuilding. It covers legacy credential conversion,
+PostgreSQL password rotation, container migration, proxy trust, and rollback.
+
 ```bash
 git clone https://github.com/Akicou/Nixre.git
 cd Nixre
@@ -62,7 +66,16 @@ Git objects live as bare repositories on the `./data/repos` volume. Postgres hol
 
 **Networks.** Postgres is isolated on the internal `nixre-data` network; only `nixre-core` can reach it. Deployed app containers run on `nixre-apps` (with core, which probes and proxies to them) and agent sandboxes on a non-database network — so neither can open a socket to Postgres. This matters because a deployment's Dockerfile is user-supplied code and creating one only requires write access to a space.
 
-**Custom domains are gated on ownership.** Attaching a hostname parks it: it is not routed until you publish a `_nixre-verify.<domain>` TXT record and verify it (or an admin force-approves it). Set `NIXRE_RESERVED_DOMAINS` to your own hostnames so no deployment can ever claim them.
+**Custom domains are gated on ownership.** Attaching a hostname parks it until TXT proof or admin approval/provisioning. Cloudflare automation requires an admin and refuses conflicting records. `NIXRE_RESERVED_DOMAINS` protects your own hostnames across custom, automatic, and grandfathered routes.
+
+**Proxy identity.** Configure `TRUSTED_PROXY_CIDRS` on core and, for tunnels,
+`NIXRE_TRUSTED_EDGE_CIDRS` on Caddy with controlled peer addresses. Otherwise
+visitors share the proxy's rate-limit bucket. Never trust shared app subnets.
+Private AI/STT origins need explicit `NIXRE_AI_PRIVATE_ORIGINS` approval.
+
+**Runtime compatibility.** Existing deployments retain their capability policy
+on recreation; new services use least-privilege defaults. Admins can explicitly
+migrate old services after image testing. See [runtime options](docs/deployments-runtime.md).
 
 ### Cloning
 

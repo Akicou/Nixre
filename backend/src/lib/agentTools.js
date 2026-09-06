@@ -3,9 +3,9 @@
 // Read-only tools (list_files, read_file, search_code, show_images) work
 // against the bare repo on disk via git plumbing and are safe to expose to
 // any authenticated user with repo access. run_command uses a Docker sandbox
-// (persistent shell + volume per conversation) when available, otherwise
-// clones the repo to a temp dir — gated behind the caller's per-repo access
-// per-repo access profile (canRunBash / canRunTests; both default on), with
+// (persistent shell + volume per conversation), never the core shell,
+// gated behind the caller's per-repo access profile
+// (canRunBash / canRunTests; both default on), with
 // hard timeouts and output caps. web_search queries the web and is gated
 // behind canSearchWeb.
 // allowedPaths / blockedPaths restrict which repo files the read tools may
@@ -13,7 +13,7 @@
 //
 // Every tool returns { output } or throws; the route maps errors to text.
 
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -26,11 +26,6 @@ import { getDecryptedSecret } from './userSecrets.js';
 import { READ_SKILL_SCHEMA, readSkill } from './agentSkills.js';
 
 const exec = promisify(execFile);
-
-async function githubEnv(uid) {
-  const token = uid ? await getDecryptedSecret(uid, 'github') : null;
-  return token ? { GITHUB_TOKEN: token } : {};
-}
 
 async function configureGithubGit(workdir, uid) {
   const token = uid ? await getDecryptedSecret(uid, 'github') : null;
@@ -46,8 +41,6 @@ async function configureGithubGit(workdir, uid) {
 const MAX_LIST = 500;
 const MAX_FILE_BYTES = 48 * 1024;
 const MAX_GREP_MATCHES = 60;
-const MAX_CMD_MS = 120_000;
-const MAX_CMD_BYTES = 32 * 1024;
 
 // --- workspace targets ---------------------------------------------------------
 //
@@ -108,7 +101,7 @@ export const TOOL_SCHEMAS = [
   {
     name: 'run_command',
     description:
-      'Run a shell command in the agent sandbox (persistent workspace per conversation) or a fresh clone when no sandbox is available. Use for tests, builds and inspection. cd, env and installs persist between calls in the sandbox. The workspace is a git clone of the repository with the user\'s identity configured — commit and `git push` to publish changes to the hosted repository. Do not use cat > or interactive redirects — use write_file to create or overwrite files. Output is truncated.',
+      'Run a shell command in the Docker agent sandbox (requires a conversation). No local-shell fallback is available. Use for tests, builds and inspection. The workspace persists between calls with the user\'s git identity configured — commit and `git push` to publish changes. Use write_file to create or overwrite files. Output is truncated.',
     parameters: {
       type: 'object',
       properties: { command: { type: 'string', description: 'Shell command to run inside the repo workspace' } },
@@ -390,21 +383,19 @@ export async function writeFile(space, repo, args, permissions = {}, context = {
   }
 
   const { userId, conversationId, repoPath } = context;
-  if (userId && conversationId && repoPath && (await isSandboxEnabled())) {
-    try {
-      return await writeFileInSandbox({
-        userId,
-        conversationId,
-        repoPath,
-        user: context.user,
-        space,
-        repo,
-        filePath: p,
-        content,
-      });
-    } catch (err) {
-      console.warn('sandbox write_file failed, falling back to fallback workspace:', err.message);
-    }
+  if (userId) {
+    if (!conversationId || !repoPath) throw new Error('write_file requires a conversation and workspace. Start an assistant conversation first.');
+    if (!(await isSandboxEnabled())) throw new Error('Agent sandbox unavailable. Docker is required; files will not be written on the core host.');
+    return writeFileInSandbox({
+      userId,
+      conversationId,
+      repoPath,
+      user: context.user,
+      space,
+      repo,
+      filePath: p,
+      content,
+    });
   }
 
   // Persistent per-conversation workspace when possible; without conversation
@@ -456,124 +447,20 @@ export async function runCommand(space, repo, args, _permissions = {}, context =
   }
 
   const { userId, conversationId, repoPath } = context;
-  if (userId && conversationId && repoPath && (await isSandboxEnabled())) {
-    try {
-      return await runCommandInSandbox({
-        userId,
-        conversationId,
-        repoPath,
-        user: context.user,
-        space,
-        repo,
-        command,
-      });
-    } catch (err) {
-      console.warn('sandbox run_command failed, falling back to fallback workspace:', err.message);
-    }
+  if (!userId || !conversationId || !repoPath) {
+    throw new Error('run_command requires an authenticated conversation and workspace. Start an assistant conversation first.');
   }
-
-  // Persistent per-conversation workspace when possible; otherwise the old
-  // ephemeral clone (state does not survive the call).
-  const extraEnv = await githubEnv(userId);
-  const workdir = await ensureFallbackWorkspace(context, space, repo);
-  if (workdir) {
-    return runShellCommand(command, workdir, extraEnv);
+  if (!(await isSandboxEnabled())) {
+    throw new Error('Agent sandbox unavailable. Docker is required; commands will not run on the core host.');
   }
-
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'nixre-agent-'));
-  // Clone into a path that does not exist yet. `git clone <src> <existing-dir>`
-  // fails on some git builds with "destination path already exists" even when
-  // mkdtemp left an empty folder — that is the sandbox the agent then cannot find.
-  const throwaway = path.join(parent, 'repo');
-  try {
-    const src = sourceGitDir(context, space, repo);
-    if (src) {
-      try {
-        await exec('git', ['clone', '--depth', '1', '--quiet', src, throwaway], { timeout: 60_000 });
-      } catch {
-        // Empty bare repos have no HEAD; shallow clone fails. Full clone still works.
-        await exec('git', ['clone', '--quiet', src, throwaway], { timeout: 60_000 });
-      }
-    } else {
-      await fs.mkdir(throwaway, { recursive: true });
-      await exec('git', ['init', '--quiet', throwaway]).catch(() => {});
-    }
-    await configureGithubGit(throwaway, userId);
-    return await runShellCommand(command, throwaway, extraEnv);
-  } finally {
-    await fs.rm(parent, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-/**
- * Environment handed to `sh -c` for run_command.
- *
- * The process environment used to be forwarded wholesale, which handed every
- * agent shell INTERNAL_TOKEN, AI_SECRET, DATABASE_URL, CLOUDFLARE_API_TOKEN
- * and the Cloudflare tunnel id — `env | grep TOKEN` was full instance
- * compromise from a single tool call. Only a small allowlist of build-time
- * variables is passed now; anything operator-supplied stays out.
- */
-const SANDBOX_ENV_ALLOWLIST = [
-  'PATH',
-  'HOME',
-  'LANG',
-  'LC_ALL',
-  'TERM',
-  'TZ',
-  'SHELL',
-  'TMPDIR',
-  // Proxy settings are legitimate build configuration and contain no secret
-  // unless the operator puts credentials in them.
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'NO_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'no_proxy',
-  // Package registries the agent may need to reach.
-  'NPM_CONFIG_REGISTRY',
-  'PIP_INDEX_URL',
-];
-
-function sandboxEnv(extraEnv = {}) {
-  const env = { CI: '1' };
-  for (const key of SANDBOX_ENV_ALLOWLIST) {
-    if (process.env[key] !== undefined) env[key] = process.env[key];
-  }
-  return { ...env, ...extraEnv };
-}
-
-/** Run `command` in `cwd` with a hard timeout and output cap. */
-function runShellCommand(command, cwd, extraEnv = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('sh', ['-c', command], {
-      cwd,
-      env: sandboxEnv(extraEnv),
-    });
-    let out = '';
-    let truncated = false;
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`Command timed out after ${MAX_CMD_MS / 1000}s`));
-    }, MAX_CMD_MS);
-    child.stdout.on('data', d => {
-      if (out.length < MAX_CMD_BYTES) out += d.toString();
-      else truncated = true;
-    });
-    child.stderr.on('data', d => {
-      if (out.length < MAX_CMD_BYTES) out += d.toString();
-      else truncated = true;
-    });
-    child.on('error', err => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on('close', code => {
-      clearTimeout(timer);
-      if (truncated) out += `\n… (output truncated at ${MAX_CMD_BYTES} bytes)`;
-      resolve({ output: `exit code: ${code}\n${out.slice(0, MAX_CMD_BYTES)}` });
-    });
+  return runCommandInSandbox({
+    userId,
+    conversationId,
+    repoPath,
+    user: context.user,
+    space,
+    repo,
+    command,
   });
 }
 

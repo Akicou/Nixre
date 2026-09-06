@@ -3,6 +3,9 @@
 
 import { pool } from '../db/pool.js';
 import { decryptSecret } from './ai.js';
+import { guardedFetch } from './netGuard.js';
+import { aiNetworkPolicy } from './aiNetwork.js';
+import { FormData } from 'undici';
 
 const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
 
@@ -73,7 +76,9 @@ export async function transcribeAudio(uid, { audioB64, format }) {
   const key = row.api_key_enc ? decryptSecret(row.api_key_enc) : null;
   if (key) headers.Authorization = `Bearer ${key}`;
   const url = `${sttApiRoot(row.base_url)}/audio/transcriptions`;
-  const res = await fetch(url, { method: 'POST', headers, body: form });
+  const res = await guardedFetch(url, { method: 'POST', headers, body: form }, {
+    ...aiNetworkPolicy(), timeoutMs: 120_000,
+  });
   const text = await res.text();
   let json = null;
   try {

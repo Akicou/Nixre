@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { signingSecretFor, sweep } from '../lib/webhooks.js';
 import { encryptSecret } from '../lib/ai.js';
+import dns from 'node:dns/promises';
 
 // Use a real key so encrypt/decrypt round-trips.
 process.env.AI_SECRET = 'test-ai-secret-for-webhook-signing-0123456789abcdef';
@@ -35,6 +36,50 @@ test('signingSecretFor never returns undefined for empty rows', () => {
 test('signingSecretFor prefers the encrypted value when both are present', () => {
   const row = { secret: 'stale-plaintext', secret_enc: encryptSecret('current-key') };
   assert.equal(signingSecretFor(row), 'current-key');
+});
+
+test('corrupt ciphertext never falls back to plaintext or an empty signing key', () => {
+  assert.throws(() => signingSecretFor({ secret_enc: 'corrupt', secret: 'legacy' }));
+  assert.throws(() => signingSecretFor({ secret_enc: 'corrupt', secret: '' }));
+});
+
+test('a corrupt signing key is recorded without aborting other due deliveries', async () => {
+  const updates = [];
+  const pool = {
+    async query(sql, params) {
+      if (/FROM webhook_deliveries d/.test(sql)) return { rows: [
+        { id: 1, attempts: 0, payload: {}, url: 'http://127.0.0.1/hook', secret_enc: 'corrupt', secret: 'legacy' },
+        { id: 2, attempts: 0, payload: {}, url: 'http://127.0.0.1/hook', secret_enc: null, secret: 'key' },
+      ] };
+      updates.push(params);
+      return { rows: [] };
+    },
+  };
+  await sweep(pool);
+  assert.equal(updates.length, 2);
+  assert.equal(updates[0][2], false);
+  assert.equal(updates[0][1], null);
+  assert.match(updates[0][6], /decrypt|cipher|secret/i);
+  assert.equal(updates[1][0], 2);
+});
+
+test('transient DNS errors remain retryable rather than becoming policy refusals', async t => {
+  t.mock.method(dns, 'lookup', async () => { throw Object.assign(new Error('temporary DNS failure'), { code: 'EAI_AGAIN' }); });
+  let update;
+  const pool = {
+    async query(sql, params) {
+      if (/FROM webhook_deliveries d/.test(sql)) return { rows: [
+        { id: 1, attempts: 0, payload: {}, url: 'https://hooks.example.com/hook', secret: 'key' },
+      ] };
+      update = params;
+      return { rows: [] };
+    },
+  };
+  await sweep(pool);
+  assert.equal(update[2], false);
+  assert.equal(update[3], 1);
+  assert.ok(update[5] > Date.now());
+  assert.match(update[6], /resolve/);
 });
 
 // --- SSRF: a blocked target must be marked done, not retried -----------------

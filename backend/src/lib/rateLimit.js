@@ -12,15 +12,6 @@
 // The key function usually combines a route name with the caller identity (see
 // clientKey below). Buckets are swept lazily so idle traffic costs nothing.
 
-const buckets = new Map(); // key -> { count, resetAt }
-
-function sweep(now) {
-  // Called at most once per window per limiter to keep the map bounded.
-  for (const [key, bucket] of buckets) {
-    if (bucket.resetAt <= now) buckets.delete(key);
-  }
-}
-
 /**
  * @param {object} options
  * @param {number} options.windowMs  length of the counting window
@@ -28,13 +19,16 @@ function sweep(now) {
  * @param {string} [options.name]    label used in the error message
  */
 export function createRateLimiter({ windowMs, max, name = 'requests' }) {
+  const buckets = new Map();
   let lastSweep = 0;
 
   return function limit(keyFn) {
     return (req, res, next) => {
       const now = Date.now();
       if (now - lastSweep > windowMs) {
-        sweep(now);
+        for (const [key, bucket] of buckets) {
+          if (bucket.resetAt <= now) buckets.delete(key);
+        }
         lastSweep = now;
       }
       const rawKey = typeof keyFn === 'function' ? keyFn(req) : String(keyFn);
@@ -62,29 +56,9 @@ export function createRateLimiter({ windowMs, max, name = 'requests' }) {
 }
 
 /**
- * Best-effort caller identity for rate-limit buckets.
- *
- * nixre-core sits behind Caddy / a Cloudflare Tunnel, so remoteAddress is only
- * meaningful if the operator told us to trust the forwarded header — otherwise
- * a spoofable X-Forwarded-For would let an attacker rotate buckets at will.
- * Set TRUST_PROXY=1 (or a hop count) only when the edge really does overwrite
- * X-Forwarded-For on every request.
+ * Express resolves req.ip using the explicit trusted proxy IP/CIDR list.
+ * Never parse forwarded headers independently of that trust boundary.
  */
 export function clientKey(req) {
-  const trustProxy = String(process.env.TRUST_PROXY || '').trim();
-  const raw = req?.socket?.remoteAddress || 'unknown';
-  if (!trustProxy) return raw;
-  const hops = Number(trustProxy) || 1;
-  const forwarded = String(req?.headers?.['x-forwarded-for'] || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-  if (!forwarded.length) return raw;
-  // Take the hop `hops` from the right — the last entry our own edge appended.
-  return forwarded[Math.max(0, forwarded.length - hops)] || raw;
-}
-
-/** Test helper: drop every bucket. */
-export function resetRateLimits() {
-  buckets.clear();
+  return req?.ip || req?.socket?.remoteAddress || 'unknown';
 }

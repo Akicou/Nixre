@@ -16,10 +16,10 @@ export function securityHeaders(_req, res, next) {
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.set('Cross-Origin-Opener-Policy', 'same-origin');
-  // Permissions the app never asks for — deny them outright.
+  // Speech input needs a same-origin microphone; deny unused capabilities.
   res.set(
     'Permissions-Policy',
-    'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+    'camera=(), microphone=(self), geolocation=(), payment=(), usb=()',
   );
   // The API is not cached by shared proxies; individual handlers (avatar
   // no-cache, static SPA assets) override this where it matters.

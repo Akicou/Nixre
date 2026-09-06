@@ -261,29 +261,21 @@ export function authRoutes(pool, authenticate) {
       return;
     }
 
-    const exists = await pool.query(
-      'SELECT uid FROM users WHERE lower(uid) = lower($1) OR lower(email) = lower($2)',
-      [uid, email],
-    );
-    if (exists.rows.length > 0) {
-      res.status(409).json({ message: 'Username or email already taken' });
-      return;
-    }
-
-    // The first account on a fresh instance becomes admin.
-    //
-    // This used to be a bare `SELECT count(*)` followed by a separate INSERT,
-    // so two simultaneous registrations could both observe zero users and both
-    // be created as admin. The count and the insert now share one
-    // SERIALIZABLE transaction: concurrent signups serialise, and exactly one
-    // of them sees an empty table.
+    // The shared namespace lock also serializes first-admin allocation.
     const now = Date.now();
     const passwordHash = await hashPassword(password);
     const client = await pool.connect();
     let rows;
     let token;
     try {
-      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended('nixre.identity-namespace', 0))");
+      const exists = await client.query(
+        `SELECT uid FROM users WHERE lower(uid) = lower($1) OR lower(email) = lower($2)
+         UNION ALL SELECT uid FROM spaces WHERE lower(uid) = lower($1)`,
+        [uid, email],
+      );
+      if (exists.rows.length) throw Object.assign(new Error('Namespace or email already exists'), { code: '23505' });
       const count = await client.query('SELECT count(*)::int AS n FROM users');
       const admin = count.rows[0].n === 0;
       const inserted = await client.query(
@@ -297,30 +289,26 @@ export function authRoutes(pool, authenticate) {
       // uid === space.uid; repos created here live at /{uid}/{repo}.
       await client.query(
         `INSERT INTO spaces (uid, description, is_public, is_personal, created_by, created, updated)
-         VALUES ($1, '', TRUE, TRUE, $1, $2, $2)
-         ON CONFLICT (uid) DO NOTHING`,
+         VALUES ($1, '', TRUE, TRUE, $1, $2, $2)`,
         [uid, now],
       );
       await client.query(
         `INSERT INTO space_members (space_uid, user_uid, role, created)
-         VALUES ($1, $1, 'owner', $2)
-         ON CONFLICT (space_uid, user_uid) DO NOTHING`,
+         VALUES ($1, $1, 'owner', $2)`,
         [uid, now],
       );
+      token = await createSession(client, uid);
       await client.query('COMMIT');
-      token = await createSession(pool, uid);
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
-      client.release();
       if (err.code === '23505' || err.code === '40001') {
-        // 23505: uid/email taken between the check and the insert.
-        // 40001: serialization failure — another signup won the race.
-        res.status(409).json({ message: 'Username or email already taken' });
+        res.status(409).json({ message: 'Username, space, or email already taken' });
         return;
       }
       throw err;
+    } finally {
+      client.release();
     }
-    client.release();
 
     res.status(201).json({
       access_token: token,

@@ -7,6 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import dns from 'node:dns/promises';
 import {
   newVerifyToken,
   verifyRecordName,
@@ -29,17 +30,20 @@ test('the challenge record is scoped to the domain', () => {
   assert.equal(verifyRecordName('app.example.com.'), '_nixre-verify.app.example.com');
 });
 
-test('checkDomainChallenge fails when no record is published', async () => {
-  // A random subdomain of example.com will not have our TXT record. Needs DNS;
-  // skipped when offline — the reserved-name rules below are the security-critical
-  // ones and never touch the network.
-  try {
-    const out = await checkDomainChallenge(`nope-${Date.now()}.example.com`, newVerifyToken());
-    assert.equal(out.ok, false);
-    assert.match(out.detail, /TXT/);
-  } catch {
-    /* offline */
-  }
+test('challenge fails closed on missing records and missing token', async t => {
+  t.mock.method(dns.Resolver.prototype, 'resolveTxt', async () => []);
+  const out = await checkDomainChallenge('app.example.com', newVerifyToken());
+  assert.equal(out.ok, false);
+  assert.match(out.detail, /TXT/);
+  assert.equal((await checkDomainChallenge('app.example.com', null)).ok, false);
+});
+
+test('TXT fragments concatenate within one record, never across distinct records', async t => {
+  const token = newVerifyToken();
+  const lookup = t.mock.method(dns.Resolver.prototype, 'resolveTxt', async () => [[token.slice(0, 13), token.slice(13)]]);
+  assert.equal((await checkDomainChallenge('app.example.com', token)).ok, true);
+  lookup.mock.mockImplementation(async () => [[token.slice(0, 13)], [token.slice(13)]]);
+  assert.equal((await checkDomainChallenge('app.example.com', token)).ok, false);
 });
 
 test('reservedDomainReason blocks the instance\'s own hostnames', () => {

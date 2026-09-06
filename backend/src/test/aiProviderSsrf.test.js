@@ -12,7 +12,8 @@ import { aiRoutes } from '../routes/ai.js';
 
 function stubPool() {
   return {
-    async query() {
+    async query(sql) {
+      if (/count\(\*\)/i.test(sql)) return { rows: [{ n: 0 }] };
       return { rows: [] };
     },
     async connect() {
@@ -32,14 +33,14 @@ function start(pool) {
   const server = http.createServer(app);
   return new Promise(resolve => {
     server.listen(0, () => {
-      const post = body =>
+      const post = (body, path = '/api/v1/ai/providers', method = 'POST') =>
         new Promise(res => {
           const payload = JSON.stringify(body);
           const req = http.request(
             {
               port: server.address().port,
-              path: '/api/v1/ai/providers',
-              method: 'POST',
+              path,
+              method,
               headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) },
             },
             r => {
@@ -88,4 +89,22 @@ test('creating a provider rejects internal base URLs', async () => {
   } finally {
     server.close();
   }
+});
+
+test('legacy profile creation rejects private endpoints before validation or saving', async () => {
+  const { server, post } = await start(stubPool());
+  try {
+    const response = await post({ provider: 'custom', baseUrl: 'http://127.0.0.1:3002/v1', apiKey: 'test' }, '/api/v1/ai/profile', 'PUT');
+    assert.equal(response.status, 400, response.body);
+    assert.match(response.json.message, /rejected/);
+  } finally { server.close(); }
+});
+
+test('sandbox touch rechecks current workspace permissions before touching Docker', async () => {
+  const { server, post } = await start(stubPool());
+  try {
+    const response = await post({ repoPath: 'acme/private', conversationId: '123' }, '/api/v1/ai/sandbox/touch');
+    assert.ok([403, 404].includes(response.status), response.body);
+    assert.match(response.json.message, /repository|account|user/i);
+  } finally { server.close(); }
 });

@@ -3,6 +3,7 @@
 
 import express from 'express';
 import { diffRefs, mergeBranches, branchExists } from '../git/repo.js';
+import { loadReadableRepo } from '../lib/repoAccess.js';
 
 function now() {
   return Date.now();
@@ -43,19 +44,16 @@ export function pullRequestRoutes(pool, authenticate) {
   const api = express.Router();
   const auth = authenticate(true);
 
-  // Resolve `space/repo` + load the repo row; caller checks membership.
+  // All PR operations require visibility; mutations additionally check write access.
   async function loadRepo(req, res) {
-    const { space, repo } = req.params;
-    const { rows } = await pool.query(
-      'SELECT * FROM repos WHERE space_uid = $1 AND uid = $2',
-      [space, repo],
+    const { repo, error } = await loadReadableRepo(
+      pool, req.params.space, req.params.repo, req.auth.user,
     );
-    const row = rows[0];
-    if (!row) {
-      res.status(404).json({ message: 'Repository not found' });
+    if (error) {
+      res.status(error.status).json({ message: error.message });
       return null;
     }
-    return row;
+    return repo;
   }
 
   async function canWrite(pool, spaceUid, user) {
@@ -194,7 +192,7 @@ export function pullRequestRoutes(pool, authenticate) {
 
   // GET /repos/{space}/{repo}/+/compare?base=&head= — branch diff without a
   // PR (used by the assistant description generator).
-  api.get('/repos/:space/:repo/\+/compare', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+/compare', auth, async (req, res) => {
     const repo = await loadRepo(req, res);
     if (!repo) return;
     const base = String(req.query.base || '');

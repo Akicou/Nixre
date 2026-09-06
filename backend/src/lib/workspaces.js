@@ -26,7 +26,6 @@ const exec = promisify(execFile);
 export const UNRESTRICTED_PATH = 'unrestricted';
 export const GITHUB_SPACE = 'github';
 export const GITHUB_MIRROR_ROOT = path.join(REPOS_ROOT, '.mirrors', GITHUB_SPACE);
-const GITHUB_API_BASE = process.env.GITHUB_API_URL || 'https://api.github.com';
 
 const NIXRE_SEGMENT = /^[a-z0-9][a-z0-9-_.]{0,62}$/i;
 // GitHub owners/repos may contain dots and hyphens but never start with one.
@@ -84,7 +83,7 @@ async function gitWithPat(dir, args, token, timeoutMs = GIT_TIMEOUT_MS) {
   const helper = '!f(){ printf "username=x-access-token\\npassword=%s\\n" "$NIXRE_GH_PAT"; }; f';
   return exec(
     'git',
-    ['-C', dir, '-c', `credential.helper=${helper}`, ...args],
+    ['-C', dir, '-c', 'credential.helper=', '-c', `credential.helper=${helper}`, ...args],
     {
       env: { ...process.env, NIXRE_GH_PAT: token, GIT_TERMINAL_PROMPT: '0' },
       maxBuffer: 16 * 1024 * 1024,
@@ -150,17 +149,24 @@ export async function ensureGithubMirror(userId, owner, repo, { waitTimeoutMs = 
   }
 
   const url = `${process.env.GITHUB_URL || 'https://github.com'}/${owner}/${repo}.git`;
+  // Metadata access is insufficient for fine-grained PATs. Prove git read
+  // access for this caller before returning any shared or in-flight mirror.
+  try {
+    await gitWithPat(REPOS_ROOT, ['ls-remote', url, 'HEAD'], token);
+  } catch {
+    throw Object.assign(new Error('GitHub repository access could not be verified'), { status: 403 });
+  }
   const dir = path.join(GITHUB_MIRROR_ROOT, owner, `${repo}.git`);
   const exists = await fs.access(dir).then(() => true, () => false);
 
-  if (!exists) {
-    let pending = pendingMirrors.get(dir);
+  let pending = pendingMirrors.get(dir);
+  if (!exists || pending) {
     if (!pending) {
       pending = (async () => {
         await fs.mkdir(path.dirname(dir), { recursive: true });
         const helper = '!f(){ printf "username=x-access-token\\npassword=%s\\n" "$NIXRE_GH_PAT"; }; f';
         try {
-          await exec('git', ['-c', `credential.helper=${helper}`, 'clone', '--bare', '--quiet', url, dir], {
+          await exec('git', ['-c', 'credential.helper=', '-c', `credential.helper=${helper}`, 'clone', '--bare', '--quiet', url, dir], {
             env: { ...process.env, NIXRE_GH_PAT: token, GIT_TERMINAL_PROMPT: '0' },
             maxBuffer: 64 * 1024 * 1024,
             timeout: CLONE_TIMEOUT_MS,
@@ -177,13 +183,20 @@ export async function ensureGithubMirror(userId, owner, repo, { waitTimeoutMs = 
       })().finally(() => pendingMirrors.delete(dir));
       pendingMirrors.set(dir, pending);
     }
-    const finished = Promise.race([
-      pending,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(Object.assign(new Error(`Cloning ${owner}/${repo} is still running (${waitTimeoutMs / 1000}s wait exceeded)`)), { status: 504 }), waitTimeoutMs),
-      ),
-    ]);
-    return finished;
+    let timer;
+    try {
+      return await Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(
+            new Error(`Cloning ${owner}/${repo} is still running (${waitTimeoutMs / 1000}s wait exceeded)`),
+            { status: 504 },
+          )), waitTimeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // Existing mirror: serve it immediately, refresh in the background when stale.
@@ -240,8 +253,7 @@ export async function resolveWorkspace(pool, user, repoPath) {
   // AFTER the mirror is provisioned so the dir exists. Unrestricted has no
   // repo, so dir is null.
   if (ws.kind === 'github') {
-    // The mirror is cloned with the caller's own GitHub PAT, so access to the
-    // upstream is whatever github.com decides — Nixre has nothing to check.
+    // This checks upstream authorization even when the shared mirror exists.
     await ensureGithubMirror(caller.uid, ws.owner, ws.repo);
   }
   ws.dir = workspaceGitDir(ws);

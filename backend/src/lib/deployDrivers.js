@@ -152,7 +152,7 @@ export function probeHttp() {
   return ({ host, port, path, timeoutMs, signal } = {}) =>
     new Promise((resolve, reject) => {
       const req = http.get(
-        { host, port, path: path || '/', timeout: timeoutMs || 2500 },
+        { host, port, path: path || '/', timeout: timeoutMs || 2500, signal },
         res => {
           res.resume();
           const status = res.statusCode ?? null;
@@ -164,12 +164,6 @@ export function probeHttp() {
         req.destroy(new Error(`probe timed out after ${timeoutMs}ms`));
       });
       req.on('error', reject);
-      // Honour cancellation: a cancelled deploy must not keep probing for the
-      // rest of its health budget.
-      if (signal) {
-        if (signal.aborted) req.destroy(new Error('probe cancelled'));
-        else signal.addEventListener('abort', () => req.destroy(new Error('probe cancelled')), { once: true });
-      }
     });
 }
 

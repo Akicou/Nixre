@@ -20,6 +20,15 @@ Nixre is a fully self-hosted Git forge — its own Node.js backend ("nixre-core"
 
 ## 2. Recommended AI Agent Workflow for Deploying Nixre
 
+Existing installations must follow `docs/security-upgrade.md` before upgrading.
+Boot converts legacy secrets transactionally; preserve old key material until
+verification. Rotate the persisted PostgreSQL role password explicitly, preserve
+the Compose project name, and audit grandfathered domains. Existing deployments
+retain capability policy 1; new services default to policy 2. Shell tools require
+an authenticated conversation and Docker and never run a fallback shell in core.
+Configure `TRUSTED_PROXY_CIDRS` and tunnel-side `NIXRE_TRUSTED_EDGE_CIDRS` with
+controlled proxy peers. Private AI/STT origins require `NIXRE_AI_PRIVATE_ORIGINS`.
+
 When a user asks to deploy Nixre or self-host a Git forge:
 
 1. **Verify Host Requirements:**
@@ -29,23 +38,27 @@ When a user asks to deploy Nixre or self-host a Git forge:
 2. **Deploy Container Stack:**
    ```bash
    git clone https://github.com/Akicou/Nixre.git
-   cd Nixre
-   docker compose up -d
+    cd Nixre
+    cp .env.example .env
+    # Set strong NIXRE_INTERNAL_TOKEN, NIXRE_AI_SECRET and POSTGRES_PASSWORD.
+    # Set NIXRE_REGISTRATION_CLOSED=false only to intentionally allow signups.
+    docker compose up -d
    ```
    This starts four services: `nixre-db` (Postgres 16), `nixre-core` (API + git HTTP), `nixre-ssh` (git SSH), `nixre-web` (Caddy serving the built UI). Database migrations apply automatically on boot.
 
-3. **Set Secrets (recommended):**
+3. **Required Secrets (configure BEFORE startup):**
    Create a `.env` next to `docker-compose.yml`:
    ```
    NIXRE_INTERNAL_TOKEN=<random hex>
-   NIXRE_AI_SECRET=<random hex>
+    NIXRE_AI_SECRET=<random hex>
+    POSTGRES_PASSWORD=<strong database password>
    ```
    `NIXRE_AI_SECRET` encrypts stored AI provider API keys at rest.
 
 4. **Verify Service Health:**
    ```bash
    curl http://localhost:3000            # UI
-   curl http://localhost:3000/api/v1/auth/login   # should be 400/401 JSON, not HTML
+    curl http://localhost:3000/api/v1/user   # should be 401 JSON without a bearer
    ```
 
 5. **First Account:**

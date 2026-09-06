@@ -8,9 +8,9 @@
 //
 // Ownership is now proven before a domain is routed:
 //
-//   1. Auto-DNS path — if the operator's Cloudflare token created the CNAME in
-//      a zone it controls, that IS proof of control, so the domain is verified
-//      immediately.
+//   1. Admin-only auto-DNS path: the requesting admin authorizes the claim and
+//      the operator's Cloudflare token provisions the record. Ordinary space
+//      writers cannot use the operator's DNS authority as ownership proof.
 //   2. Challenge path — otherwise the user publishes a TXT record
 //      `_nixre-verify.<domain>` containing the issued token and calls the
 //      verify endpoint. We look it up from a set of public resolvers so a
@@ -21,10 +21,9 @@
 import dns from 'node:dns/promises';
 import crypto from 'node:crypto';
 
-// Resolvers used for the challenge lookup. Querying more than one makes a
-// single bad answer much harder to fake, and going straight to public
-// resolvers avoids the operator's own cache.
-const RESOLVERS = String(process.env.NIXRE_VERIFY_RESOLVERS || '1.1.1.1,8.8.8.9,9.9.9.9')
+// Public resolvers avoid a local split-horizon cache. Multiple resolvers help
+// availability during propagation; a matching answer is not a quorum proof.
+const RESOLVERS = String(process.env.NIXRE_VERIFY_RESOLVERS || '1.1.1.1,8.8.8.8,9.9.9.9')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
@@ -46,7 +45,7 @@ export function verifyRecordName(domain) {
 async function resolveTxtEverywhere(name) {
   const results = await Promise.allSettled(
     RESOLVERS.map(async server => {
-      const resolver = new dns.Resolver();
+      const resolver = new dns.Resolver({ timeout: 2000, tries: 2 });
       resolver.setServers([server]);
       try {
         return await resolver.resolveTxt(name);
@@ -59,7 +58,7 @@ async function resolveTxtEverywhere(name) {
   const out = [];
   for (const r of results) {
     if (r.status !== 'fulfilled' || !Array.isArray(r.value)) continue;
-    for (const chunk of r.value) out.push(...chunk.map(String));
+    for (const chunk of r.value) out.push(chunk.map(String).join(''));
   }
   return out;
 }
@@ -69,6 +68,7 @@ async function resolveTxtEverywhere(name) {
  * @returns {Promise<{ ok: boolean, detail?: string }>}
  */
 export async function checkDomainChallenge(domain, token) {
+  if (!token || typeof token !== 'string') return { ok: false, detail: 'No TXT challenge has been issued' };
   const name = verifyRecordName(domain);
   let records = [];
   try {
@@ -100,7 +100,7 @@ export function reservedDomainSet(extra = []) {
   const reserved = new Set(
     String(process.env.NIXRE_RESERVED_DOMAINS || '')
       .split(',')
-      .map(s => s.trim().toLowerCase())
+      .map(s => s.trim().toLowerCase().replace(/\.$/, ''))
       .filter(Boolean),
   );
   for (const name of extra) {
