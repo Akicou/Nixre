@@ -1,2 +1,26 @@
 # Docker entrypoints break on CRLF shebangs.
 *.sh text eol=lf
+
+# ui/dist is a committed build output (Caddy serves it directly), so it has to
+# be byte-identical no matter which platform produced it.
+#
+# Vite copies index.html verbatim, so it inherits the SOURCE file's line
+# endings. With core.autocrlf=true on Windows the source is CRLF, the Linux CI
+# runner checks out LF, and the two builds disagree — the "is ui/dist in sync"
+# CI step failed on exactly this. Pin both to LF.
+#
+# Only the files that actually differ are normalised here. Binary assets
+# (fonts, icons) must NOT be marked text or git would corrupt them on checkout.
+ui/index.html text eol=lf
+ui/dist/index.html text eol=lf
+
+# Binary assets — never touch these.
+*.woff2 binary
+*.woff binary
+*.ttf binary
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
