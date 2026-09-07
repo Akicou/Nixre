@@ -84,7 +84,7 @@ describe('AgentWorkspace', () => {
 
     // Floating composer placeholder (Cursor-style)
     expect(
-      await screen.findByPlaceholderText(/Plan, Build, \/ for tools, @ for context/i),
+      await screen.findByPlaceholderText(/Describe a task, @file or @skill for context/i),
     ).toBeInTheDocument();
 
     // Quick chips under the composer
@@ -132,7 +132,7 @@ describe('AgentWorkspace', () => {
 
   it('shows file-size errors without discarding the draft', async () => {
     render(<MemoryRouter><AgentWorkspace /></MemoryRouter>);
-    const input = await screen.findByPlaceholderText(/Plan, Build/);
+    const input = await screen.findByPlaceholderText(/Describe a task, @file or @skill for context/i);
     fireEvent.change(input, { target: { value: 'Keep my draft' } });
     const oversized = new File(['x'], 'large.png', { type: 'image/png' });
     Object.defineProperty(oversized, 'size', { value: 5 * 1024 * 1024 });

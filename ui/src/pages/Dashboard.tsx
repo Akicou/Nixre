@@ -53,7 +53,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
             </span>
           </h1>
           <p className="text-sm text-txt-secondary mt-1">
-            Sovereign Git forge powered by fast Go backend & modern minimalist interface.
+            Self-hosted Git collaboration with AI agents and built-in deployments.
           </p>
         </div>
 
