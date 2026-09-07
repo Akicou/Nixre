@@ -49,7 +49,7 @@ Optional worker-only settings in that root-controlled environment file:
 ## Pipeline and failure boundaries
 
 1. Recheck the exact reviewed base/target SHA and Compose/environment fingerprint. Require the latest `push` CI run for that exact `main` SHA to pass. Refuse dirty, ahead, diverged, non-main, or unexpected-origin checkouts. Reviews expire after ten minutes.
-2. Build in a detached worktree. Run the UI tests and build, require `ui/dist` to match the commit, and build separate backend/sandbox images without touching the running containers.
+2. Build from a detached worktree. Run UI dependency installation, tests, and build inside a Node 22 build container without host secrets or a Docker socket, require `ui/dist` to match the commit, and build separate backend/sandbox images without touching the running containers. Git hooks are disabled for worker operations.
 3. Create a custom-format PostgreSQL dump, restore it into a disposable database with no published ports, and run the candidate migration runner there. Compare every applied migration filename with the candidate files. Production keeps serving during this rehearsal.
 4. Pause new HTTP mutations, reject active agents/deployments, recheck the checkout/configuration/CI, and stop core and SSH. Take a fresh final database dump and verify its archive structure.
 5. Run migrations against production in the migration runner's transaction. Record the failed filename and SQLSTATE without exposing raw SQL, credentials, or driver errors.

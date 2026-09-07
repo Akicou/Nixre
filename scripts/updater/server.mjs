@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { readFile, writeFile, mkdir, rename, rm, chmod, chown, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, rm, chmod, chown, stat, open } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -15,7 +16,13 @@ export async function atomicJSON(filename, value) {
     try { const owner = await stat(filename); await chown(temp, owner.uid, owner.gid); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
+  const file = await open(temp, 'r');
+  try { await file.sync(); } finally { await file.close(); }
   await rename(temp, filename);
+  if (process.platform !== 'win32') {
+    const directory = await open(path.dirname(filename), 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
+  }
 }
 
 export async function createUpdater({ root, stateDir = path.join(root, 'data/updater'), key,
@@ -139,6 +146,12 @@ async function main() {
   const stateDir = path.join(root, 'data/updater');
   if (process.argv.includes('--ack-recovery')) {
     if (!process.argv.includes('--services-verified')) throw new Error('Verify database, services, and checkout first; then pass --services-verified with the service stopped.');
+    if (!process.argv.includes('--recovery-lock-held')) {
+      const result = spawnSync('flock', ['-n', path.join(stateDir, 'daemon.lock'), process.execPath,
+        process.argv[1], '--ack-recovery', '--services-verified', '--recovery-lock-held'], { stdio: 'inherit' });
+      if (result.error || result.status !== 0) throw new Error('Recovery acknowledgement failed. Stop the host worker before acknowledging recovery.');
+      return;
+    }
     const filename = path.join(stateDir, 'state.json');
     const state = JSON.parse(await readFile(filename, 'utf8'));
     state.jobs = state.jobs.map(job => ['running', 'checking', 'recovery_required'].includes(job.status)

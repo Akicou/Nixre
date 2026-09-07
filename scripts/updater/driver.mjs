@@ -41,7 +41,7 @@ export class HostDriver {
   // returned through the observation endpoint, and capture sizes are bounded.
   async run(command, args, { cwd = this.root, timeout = 120_000, inputFile, outputFile, quiet = false, allowFailure = false } = {}) {
     const log = await open(this.logFile, 'a', 0o600);
-    if (command === 'git') args = ['-c', `safe.directory=${cwd}`, ...args];
+    if (command === 'git') args = ['-c', `safe.directory=${cwd}`, '-c', 'core.hooksPath=/dev/null', ...args];
     let output = '';
     let size = 0;
     const child = spawn(command, args, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
@@ -183,9 +183,17 @@ export class HostDriver {
   async build(context) {
     await this.git('worktree', 'add', '--detach', context.candidate, context.plan.target);
     const ui = path.join(context.candidate, 'ui');
-    await this.run('npm', ['ci'], { cwd: ui, timeout: 10 * 60_000 });
-    await this.run('npm', ['test'], { cwd: ui, timeout: 10 * 60_000 });
-    await this.run('npm', ['run', 'build'], { cwd: ui, timeout: 10 * 60_000 });
+    // Dependency scripts run in a build container with no host checkout,
+    // updater key, environment file, or Docker socket mounted into it.
+    const uiDockerfile = path.join(context.folder, 'UI.Dockerfile');
+    await writeFile(uiDockerfile, 'FROM node:22-bookworm-slim\nWORKDIR /work/ui\nCOPY . .\nRUN npm ci --include=dev\nRUN npm test\nRUN npm run build\n');
+    const uiImage = `nixre-update-ui:${context.plan.target}`;
+    await this.run('docker', ['build', '-f', uiDockerfile, '-t', uiImage, ui], { timeout: 15 * 60_000 });
+    context.uiContainer = `nixre-update-ui-${randomUUID()}`;
+    await this.run('docker', ['create', '--name', context.uiContainer, '--network', 'none', uiImage]);
+    await rm(path.join(ui, 'dist'), { recursive: true, force: true });
+    await mkdir(path.join(ui, 'dist'));
+    await this.run('docker', ['cp', `${context.uiContainer}:/work/ui/dist/.`, path.join(ui, 'dist')]);
     if ((await this.run('git', ['status', '--porcelain', 'ui/dist'], { cwd: context.candidate })).output) {
       throw new Error('Built UI does not match committed ui/dist. Update blocked.');
     }
@@ -296,6 +304,7 @@ export class HostDriver {
   }
   async cleanup(context, job) {
     if (job.status !== 'recovery_required') await rm(path.join(this.root, 'data/update-control/maintenance.json'), { force: true });
+    if (context.uiContainer) await this.run('docker', ['rm', '-f', '-v', context.uiContainer]);
     const result = await this.run('docker', ['rm', '-f', '-v', context.rehearsalName], { allowFailure: true });
     if (result.code !== 0 && !result.output.includes('No such container')) throw new Error('Could not remove rehearsal database.');
     // Retain candidate checkout, images, dumps, and recovery inventory for the
