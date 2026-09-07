@@ -36,7 +36,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
 
   if (useTools && touch) void touch().catch(() => {});
 
-  const thread = [
+  const thread = opts.resumeThread?.length ? structuredClone(opts.resumeThread) : [
     { role: 'system', content: opts.systemPrompt },
     ...(opts.extraContext
       ? [{ role: 'system', content: `<attached_context>\n${opts.extraContext}\n</attached_context>` }]
@@ -75,6 +75,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
       let roundToolSeen = false;
       let currentBlockId = null;
       let settled = false;
+      let reportedInput = 0, reportedOutput = 0;
 
       const settle = () => {
         if (settled) return;
@@ -151,6 +152,12 @@ export async function runAgentLoop(opts, emit, deps = {}) {
             // broadcast carrying the whole accumulated args (O(n²)). The
             // complete argsText is emitted once before execution below.
           } else if (evt.type === 'usage') {
+            if (deps.onUsage) {
+              const input = Math.max(reportedInput, Number(evt.usage.input) || 0);
+              const output = Math.max(reportedOutput, Number(evt.usage.output) || 0);
+              await deps.onUsage({ input: input - reportedInput, output: output - reportedOutput });
+              reportedInput = input; reportedOutput = output;
+            }
             emit({ type: 'usage', usage: evt.usage });
           } else if (evt.type === 'finish') {
             if (useTools && evt.reason === 'stop' && stepText && !stepTextLive) {
@@ -174,7 +181,11 @@ export async function runAgentLoop(opts, emit, deps = {}) {
       );
     });
 
+  let rounds = 0;
   while (true) {
+    if (++rounds > (opts.maxRounds || 100)) throw new Error('Agent round limit reached');
+    if (deps.beforeRound) await deps.beforeRound();
+    if (deps.saveThread) await deps.saveThread(thread);
     if (signal?.aborted) aborted = true;
     if (aborted) break;
     let calls = [];
@@ -215,6 +226,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
       })),
     });
 
+    if (deps.saveThread) await deps.saveThread(thread);
     const imageMessages = [];
     for (const call of calls) {
       if (signal?.aborted) {
@@ -233,7 +245,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
         tool: { id: call.id, name: call.name, status: 'running', argsText: call.args },
       });
       try {
-        const output = await execute(call.name, argsObj);
+        const output = await execute(call.name, argsObj, { callId: call.id });
         emit({ type: 'tool_output', toolId: call.id, output });
 
         // show_images output contains base64 data URLs for UI rendering.
@@ -289,6 +301,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
 
     // All tool replies must precede user/image messages for this tool batch.
     thread.push(...imageMessages);
+    if (deps.saveThread) await deps.saveThread(thread);
     const steer = await steerNext();
     if (steer) {
       thread.push({

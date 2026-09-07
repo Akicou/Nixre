@@ -29,6 +29,7 @@ const hooks = registerHooks({
       }
       export const writeFileInSandbox = runCommandInSandbox;
       export async function readFileInSandbox() { return null; }
+      export async function agentWorkspaceOperation() { return null; }
     ` };
     return next(url, context);
   },

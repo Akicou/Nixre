@@ -1,9 +1,10 @@
+import { taskController, readTaskState, mutateTaskState, projectMemory, recoverThread, validateSettings, workspaceActions, CONTROL_TOOLS, CONTROL_PROMPT } from './agentControl.js';
 // In-memory agent job registry — one active job per conversation in this process.
 // Tab close does not stop the job. A core restart does (sweepStaleRuns → idle).
 
 import { EventEmitter } from 'node:events';
 import { decryptSecret, PROVIDERS, streamChat } from './ai.js';
-import { TOOL_SCHEMAS, executeTool } from './agentTools.js';
+import { TOOL_SCHEMAS, executeTool, assertWritableAgentPath } from './agentTools.js';
 import { touchSandbox, writeAttachmentFiles, extForMime } from './agentSandbox.js';
 import { getMode } from './assistantModes.js';
 import {
@@ -56,6 +57,7 @@ export async function sweepStaleRuns(pool) {
             updated_at = now()
       WHERE run_status IN ('running', 'stopping')`,
   );
+  await pool.query(`UPDATE agent_task_state SET state = jsonb_set(state, '{interrupted}', 'true'::jsonb) WHERE state->>'finishedAt' IS NULL AND state->>'startedAt' IS NOT NULL`);
   if (rowCount > 0) console.log(`[agentJobs] marked ${rowCount} interrupted run(s) idle`);
 }
 
@@ -225,7 +227,9 @@ async function compactIfNeeded(pool, job, providerRow, apiKey, model) {
     .join('\n\n');
   let out = '';
   let failed = false;
+  let reportedInput = 0, reportedOutput = 0;
   try {
+    if (job.control) await job.control.beforeRound();
     await streamChat(
       {
         provider: providerRow.provider,
@@ -244,6 +248,11 @@ async function compactIfNeeded(pool, job, providerRow, apiKey, model) {
       async evt => {
         if (evt.type === 'text') out += evt.text;
         if (evt.type === 'error') failed = true;
+        if (evt.type === 'usage' && job.control) {
+          const input = Math.max(reportedInput, Number(evt.usage.input) || 0), output = Math.max(reportedOutput, Number(evt.usage.output) || 0);
+          await job.control.usage({ input: input - reportedInput, output: output - reportedOutput });
+          reportedInput = input; reportedOutput = output;
+        }
       },
     );
   } catch {
@@ -307,8 +316,18 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     repoPath: job.repoPath,
     workspace: ws,
     mode: job.mode,
+    signal: job.abort.signal,
+    liveReads: true,
+    space, repo,
   };
-  const exec = async (name, args) => {
+  const control = taskController(pool, toolCtx);
+  job.control = control;
+  const priorState = await control.read();
+  const resumeThread = job.resume ? recoverThread(priorState) : undefined;
+  await control.start({ mode: job.mode, model: job.model, reasoningLevel: job.reasoningLevel, extraContext: job.extraContext }, job.resume);
+  const budgetTimer = setTimeout(() => job.abort.abort(), (await control.read()).settings.maxSeconds * 1000);
+  job.budgetTimer = budgetTimer;
+  const rawExecute = async (name, args) => {
     if (name === 'submit_env_feedback') {
       const saved = await saveEnvFeedback(pool, {
         userId: job.userId,
@@ -322,6 +341,31 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     return String(result?.output ?? result ?? '');
   };
 
+  const exec = async (name, args, meta) => {
+    if (name === 'write_file') {
+      if (job.mode === 'plan') throw new Error('Plan mode cannot edit files');
+      assertWritableAgentPath(args.path, permissions);
+    }
+    if (['run_command', 'verify_project'].includes(name) && permissions.canRunBash === false && permissions.canRunTests === false) throw new Error('Command execution is disabled by the repository profile');
+    if (job.mode === 'plan' && ['run_command', 'verify_project', 'browser_check'].includes(name)) throw new Error('Plan mode cannot execute commands or browser checks');
+    return control.execute(name, args, meta, rawExecute, async (role, task) => {
+      let report = '';
+      await runAgentLoop({
+        systemPrompt: `You are a ${role} specialist. Inspect the assigned task and return concrete findings with file references. Do not edit files, run commands, or delegate.`,
+        extraContext: workspaceContextBlock(ws), history: [], prompt: task,
+        provider: providerRow.provider, apiKey, baseUrl: providerRow.base_url,
+        model: job.model || providerRow.default_model, maxRounds: 8,
+        tools: TOOL_SCHEMAS.filter(t => ['list_files', 'read_file', 'search_code', 'read_skill'].includes(t.name)),
+        signal: job.abort.signal,
+      }, ev => { if (ev.type === 'message_text') report += ev.text; }, {
+        executeTool: (name, args) => {
+          if (!['list_files', 'read_file', 'search_code', 'read_skill'].includes(name)) throw new Error('Specialists are strictly read-only');
+          return rawExecute(name, args);
+        }, beforeRound: control.beforeRound, onUsage: control.usage,
+      });
+      return report || 'No findings returned';
+    });
+  };
   const mode = getMode(job.mode);
   const turnKind = jobKind || job.kind || 'chat';
   const isPlanMode = job.mode === 'plan';
@@ -369,6 +413,9 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
   const extras = [];
   // Workspace target first: the <workspace> block grounds every later context.
   extras.push(workspaceContextBlock(ws));
+  extras.push(CONTROL_PROMPT);
+  const memory = await projectMemory(pool, job.userId, job.repoPath);
+  if (memory) extras.push(`<project_memory>\n${memory}\n</project_memory>`);
   if (job.extraContext) extras.push(job.extraContext);
   const catalog = formatSkillCatalog(skills);
   if (catalog) extras.push(catalog);
@@ -387,13 +434,17 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
   const { summary, history } = buildModelContext(job.messages.slice(0, -1));
   const modelPrompt = await expandMentions(prompt, { execute: exec, skills }).catch(() => prompt);
   const finalPrompt = attachmentBlock ? `${modelPrompt}${attachmentBlock}` : modelPrompt;
-  const tools = agentMode
+  let tools = agentMode
     ? turnKind === 'env_audit'
-      ? [...TOOL_SCHEMAS, SUBMIT_ENV_FEEDBACK_SCHEMA]
-      : [...TOOL_SCHEMAS]
+      ? [...TOOL_SCHEMAS, ...CONTROL_TOOLS, SUBMIT_ENV_FEEDBACK_SCHEMA]
+      : [...TOOL_SCHEMAS, ...CONTROL_TOOLS]
     : isPlanMode
-      ? TOOL_SCHEMAS.filter(t => t.name !== 'write_file')
+      ? [...TOOL_SCHEMAS.filter(t => !['write_file', 'run_command'].includes(t.name)), ...CONTROL_TOOLS.filter(t => ['update_plan', 'delegate_specialist'].includes(t.name))]
       : null;
+
+  const preset = (await control.read()).settings.preset;
+  if (tools && preset === 'read_only') tools = tools.filter(t => !['write_file', 'run_command', 'verify_project', 'browser_check'].includes(t.name));
+  if (tools && preset === 'restricted') tools = tools.filter(t => t.name !== 'run_command');
 
   const touch = () =>
     touchSandbox({
@@ -405,9 +456,14 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
       repo,
     });
 
+  if (resumeThread?.length) {
+    resumeThread.push({ role: 'system', content: `Current workspace and user memory:\n${extras.join('\n\n')}` });
+    resumeThread.push({ role: 'user', content: finalPrompt });
+  }
   await runAgentLoop(
     {
       systemPrompt: mode.systemPrompt,
+      resumeThread,
       extraContext: extras.join('\n\n'),
       compactionSummary: summary ?? undefined,
       history,
@@ -424,15 +480,21 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     ev => emitJob(pool, job, ev),
     {
       executeTool: exec,
+      beforeRound: control.beforeRound,
+      onUsage: control.usage,
+      saveThread: control.saveThread,
       touchSandbox: touch,
       steerNext: () => popQueueKind(pool, job, 'steer'),
     },
   );
 
+  clearTimeout(job.budgetTimer);
+  job.resume = false;
   await compactIfNeeded(pool, job, providerRow, apiKey, job.model || providerRow.default_model);
 }
 
 async function driveJob(pool, job) {
+  if (job.running) return;
   job.running = true;
   try {
     await runTurn(pool, job, {
@@ -473,6 +535,8 @@ async function driveJob(pool, job) {
       broadcast(job, { type: 'done' });
     }
   } finally {
+    clearTimeout(job.budgetTimer);
+    if (job.control) await job.control.mutate(s => { s.finishedAt = Date.now(); }).catch(() => {});
     job.running = false;
     jobs.delete(job.conversationId);
   }
@@ -482,7 +546,7 @@ export const driveControl = {
   schedule: fn => setImmediate(fn),
 };
 
-export async function startJob(pool, {
+async function startJobUnlocked(pool, {
   user,
   conversationId,
   repoPath,
@@ -493,9 +557,13 @@ export async function startJob(pool, {
   reasoningLevel,
   extraContext,
   kind,
+  resume = false,
+  taskSettings,
 }) {
   const userId = user.uid;
+  const initialSettings = taskSettings ? validateSettings(taskSettings) : undefined;
   let row = conversationId ? await loadOwned(pool, userId, conversationId) : null;
+  if (conversationId && !row) throw Object.assign(new Error('Conversation not found'), { status: 404 });
   if (!row) {
     if (!repoPath) throw Object.assign(new Error('repoPath is required'), { status: 400 });
     const id = `conv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -506,8 +574,10 @@ export async function startJob(pool, {
       [id, userId, repoPath, title],
     );
     row = inserted.rows[0];
+    if (initialSettings) await mutateTaskState(pool, row.id, s => { s.settings = initialSettings; });
   }
 
+  if (workspaceActions.has(row.id)) throw Object.assign(new Error('A workspace operation is still running'), { status: 409 });
   if (row.run_status === 'running' || jobs.has(row.id)) {
     const item = {
       id: queueId(),
@@ -552,7 +622,8 @@ export async function startJob(pool, {
   const job = attachJob(pool, {
     conversationId: row.id,
     userId,
-    user: { uid: user.uid, name: user.display_name, email: user.email },
+    user: { ...user, uid: user.uid, name: user.display_name, email: user.email },
+    resume,
     repoPath: row.repo_path,
     messages,
     runQueue: Array.isArray(row.run_queue) ? row.run_queue : [],
@@ -681,4 +752,16 @@ export function _resetJobsForTests() {
     job.abort.abort();
   }
   jobs.clear();
+}
+
+// Serialize starts for an existing conversation so concurrent requests cannot
+// schedule two drivers or overwrite the newly persisted opening turn.
+const startLocks = new Map();
+export async function startJob(pool, args) {
+  if (!args.conversationId) return startJobUnlocked(pool, args);
+  const key = `${args.user.uid}:${args.conversationId}`;
+  const previous = startLocks.get(key) || Promise.resolve();
+  const next = previous.catch(() => {}).then(() => startJobUnlocked(pool, args));
+  startLocks.set(key, next);
+  try { return await next; } finally { if (startLocks.get(key) === next) startLocks.delete(key); }
 }

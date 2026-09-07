@@ -6,7 +6,7 @@
 // --socket-gid selects the nested socket group for the full stack (default 1999).
 // Every run first regression-tests stock entrypoint socket GIDs and overrides.
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -164,8 +164,12 @@ try {
     console.log(`FAIL stock image startup (CRLF source: ${report.entrypointCRLF}); see stock-startup.log`);
     throw new Error('Actual image startup failed');
   } else pass('actual image entrypoint startup and /healthz');
-  assert.equal(inner(['exec', 'check-db', 'psql', '-U', 'fixture', '-d', 'fixture', '-Atc', 'SELECT count(*) FROM schema_migrations']).text, '26');
-  pass('all 26 migrations applied to real Postgres');
+  const expectedMigrations = readdirSync(path.join(context, 'backend', 'src', 'db', 'migrations'))
+    .filter(file => file.endsWith('.sql')).sort();
+  const appliedMigrations = inner(['exec', 'check-db', 'psql', '-U', 'fixture', '-d', 'fixture', '-Atc',
+    'SELECT version FROM schema_migrations']).text.split('\n').filter(Boolean).sort();
+  assert.deepEqual(appliedMigrations, expectedMigrations, 'every bundled migration is applied exactly once');
+  pass(`all ${expectedMigrations.length} migrations applied to real Postgres`);
   console.log('Building the unchanged sandbox Dockerfile (includes Chromium)...');
   inner(['build', '-t', 'nixre-upgrade-sandbox:test', '/check/backend/agent-sandbox']);
   report.resources.sandboxImage = inner(['image', 'inspect', '-f', '{{.Id}}', 'nixre-upgrade-sandbox:test']).text;

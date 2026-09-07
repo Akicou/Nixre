@@ -1,3 +1,5 @@
+import { installAgentControlRoutes, ownedControlContext } from './agentControls.js';
+import { taskController } from '../lib/agentControl.js';
 // AI routes — multi-provider management, per-provider model lists, and a
 // streaming chat proxy. Keys never leave the server.
 //
@@ -16,7 +18,7 @@ import {
   maskSecret,
   AuthError,
 } from '../lib/ai.js';
-import { TOOL_SCHEMAS, executeTool } from '../lib/agentTools.js';
+import { TOOL_SCHEMAS, executeTool, assertWritableAgentPath } from '../lib/agentTools.js';
 import { touchSandbox } from '../lib/agentSandbox.js';
 import { transcribeAudio } from '../lib/stt.js';
 import {
@@ -613,17 +615,19 @@ export function aiRoutes(pool, authenticate) {
     }
 
     try {
-      const result = await executeTool(tool, space, repo, args, permissions, {
-        userId: uid,
-        user: {
-          uid,
-          name: req.auth.user.display_name,
-          email: req.auth.user.email,
-        },
-        conversationId: conversationId || undefined,
-        repoPath,
-        workspace,
-      });
+      if (!TOOL_SCHEMAS.some(t => t.name === tool)) throw new Error('Use task controls for this operation');
+      if (!conversationId) throw new Error('A conversation is required for agent tools');
+      const { context, row } = await ownedControlContext(pool, req.auth.user, conversationId);
+      if (row.repo_path !== repoPath) throw new Error('Conversation workspace does not match');
+      if (isJobLive(conversationId)) throw new Error('Use the active server-side job for this conversation');
+      if (tool === 'write_file') assertWritableAgentPath(args.path, permissions);
+      if (tool === 'run_command') throw new Error('Shell commands must run through an agent job with one-time approval');
+      const control = taskController(pool, context);
+      const output = await control.execute(tool, args, {}, async (name, toolArgs) => {
+        const result = await executeTool(name, space, repo, toolArgs, permissions, context);
+        return String(result.output ?? '');
+      }, async () => { throw new Error('Specialists require a server-side job'); });
+      const result = { output };
       res.json(result);
     } catch (err) {
       res.status(400).json({ message: err.message });
@@ -737,6 +741,8 @@ export function aiRoutes(pool, authenticate) {
     }
   });
 
+  installAgentControlRoutes(api, pool, auth);
+
   // --- server-side agent jobs ------------------------------------------------
 
   api.post('/ai/jobs', auth, async (req, res) => {
@@ -757,6 +763,7 @@ export function aiRoutes(pool, authenticate) {
         reasoningLevel: String(req.body?.reasoningLevel || 'none'),
         extraContext: extra.trim(),
         kind: String(req.body?.kind || ''),
+        taskSettings: req.body?.taskSettings,
       });
       res.json(result);
     } catch (err) {

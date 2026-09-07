@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { access, constants } from 'node:fs/promises';
+import * as fs from 'node:fs/promises';
 import { repoDir, REPOS_ROOT } from '../git/repo.js';
 import { pool } from '../db/pool.js';
 import { newPatSecret, sha256 } from './auth.js';
@@ -900,4 +901,26 @@ export async function initSandbox() {
     console.log('Agent sandbox not reachable yet; run_command is disabled until Docker responds');
   }
   return ok;
+}
+
+/** Fixed, reviewed operations in the Docker sandbox; no persistent-shell interpolation. */
+export async function agentWorkspaceOperation(context, operation, createIfMissing = true) {
+  if (!(await isSandboxEnabled())) {
+    if (!createIfMissing) return null;
+    throw new Error('Docker agent sandbox is required for workspace controls');
+  }
+  const { userId, conversationId, repoPath, space, repo, user } = context;
+  const key = sessionKey(userId, conversationId, repoPath);
+  const containerId = await ensureRunningContainer(key, userId, conversationId, repoPath, space, repo, user, createIfMissing);
+  if (!containerId) return null;
+  touch(key);
+  const browser = operation.op === 'browser';
+  const script = await fs.readFile(new URL(browser ? './agentBrowser.cjs' : './agentWorkspace.py', import.meta.url), 'utf8');
+  const result = await dockerExec(containerId, browser
+    ? ['node', '-e', script, JSON.stringify(operation)]
+    : ['python3', '-c', script], browser ? {} : { stdin: JSON.stringify(operation) });
+  let data;
+  try { data = JSON.parse(result.output); } catch { throw new Error('Workspace operation returned invalid output'); }
+  if (result.code !== 0 || data.error) throw new Error(data.error || 'Workspace operation failed');
+  return data;
 }

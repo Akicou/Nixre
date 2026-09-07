@@ -187,3 +187,26 @@ it('keeps every tool reply before attached image messages in a multi-tool batch'
       ? JSON.stringify({ images: [{ path: 'a.png', dataUrl: 'data:image/png;base64,AAAA' }] }) : 'ok',
   });
 });
+
+it('accounts for cumulative usage once per stream and saves the provider thread before tools', async () => {
+  const deltas = [], snapshots = [];
+  let round = 0;
+  await runAgentLoop(loopOptions, () => {}, {
+    streamChat: async (_opts, send) => {
+      if (++round === 1) {
+        await send({ type: 'usage', usage: { input: 10, output: 1 } });
+        await send({ type: 'usage', usage: { input: 10, output: 5 } });
+        await send({ type: 'tool_delta', index: 0, id: 't', name: 'read_file', argsDelta: '{}' });
+      }
+    },
+    onUsage: async usage => { deltas.push(usage); },
+    saveThread: async thread => { snapshots.push(structuredClone(thread)); },
+    executeTool: async (_name, _args, meta) => {
+      assert.equal(meta.callId, 't');
+      assert.equal(snapshots.at(-1).at(-1).tool_calls[0].id, 't');
+      return 'ok';
+    },
+  });
+  assert.deepEqual(deltas, [{ input: 10, output: 1 }, { input: 0, output: 4 }]);
+  assert.equal(snapshots.at(-1).at(-1).role, 'tool');
+});
