@@ -68,6 +68,21 @@ test('successful cutover verifies health before publishing, retaining the final 
   assert.equal(recoverInterrupted({ status: 'running', database: 'uncertain' }).status, 'recovery_required');
   assert.equal(recoverInterrupted({ status: 'checking' }).status, 'recovery_required');
 });
+test('terminal recovery is not published while candidate services are still stopping', async () => {
+  const f = fixture('health');
+  let stopCount = 0, releaseStop;
+  f.driver.stop = async () => {
+    if (++stopCount === 2) await new Promise(resolve => { releaseStop = resolve; });
+  };
+  const running = executeUpdate(f.driver, f.job, f.save);
+  await until(() => !!releaseStop);
+  assert.equal(f.job.status, 'running');
+  assert.equal(f.job.finishedAt, undefined);
+  releaseStop();
+  await running;
+  assert.equal(f.job.status, 'recovery_required');
+  assert.ok(f.job.finishedAt);
+});
 test('automatic update policy refuses infrastructure changes and historical migration edits', () => {
   for (const filename of ['Caddyfile', 'docker-compose.yml', 'ssh/Dockerfile', 'scripts/updater/engine.mjs', 'backend/entrypoint.sh']) {
     assert.throws(() => assertUpgrade(base, target, [{ status: 'M', path: filename }]), /manual upgrade/);
@@ -161,6 +176,7 @@ test('restart preserves interrupted outcomes and blocks replay', async t => {
   const headers = { Authorization: `Bearer ${key}` };
   const state = await (await fetch(url + '/state', { headers })).json();
   assert.equal(state.current.status, 'recovery_required');
+  assert.deepEqual(JSON.parse(await readFile(path.join(folder, 'data/update-control/maintenance.json'), 'utf8')), { recoveryRequired: true });
   assert.equal((await fetch(url + '/check', { method: 'POST', headers, body: JSON.stringify({ requestId: randomUUID(), actor: 'admin' }) })).status, 409);
 });
 test('admin update API rejects ordinary users and PATs and forwards only approved fields', async t => {

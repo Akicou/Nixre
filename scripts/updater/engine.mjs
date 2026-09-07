@@ -1,6 +1,7 @@
 // Deliberately independent of core, PostgreSQL, and third-party dependencies.
 export async function executeUpdate(driver, job, save) {
   let context;
+  let outcome = 'failed';
   const step = async (name, action) => {
     const item = { name, status: 'running', startedAt: Date.now() };
     job.steps.push(item);
@@ -47,32 +48,36 @@ export async function executeUpdate(driver, job, save) {
     await step('Start the candidate backend', () => driver.activate(context));
     await step('Verify revision, database, and health', () => driver.health(context));
     await step('Publish the UI and fast-forward the checkout', () => driver.publish(context));
-    job.status = 'succeeded';
+    outcome = 'succeeded';
     job.message = 'Update completed. Backend, database migrations, and UI revision verified.';
   } catch (error) {
     job.message = error.message;
-    job.status = 'failed';
+    outcome = 'failed';
     if (job.quiesced) {
       if (job.database === 'unchanged') {
         try {
           await step('Restore the previous services', () => driver.resumeOld(context));
           job.message += ' Previous services restored; database unchanged.';
         } catch {
-          job.status = 'recovery_required';
+          outcome = 'recovery_required';
           job.message += ' Previous services could not be restored. Operator recovery is required.';
         }
       } else {
-        job.status = 'recovery_required';
-        try { await driver.stop(context); } catch { /* preserve the original failure */ }
+        outcome = 'recovery_required';
+        try { await driver.stop(context); }
+        catch { job.message += ' Some services could not be stopped; inspect Docker on the host.'; }
         job.message += ' Database changes committed or are uncertain. Automatic rollback is blocked. Use the saved backup and recovery guide.';
       }
     }
   } finally {
     if (context) {
-      try { await driver.cleanup(context, job); }
+      try { await driver.cleanup(context, { ...job, status: outcome }); }
       catch { job.cleanupWarning = 'Temporary resources remain; see the private worker log.'; }
     }
     job.finishedAt = Date.now();
+    // Observers must keep polling until recovery and cleanup have actually
+    // settled, not stop when the first failure is detected.
+    job.status = outcome;
     await save();
   }
 }

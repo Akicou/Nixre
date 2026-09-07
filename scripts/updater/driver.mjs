@@ -286,14 +286,16 @@ export class HostDriver {
     for (let i = 0; i < 60; i++) {
       const code = `fetch('http://127.0.0.1:3002/healthz').then(async r=>{const d=await r.json();process.exit(r.ok&&d.ok${expected ? `&&d.revision===${JSON.stringify(expected)}` : ''}?0:1)}).catch(()=>process.exit(1))`;
       if ((await this.run('docker', ['exec', id, 'node', '-e', code], { allowFailure: true, timeout: 10_000 })).code === 0) {
-        const response = await this.fetchImpl(new URL('/api/v1/user', this.publicUrl), { signal: AbortSignal.timeout(10_000), redirect: 'error' });
-        const healthy = response.status === 401 && (!expected || response.headers.get('x-nixre-revision') === expected);
-        await response.body?.cancel();
-        if (healthy) return;
+        try {
+          const response = await this.fetchImpl(new URL('/api/v1/user', this.publicUrl), { signal: AbortSignal.timeout(10_000), redirect: 'error' });
+          const healthy = response.status === 401 && (!expected || response.headers.get('x-nixre-revision') === expected);
+          await response.body?.cancel();
+          if (healthy) return;
+        } catch { /* allow Caddy's connection to recover during container replacement */ }
       }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
-    throw new Error('Backend health or running revision check failed.');
+    throw new Error('Backend health, API routing, or running revision check failed.');
   }
   async publish(context) {
     const releases = path.join(this.root, 'data/update-web/releases');

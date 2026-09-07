@@ -39,6 +39,13 @@ export async function createUpdater({ root, stateDir = path.join(root, 'data/upd
     saving = saving.then(() => atomicJSON(stateFile, snapshot));
     return saving;
   };
+  if (jobs.some(job => job.status === 'recovery_required' && (job.quiesced || ['uncertain', 'committed'].includes(job.database)))) {
+    // Re-establish the write pause even after power loss removed an unflushed
+    // maintenance file. Do not replay any Docker or database operation.
+    const controlDir = path.join(root, 'data/update-control');
+    await mkdir(controlDir, { recursive: true, mode: 0o750 });
+    await atomicJSON(path.join(controlDir, 'maintenance.json'), { recoveryRequired: true });
+  }
   await save();
   let busy = false;
   let operationInFlight = false;
