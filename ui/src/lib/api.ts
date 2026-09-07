@@ -258,6 +258,15 @@ export interface UserStt {
 }
 
 class ApiClient {
+  async getInstanceUpdates() {
+    return this.request<import('./instanceUpdates').UpdateState>('/admin/updates');
+  }
+  async checkInstanceUpdate(requestId: string) {
+    return this.request<import('./instanceUpdates').UpdateState>('/admin/updates/check', { method: 'POST', body: JSON.stringify({ requestId }) });
+  }
+  async applyInstanceUpdate(input: { requestId: string; planId: string; target: string; expectedBase: string }) {
+    return this.request<import('./instanceUpdates').UpdateState>('/admin/updates/apply', { method: 'POST', body: JSON.stringify(input) });
+  }
   // nixre-core owns every route (sovereignty complete, phase 4). The session
   // token is a core session (`nxs_...`) or a personal access token
   // (`nxp_...`); both resolve through the same backend middleware.

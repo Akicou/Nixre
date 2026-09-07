@@ -367,3 +367,5 @@ MIT License © 2026 Nixre Contributors · [nixre.dev](https://nixre.dev)
 ### Agent task controls
 
 The Assistant now includes a live checklist, per-file change review, checkpoints, verification, project memory, permission presets, local browser checks, specialist agents, explicit task recovery, and usage limits. See [Agent task controls](docs/agent-task-controls.md) for behavior and deployment requirements.
+
+Administrators can use [safe instance updates](docs/instance-updates.md) to review a CI-verified revision and run staged builds, database backup and migration rehearsal, health verification, and UI publication. An independent progress page remains available during backend restarts. One-time host worker setup is required; uncertain database changes require explicit operator recovery.

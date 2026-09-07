@@ -67,6 +67,14 @@ try {
   cpSync(path.join(root, 'ui', 'dist'), path.join(context, 'dist'), { recursive: true });
   cpSync(path.join(root, 'Caddyfile'), path.join(context, 'Caddyfile'));
   cpSync(path.join(root, 'scripts', 'test-docker-upgrade-inner.mjs'), path.join(context, 'checks.mjs'));
+  cpSync(path.join(root, 'scripts', 'updater'), path.join(context, 'updater'), { recursive: true });
+  cpSync(path.join(root, 'scripts', 'test-instance-updater-inner.mjs'), path.join(context, 'updater-checks.mjs'));
+  mkdirSync(path.join(context, 'ui'), { recursive: true });
+  for (const name of readdirSync(path.join(root, 'ui')).filter(name =>
+    ['src', 'public', 'dist', 'package.json', 'package-lock.json', 'index.html'].includes(name) || /^(?:tsconfig|vite\.config|postcss\.config|tailwind\.config)/.test(name))) {
+    cpSync(path.join(root, 'ui', name), path.join(context, 'ui', name), { recursive: true });
+  }
+  writeFileSync(path.join(context, 'Worker.Dockerfile'), 'FROM nixre-upgrade-core:test\nUSER root\nRUN apk add --no-cache docker-cli docker-cli-compose\nENTRYPOINT ["node"]\n');
   report.entrypointCRLF = readFileSync(path.join(context, 'backend', 'entrypoint.sh')).includes(Buffer.from('\r\n'));
   report.resources.network = docker(['network', 'create', '--label', `nixre.upgrade-check=${prefix}`, outerNetwork]).text;
   networkCreated = true;
@@ -182,12 +190,22 @@ try {
   report.checks.push(...tests.text.split('\n').filter(line => line.startsWith('PASS ')).map(line => line.slice(5)));
   writeFileSync(path.join(artifacts, 'integration.log'), tests.output);
   pass('real API, app reconciliation, capability policy and sandbox checks');
+  inner(['build', '-f', '/check/Worker.Dockerfile', '-t', 'nixre-upgrade-worker:test', '/check']);
+  const updaterChecks = inner(['run', '--rm', '--name', 'check-updater', '--network', 'host',
+    '-e', `CHECK_PREFIX=${prefix}`, '-v', '/var/run/docker.sock:/var/run/docker.sock', '-v', '/check:/check',
+    'nixre-upgrade-worker:test', '/check/updater-checks.mjs'], { timeout: 1_500_000 });
+  console.log(updaterChecks.text);
+  pass('real host updater success, migration-rehearsal rejection, and post-commit recovery with independent status');
 } catch (err) {
   report.error = redact(err.stack || err);
   console.error(report.error);
   process.exitCode = 1;
 } finally {
   if (outerCreated) {
+    const workerLogs = docker(['exec', daemon, 'find', '/check/update-fixture/data/updater', '-maxdepth', '1', '-name', '*.log'], { allowFailure: true });
+    for (const filename of workerLogs.text.split('\n').filter(name => /^\/check\/update-fixture\/data\/updater\/[a-z0-9-]+\.log$/.test(name))) {
+      docker(['cp', `${daemon}:${filename}`, path.join(artifacts, `updater-${path.basename(filename)}`)], { allowFailure: true });
+    }
     report.innerContainers = inner(['ps', '-a', '--format', '{{.ID}} {{.Names}}'], { allowFailure: true }).text.split('\n').filter(Boolean);
     report.innerVolumes = inner(['volume', 'ls', '--format', '{{.Name}}'], { allowFailure: true }).text.split('\n').filter(Boolean);
     const list = inner(['ps', '-aq'], { allowFailure: true });
