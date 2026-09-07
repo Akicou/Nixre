@@ -1,3 +1,4 @@
+import { SourceCode } from '../components/SourceCode';
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
@@ -555,7 +556,7 @@ export const RepoView: React.FC = () => {
                 </div>
               ) : (
                 <div className="p-4 overflow-x-auto font-mono text-xs text-txt-primary leading-relaxed bg-surface-base/30">
-                  <pre><code>{fileBlob.content}</code></pre>
+                  <SourceCode content={fileBlob.content} filename={fileBlob.name} />
                 </div>
               )}
             </div>

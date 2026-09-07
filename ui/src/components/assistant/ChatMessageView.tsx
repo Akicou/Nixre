@@ -63,8 +63,9 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({
                 value={draft}
                 onChange={e => setDraft(e.target.value)}
                 onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
+                    if (!draft.trim()) return;
                     setEditing(false);
                     onEdit?.(message.id, draft);
                   } else if (e.key === 'Escape') {
@@ -144,7 +145,7 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({
                 );
               }
               return (
-                <div key={`text-${i}`} className="chat-part-in text-xs leading-relaxed text-txt-primary markdown-body max-w-none">
+                <div key={`text-${i}`} className="chat-part-in text-xs leading-relaxed text-txt-primary max-w-none">
                   <Markdown content={part.text} />
                   {streaming && isLast && <StreamingCaret />}
                 </div>
@@ -203,7 +204,7 @@ const ReasoningPanel: React.FC<{ text: string; thinking: boolean }> = ({ text, t
       </button>
       <div
         className={`overflow-hidden transition-all duration-200 ${
-          open ? 'max-h-96 opacity-100 mt-1.5' : 'max-h-0 opacity-0'
+          open ? 'max-h-96 overflow-y-auto opacity-100 mt-1.5' : 'max-h-0 opacity-0'
         }`}
       >
         <div className="border-l-2 border-brand/30 pl-3 ml-1.5 py-1">
@@ -250,6 +251,10 @@ interface ToolBlockProps {
 const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
   const shown = tool.name === 'show_images' && tool.output ? parseShownImages(tool.output) : [];
   const [open, setOpen] = useState(shown.length > 0);
+  const hasShownImages = shown.length > 0;
+  useEffect(() => {
+    if (hasShownImages) setOpen(true);
+  }, [hasShownImages]);
   return (
     <div className="rounded-md border border-border-subtle bg-surface-base overflow-hidden max-w-xl">
       <button

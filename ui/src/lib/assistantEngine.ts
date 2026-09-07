@@ -10,7 +10,7 @@
 import type { AssistantProviderProfile } from './assistantProfiles';
 import type { ChatTurn } from './aiApi';
 import * as sync from './syncApi';
-import { toMultimodalParts, type ChatImage } from './chatImages';
+import { parseShownImages, toMultimodalParts, type ChatImage } from './chatImages';
 import { peelTrace, withTrace, type SessionTraceEntry, type TokenUsage } from './sessionTrace';
 
 export type ToolStatus = 'running' | 'success' | 'error';
@@ -181,6 +181,7 @@ export async function runCompaction(
 ): Promise<string> {
   const { streamAiChat } = await import('./aiApi');
 
+  const { summary: previousSummary } = buildModelContext(messages);
   const start = lastCompactionIndex(messages) + 1;
   const transcript = messages
     .slice(start)
@@ -194,6 +195,7 @@ export async function runCompaction(
     streamAiChat(
       [
         { role: 'system', content: COMPACTION_PROMPT },
+        ...(previousSummary ? [{ role: 'system' as const, content: formatCompactionForPrompt(previousSummary) }] : []),
         { role: 'user', content: transcript || '(empty conversation)' },
       ],
       { model: overrides.model || profile.model, reasoningLevel: 'none' },
@@ -506,7 +508,7 @@ export async function* runRealTurn(
 
   let errored: string | null = null;
   let aborted = false;
-  let afterTools = false;
+  let lastRoundAttempts = 1;
 
   yield* (async function* () {
     // Bridge callback-based streams into the generator. `streamStep`
@@ -550,8 +552,16 @@ export async function* runRealTurn(
           // The model streamed tool-call fragments but none were complete
           // (missing id/name). Treat it as a stream failure so the retry
           // machinery handles it instead of silently ending the turn.
-          if (calls.length === 0 && all.length > 0) {
+          if (calls.length !== all.length) {
             errored = errored ?? 'Model returned an incomplete tool call';
+          }
+          for (const call of calls) {
+            try {
+              const args = JSON.parse(call.args || '{}');
+              if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error();
+            } catch {
+              errored = errored ?? 'Model returned invalid tool arguments';
+            }
           }
           resolve({ calls, text: stepText });
         };
@@ -593,11 +603,6 @@ export async function* runRealTurn(
                     type: 'tool_start',
                     tool: { id: cur.id, name: cur.name, status: 'running', argsText: cur.args },
                   });
-                } else if (cur.id && started.has(cur.id) && evt.argsDelta) {
-                  push({
-                    type: 'tool_start',
-                    tool: { id: cur.id, name: cur.name || '', status: 'running', argsText: cur.args },
-                  });
                 }
               } else if (evt.type === 'usage') {
                 push({ type: 'usage', usage: evt.usage });
@@ -610,7 +615,6 @@ export async function* runRealTurn(
                 }
               } else if (evt.type === 'error') {
                 errored = evt.message;
-                settle();
               } else if (evt.type === 'done') {
                 // Some providers never send a finish frame; text suppressed
                 // during a round is replayed only when the round asked for no
@@ -620,10 +624,10 @@ export async function* runRealTurn(
                   stepTextLive = true;
                   push({ type: 'message_text', text: stepText });
                 }
-                settle();
               }
             },
           )
+          .then(settle)
           .catch((err: unknown) => {
             // A rejected fetch (network drop) must not hang the turn; an
             // AbortError is the user pressing Stop, not a failure.
@@ -639,20 +643,34 @@ export async function* runRealTurn(
 
     while (true) {
       if (signal?.aborted) aborted = true;
+      if (aborted) return;
       let calls: { id: string; name: string; args: string }[] = [];
       let text = '';
       let attempt = 0;
 
       while (true) {
         errored = null;
-        ({ calls, text } = await streamStep());
+        let complete = false;
+        const step = streamStep().then(result => {
+          complete = true;
+          resolveNext?.();
+          resolveNext = null;
+          return result;
+        });
+        while (!complete) {
+          if (queue.length) yield* drain();
+          else await new Promise<void>(resolve => { resolveNext = resolve; });
+        }
+        ({ calls, text } = await step);
         yield* drain();
+        if (signal?.aborted) aborted = true;
+        lastRoundAttempts = attempt + 1;
         if (aborted) return;
         if (!errored) break;
-        if (afterTools && attempt < MAX_POST_TOOL_RETRIES) {
+        push({ type: 'stream_retry' });
+        yield* drain();
+        if (attempt < MAX_POST_TOOL_RETRIES) {
           attempt++;
-          push({ type: 'stream_retry' });
-          yield* drain();
           continue;
         }
         return;
@@ -671,6 +689,7 @@ export async function* runRealTurn(
         })),
       });
 
+      const imageMessages: ChatTurn[] = [];
       for (const call of calls) {
         if (signal?.aborted) {
           aborted = true;
@@ -683,18 +702,33 @@ export async function* runRealTurn(
           argsObj = {};
         }
         push({ type: 'tool_start', tool: { id: call.id, name: call.name, status: 'running', argsText: call.args } });
+        yield* drain();
         try {
           const output = await aiApi.executeAssistantTool(overrides.repoPath!, call.name, argsObj, {
             conversationId: overrides.conversationId,
+            signal,
           });
           push({ type: 'tool_output', toolId: call.id, output });
-          thread.push({ role: 'tool', tool_call_id: call.id, content: output });
+          const images = call.name === 'show_images' ? parseShownImages(output) : [];
+          if (images.length) {
+            thread.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({
+              images: images.map(img => ({ path: img.name, mime: img.mime })),
+            }) });
+            imageMessages.push({ role: 'user', content: toMultimodalParts('Images returned by show_images:', images) });
+          } else {
+            thread.push({ role: 'tool', tool_call_id: call.id, content: output });
+          }
         } catch (err: unknown) {
+          if (signal?.aborted || (err as Error)?.name === 'AbortError') {
+            aborted = true;
+            return;
+          }
           const msg = err instanceof Error ? err.message : 'Tool execution failed';
           push({ type: 'tool_error', toolId: call.id, output: msg });
           thread.push({ role: 'tool', tool_call_id: call.id, content: `Error: ${msg}` });
         }
       }
+      thread.push(...imageMessages);
       // Steer injection: a queued steer becomes a user turn right after the
       // completed tool round, so the model can redirect itself mid-task. The
       // consumer mirrors it into the transcript via a steer_applied event.
@@ -714,15 +748,15 @@ export async function* runRealTurn(
         });
       }
       yield* drain();
-      afterTools = true;
+
       // Loop: the model now sees the tool results (+ any steer) and continues.
     }
   })();
 
-  if (errored) {
+  if (errored && !aborted) {
     throw new Error(
-      afterTools
-        ? `${errored} (failed after ${MAX_POST_TOOL_RETRIES + 1} attempts)`
+      lastRoundAttempts > 1
+        ? `${errored} (failed after ${lastRoundAttempts} attempts)`
         : errored,
     );
   }

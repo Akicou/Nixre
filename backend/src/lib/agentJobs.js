@@ -217,12 +217,14 @@ async function compactIfNeeded(pool, job, providerRow, apiKey, model) {
     }
     return 0;
   })();
+  const { summary: previousSummary } = buildModelContext(job.messages);
   const transcript = job.messages
     .slice(start)
     .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
     .map(m => `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${String(m.content || '').slice(0, 4000)}`)
     .join('\n\n');
   let out = '';
+  let failed = false;
   try {
     await streamChat(
       {
@@ -232,19 +234,22 @@ async function compactIfNeeded(pool, job, providerRow, apiKey, model) {
         model,
         messages: [
           { role: 'system', content: COMPACTION_PROMPT },
+          ...(previousSummary ? [{ role: 'system', content: previousSummary }] : []),
           { role: 'user', content: transcript || '(empty conversation)' },
         ],
         reasoningLevel: 'none',
         tools: null,
+        signal: job.abort.signal,
       },
       async evt => {
         if (evt.type === 'text') out += evt.text;
+        if (evt.type === 'error') failed = true;
       },
     );
   } catch {
     return;
   }
-  if (!out.trim()) return;
+  if (failed || job.abort.signal.aborted || !out.trim()) return;
   job.messages = withCompaction(job.messages, out.trim());
   await flushPersist(pool, job);
   broadcast(job, { type: 'snapshot', conversation: conversationPublic({

@@ -286,3 +286,44 @@
   color: var(--color-text-primary);
   caret-color: var(--color-text-primary);
 }
+
+/* Shared syntax colors for chat, Markdown previews, and repository source. */
+.markdown-body {
+  --syntax-keyword: #a626a4;
+  --syntax-string: #267036;
+  --syntax-number: #986801;
+  --syntax-title: #005cc5;
+  --syntax-comment: #626b77;
+  --syntax-variable: #b44225;
+}
+:root[data-theme="dark"] .markdown-body {
+  --syntax-keyword: #c792ea;
+  --syntax-string: #a5d68a;
+  --syntax-number: #f4bd76;
+  --syntax-title: #82aaff;
+  --syntax-comment: #929bad;
+  --syntax-variable: #f78c6c;
+}
+.markdown-body .hljs-keyword,
+.markdown-body .hljs-selector-tag,
+.markdown-body .hljs-literal { color: var(--syntax-keyword); }
+.markdown-body .hljs-string,
+.markdown-body .hljs-regexp,
+.markdown-body .hljs-addition { color: var(--syntax-string); }
+.markdown-body .hljs-number,
+.markdown-body .hljs-attr,
+.markdown-body .hljs-attribute { color: var(--syntax-number); }
+.markdown-body .hljs-title,
+.markdown-body .hljs-name,
+.markdown-body .hljs-built_in,
+.markdown-body .hljs-type,
+.markdown-body .hljs-section { color: var(--syntax-title); }
+.markdown-body .hljs-comment,
+.markdown-body .hljs-quote { color: var(--syntax-comment); font-style: italic; }
+.markdown-body .hljs-variable,
+.markdown-body .hljs-symbol,
+.markdown-body .hljs-bullet,
+.markdown-body .hljs-deletion,
+.markdown-body .hljs-meta { color: var(--syntax-variable); }
+.markdown-body .hljs-emphasis { font-style: italic; }
+.markdown-body .hljs-strong { font-weight: 700; }
