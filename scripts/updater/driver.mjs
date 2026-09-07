@@ -150,9 +150,16 @@ export class HostDriver {
     if (!coreId || !dbId || !sshId) throw new Error('Core, database, and SSH must all be running before an update.');
     const coreInfo = JSON.parse((await this.run('docker', ['inspect', coreId], { quiet: true })).output)[0];
     const runningEnv = Object.fromEntries(coreInfo.Config.Env.map(value => [value.slice(0, value.indexOf('=')), value.slice(value.indexOf('=') + 1)]));
-    if (runningEnv.DATABASE_URL || ['PGHOST', 'PGUSER', 'PGDATABASE', 'PGPASSWORD'].some(name =>
-      runningEnv[name] !== cfg.config.services['nixre-core'].environment[name]?.replaceAll('$$', '$'))) {
-      throw new Error('Running core database settings differ from Compose. Reconcile them before updating.');
+    if (runningEnv.DATABASE_URL || Object.entries(cfg.config.services['nixre-core'].environment).some(([name, value]) =>
+      runningEnv[name] !== String(value ?? '').replaceAll('$$', '$'))) {
+      throw new Error('Running core settings differ from Compose. Reconcile them before updating.');
+    }
+    for (const volume of cfg.config.services['nixre-core'].volumes || []) {
+      if (volume.type !== 'bind') continue;
+      const mounted = coreInfo.Mounts.find(item => item.Destination === volume.target);
+      if (!mounted || mounted.Source !== volume.source || mounted.RW === !!volume.read_only) {
+        throw new Error('Running core storage mounts differ from Compose. Reconcile them before updating.');
+      }
     }
     const dbInfo = JSON.parse((await this.run('docker', ['inspect', dbId], { quiet: true })).output)[0];
     const network = cfg.config.services['nixre-core'].environment.NIXRE_DATA_NETWORK;
@@ -240,7 +247,9 @@ export class HostDriver {
       '-e', 'POSTGRES_USER=nixre_rehearsal', '-e', 'POSTGRES_DB=nixre_rehearsal', '-e', `POSTGRES_PASSWORD=${password}`,
       context.dbImage], { quiet: true });
     for (let attempt = 0; attempt < 60; attempt++) {
-      if ((await this.run('docker', ['exec', context.rehearsalName, 'pg_isready', '-U', 'nixre_rehearsal'], { allowFailure: true })).code === 0) break;
+      // Docker's temporary initialization server accepts Unix-socket probes
+      // before shutting down. TCP becomes ready only for the final server.
+      if ((await this.run('docker', ['exec', context.rehearsalName, 'pg_isready', '-h', '127.0.0.1', '-U', 'nixre_rehearsal'], { allowFailure: true })).code === 0) break;
       if (attempt === 59) throw new Error('Rehearsal database did not start.');
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
@@ -276,7 +285,12 @@ export class HostDriver {
     const id = (await this.compose(context, null, 'ps', '-q', 'nixre-core')).output;
     for (let i = 0; i < 60; i++) {
       const code = `fetch('http://127.0.0.1:3002/healthz').then(async r=>{const d=await r.json();process.exit(r.ok&&d.ok${expected ? `&&d.revision===${JSON.stringify(expected)}` : ''}?0:1)}).catch(()=>process.exit(1))`;
-      if ((await this.run('docker', ['exec', id, 'node', '-e', code], { allowFailure: true, timeout: 10_000 })).code === 0) return;
+      if ((await this.run('docker', ['exec', id, 'node', '-e', code], { allowFailure: true, timeout: 10_000 })).code === 0) {
+        const response = await this.fetchImpl(new URL('/api/v1/user', this.publicUrl), { signal: AbortSignal.timeout(10_000), redirect: 'error' });
+        const healthy = response.status === 401 && (!expected || response.headers.get('x-nixre-revision') === expected);
+        await response.body?.cancel();
+        if (healthy) return;
+      }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
     throw new Error('Backend health or running revision check failed.');

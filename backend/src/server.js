@@ -78,6 +78,7 @@ export function createApp({ pool = sharedPool, authenticate: authenticateOverrid
   // No hop counts: a directly connected caller must not be able to supply XFF.
   app.set('trust proxy', String(process.env.TRUSTED_PROXY_CIDRS || '').split(',').map(s => s.trim()).filter(Boolean));
   app.use(securityHeaders);
+  app.use((_req, res, next) => { res.set('X-Nixre-Revision', process.env.NIXRE_REVISION || 'unknown'); next(); });
   app.use(updateMaintenance());
   app.use(['/api/v1', '/api/sync/v1'], createRequestMiddleware(authenticate));
 
