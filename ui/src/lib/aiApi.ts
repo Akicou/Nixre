@@ -164,10 +164,11 @@ export async function executeAssistantTool(
   repoPath: string,
   tool: string,
   args: Record<string, unknown>,
-  opts?: { conversationId?: string },
+  opts?: { conversationId?: string; signal?: AbortSignal },
 ): Promise<string> {
   const res = await fetch('/api/v1/ai/tools', {
     method: 'POST',
+    signal: opts?.signal,
     headers: authHeaders(),
     body: JSON.stringify({
       repoPath,

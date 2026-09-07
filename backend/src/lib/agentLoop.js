@@ -83,8 +83,16 @@ export async function runAgentLoop(opts, emit, deps = {}) {
         const calls = all
           .filter(c => c.id && c.name)
           .map(c => ({ id: c.id, name: c.name, args: c.args }));
-        if (calls.length === 0 && all.length > 0) {
+        if (calls.length !== all.length) {
           errored = errored ?? 'Model returned an incomplete tool call';
+        }
+        for (const call of calls) {
+          try {
+            const args = JSON.parse(call.args || '{}');
+            if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error();
+          } catch {
+            errored = errored ?? 'Model returned invalid tool arguments';
+          }
         }
         resolve({ calls, text: stepText });
       };
@@ -168,6 +176,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
 
   while (true) {
     if (signal?.aborted) aborted = true;
+    if (aborted) break;
     let calls = [];
     let text = '';
     let attempt = 0;
@@ -175,6 +184,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
     while (true) {
       errored = null;
       ({ calls, text } = await streamStep());
+      if (signal?.aborted) aborted = true;
       if (aborted) break;
       if (!errored) break;
       // Every round may retry, not just post-tool ones: provider streams fail
@@ -205,6 +215,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
       })),
     });
 
+    const imageMessages = [];
     for (const call of calls) {
       if (signal?.aborted) {
         aborted = true;
@@ -260,7 +271,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
                   image_url: { url: img.dataUrl },
                 })),
               ];
-              thread.push({ role: 'user', content });
+              imageMessages.push({ role: 'user', content });
             }
           } else {
             thread.push({ role: 'tool', tool_call_id: call.id, content: output });
@@ -276,6 +287,8 @@ export async function runAgentLoop(opts, emit, deps = {}) {
     }
     if (aborted) break;
 
+    // All tool replies must precede user/image messages for this tool batch.
+    thread.push(...imageMessages);
     const steer = await steerNext();
     if (steer) {
       thread.push({
@@ -293,7 +306,7 @@ export async function runAgentLoop(opts, emit, deps = {}) {
     }
   }
 
-  if (errored) {
+  if (errored && !aborted) {
     throw new Error(
       lastRoundAttempts > 1 ? `${errored} (failed after ${lastRoundAttempts} attempts)` : errored,
     );

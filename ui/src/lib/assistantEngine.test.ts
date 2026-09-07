@@ -374,3 +374,75 @@ describe('assistantEngine persistence', () => {
     expect(fresh?.trace?.[0]).toMatchObject({ type: 'model_change', modelId: 'deepseek-chat' });
   });
 });
+
+describe('streaming regressions', () => {
+  const profile = { model: 'm', reasoningLevel: 'none' } as any;
+  beforeEach(() => { mockedStream.mockReset(); mockedExec.mockReset(); });
+
+  it('yields text before the provider stream finishes', async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    mockedStream.mockImplementationOnce(async (_m, _o, send) => {
+      send({ type: 'text', text: 'live' });
+      await pending;
+      send({ type: 'done' });
+    });
+    const turn = runRealTurn('hi', profile, []);
+    try {
+      const first = await Promise.race([
+        turn.next(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Text was buffered')), 300)),
+      ]);
+      expect(first.value).toEqual({ type: 'message_text', text: 'live' });
+    } finally {
+      finish();
+      await turn.return(undefined);
+    }
+  });
+
+  it('settles a stream that resolves without an explicit done event', async () => {
+    mockedStream.mockImplementationOnce(async (_m, _o, send) => { send({ type: 'text', text: 'answer' }); });
+    const events = [];
+    for await (const event of runRealTurn('hi', profile, [])) events.push(event);
+    expect(events).toEqual([{ type: 'message_text', text: 'answer' }]);
+  });
+
+  it('retries the opening request and clears its partial response', async () => {
+    mockedStream.mockImplementationOnce(async (_m, _o, send) => {
+      send({ type: 'text', text: 'partial' });
+      send({ type: 'error', message: 'reset' });
+    }).mockImplementationOnce(async (_m, _o, send) => { send({ type: 'text', text: 'recovered' }); });
+    const events = [];
+    for await (const event of runRealTurn('hi', profile, [])) events.push(event);
+    expect(events.map(e => e.type)).toEqual(['message_text', 'stream_retry', 'message_text']);
+    expect(mockedStream).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not send an already cancelled turn', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(runRealTurn('hi', profile, [], { signal: controller.signal }).next()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockedStream).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid tool arguments before execution', async () => {
+    mockedStream.mockImplementation(async (_m, _o, send) => {
+      send({ type: 'tool_delta', index: 0, id: 't', name: 'write_file', argsDelta: '{"path":' });
+    });
+    await expect(async () => {
+      for await (const _event of runRealTurn('hi', profile, [], { agent: true, repoPath: 'a/b' })) { /* drain */ }
+    }).rejects.toThrow(/invalid tool arguments.*4 attempts/);
+    expect(mockedExec).not.toHaveBeenCalled();
+  });
+
+  it('includes the earlier summary during a second compaction', async () => {
+    const { runCompaction } = await import('./assistantEngine');
+    const messages = withCompaction([{ id: 'u', role: 'user', content: 'original goal', createdAt: 1 }], 'Remember the original goal');
+    messages.push({ id: 'a', role: 'assistant', content: 'new progress', createdAt: 2 });
+    mockedStream.mockImplementationOnce(async (thread, _o, send) => {
+      expect(thread.some(m => typeof m.content === 'string' && m.content.includes('Remember the original goal'))).toBe(true);
+      send({ type: 'text', text: 'combined summary' });
+    });
+    expect(await runCompaction(messages, profile)).toBe('combined summary');
+  });
+});

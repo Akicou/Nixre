@@ -131,3 +131,59 @@ describe('agentLoop', () => {
     assert.equal(userImgMsg.content[1].image_url.url, dummyBase64);
   });
 });
+
+const loopOptions = { systemPrompt: 'test', prompt: 'go', provider: 'test', model: 'test', tools: [{ name: 'read_file' }] };
+
+it('does not contact the provider after cancellation', async () => {
+  const abort = new AbortController();
+  abort.abort();
+  let requests = 0;
+  await assert.rejects(runAgentLoop({ ...loopOptions, signal: abort.signal }, () => {}, {
+    streamChat: async () => { requests++; }, executeTool: async () => 'ok',
+  }), { name: 'AbortError' });
+  assert.equal(requests, 0);
+});
+
+for (const args of ['{"path":', 'null', '[]', '"file"']) {
+  it(`never executes malformed tool arguments: ${args}`, async () => {
+    let executions = 0;
+    let requests = 0;
+    await assert.rejects(runAgentLoop(loopOptions, () => {}, {
+      streamChat: async (_opts, send) => {
+        requests++;
+        await send({ type: 'tool_delta', index: 0, id: 't1', name: 'read_file', argsDelta: args });
+      },
+      executeTool: async () => { executions++; return 'ok'; },
+    }), /invalid tool arguments.*4 attempts/);
+    assert.equal(executions, 0);
+    assert.equal(requests, 4);
+  });
+}
+
+it('retries the entire batch if even one tool call is incomplete', async () => {
+  let executions = 0;
+  await assert.rejects(runAgentLoop(loopOptions, () => {}, {
+    streamChat: async (_opts, send) => {
+      await send({ type: 'tool_delta', index: 0, id: 't1', name: 'read_file', argsDelta: '{}' });
+      await send({ type: 'tool_delta', index: 1, id: 't2', argsDelta: '{}' });
+    },
+    executeTool: async () => { executions++; return 'ok'; },
+  }), /incomplete tool call/);
+  assert.equal(executions, 0);
+});
+
+it('keeps every tool reply before attached image messages in a multi-tool batch', async () => {
+  let round = 0;
+  await runAgentLoop(loopOptions, () => {}, {
+    streamChat: async (opts, send) => {
+      if (++round === 1) {
+        await send({ type: 'tool_delta', index: 0, id: 'image', name: 'show_images', argsDelta: '{}' });
+        await send({ type: 'tool_delta', index: 1, id: 'file', name: 'read_file', argsDelta: '{}' });
+      } else {
+        assert.deepEqual(opts.messages.slice(2).map(m => m.role), ['assistant', 'tool', 'tool', 'user']);
+      }
+    },
+    executeTool: async name => name === 'show_images'
+      ? JSON.stringify({ images: [{ path: 'a.png', dataUrl: 'data:image/png;base64,AAAA' }] }) : 'ok',
+  });
+});

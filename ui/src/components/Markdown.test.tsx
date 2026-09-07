@@ -30,3 +30,18 @@ describe('Markdown', () => {
     expect(screen.getByText('const x = 1;')).toBeInTheDocument();
   });
 });
+
+it('contains wide tables in a keyboard-accessible scroll region', () => {
+  const { container } = render(<Markdown content={'| Column |\n| --- |\n| value |'} />);
+  const table = container.querySelector('table')!;
+  expect(table.parentElement).toHaveAttribute('role', 'region');
+  expect(table.parentElement).toHaveAttribute('tabindex', '0');
+  expect(table.parentElement).toHaveClass('overflow-x-auto');
+});
+
+it('renders HTML examples as text without executing them', () => {
+  const { container } = render(<Markdown content={'```html\n<script>alert(1)</script>\n```\n\n[unsafe](javascript:alert%281%29)'} />);
+  expect(container.querySelector('script')).toBeNull();
+  expect(container.querySelector('code')).toHaveTextContent('<script>alert(1)</script>');
+  expect(container.querySelector('a')).not.toHaveAttribute('href', 'javascript:alert%281%29');
+});
