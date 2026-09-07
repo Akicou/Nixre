@@ -9,6 +9,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowUp,
   Bot,
+  Cpu,
   ChevronDown,
   Download,
   FolderGit2,
@@ -124,6 +125,11 @@ export const AgentWorkspace: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [attaching, setAttaching] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachmentReadRef = useRef(0);
+  const attachingRef = useRef(false);
   const [streaming, setStreaming] = useState(false);
   const [taskPreset, setTaskPreset] = useState('workspace');
   const [mode, setMode] = useState<ModeId>('agent');
@@ -223,6 +229,11 @@ export const AgentWorkspace: React.FC = () => {
 
   const changeRepo = useCallback(
     (path: string) => {
+      attachmentReadRef.current += 1;
+      attachingRef.current = false;
+      setAttaching(false);
+      setPendingImages([]);
+      setAttachmentError('');
       followAbortRef.current?.abort();
       setSearchParams(path ? { repo: path } : {});
       setCurrentId(null);
@@ -490,13 +501,19 @@ export const AgentWorkspace: React.FC = () => {
   // Esc stops a running turn.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && (modelOpen || repoOpen || modeOpen)) {
+        setModelOpen(false);
+        setRepoOpen(false);
+        setModeOpen(false);
+        return;
+      }
       if (e.key === 'Escape' && streaming && currentIdRef.current) {
         void stopAgentJob(currentIdRef.current).catch(() => {});
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [streaming]);
+  }, [streaming, modelOpen, repoOpen, modeOpen]);
 
   const groupedSessions = useMemo(() => {
     const map = new Map<string, Conversation[]>();
@@ -579,6 +596,8 @@ export const AgentWorkspace: React.FC = () => {
   };
 
   const send = (text?: string) => {
+    if (attachingRef.current) return;
+    setAttachmentError('');
     const prompt = (text ?? input).trim();
     if ((!prompt && pendingImages.length === 0) || !realAi) return;
     const images = pendingImages;
@@ -778,7 +797,35 @@ export const AgentWorkspace: React.FC = () => {
     }).catch(() => {});
   };
 
+  const clearAttachments = () => {
+    attachmentReadRef.current += 1;
+    attachingRef.current = false;
+    setAttaching(false);
+    setPendingImages([]);
+    setAttachmentError('');
+  };
+
+  const attachFiles = async (files: File[]) => {
+    if (!files.length || attachingRef.current || !activeRepo) return;
+    const read = ++attachmentReadRef.current;
+    attachingRef.current = true;
+    setAttaching(true);
+    setAttachmentError('');
+    try {
+      const { next, error } = await appendPastedImages(pendingImages, files);
+      if (read !== attachmentReadRef.current) return;
+      setPendingImages(next);
+      setAttachmentError(error || '');
+    } finally {
+      if (read === attachmentReadRef.current) {
+        attachingRef.current = false;
+        setAttaching(false);
+      }
+    }
+  };
+
   const startNew = () => {
+    clearAttachments();
     followAbortRef.current?.abort();
     setCurrentId(null);
     setMessages([]);
@@ -795,6 +842,7 @@ export const AgentWorkspace: React.FC = () => {
   };
 
   const openConversation = (c: Conversation) => {
+    clearAttachments();
     followAbortRef.current?.abort();
     if (c.repoPath !== activeRepo) {
       setSearchParams(c.repoPath ? { repo: c.repoPath } : {});
@@ -854,7 +902,7 @@ export const AgentWorkspace: React.FC = () => {
 
   // --- shared chrome pieces ------------------------------------------------
   const modelCard = (
-    <div ref={modelRef} className="relative">
+    <div ref={modelRef} className="static sm:relative">
       <button
         type="button"
         onClick={() => {
@@ -862,19 +910,20 @@ export const AgentWorkspace: React.FC = () => {
           setRepoOpen(false);
           setModeOpen(false);
         }}
-        className="flex items-center gap-1.5 h-8 px-2.5 rounded-full text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
+        aria-label={`Select model: ${modelLabel(activeModelLabel)}`}
+        aria-expanded={modelOpen}
+        className="flex min-w-0 items-center gap-1.5 min-h-11 px-2.5 rounded-lg border border-border-subtle text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
       >
-        <span className="w-4 h-4 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center">
-          <Plus className="w-2.5 h-2.5" />
-        </span>
-        <span className="font-medium">{modelLabel(activeModelLabel) || 'Model'}</span>
+        <Cpu className="w-4 h-4 shrink-0 text-brand" aria-hidden="true" />
+        <span className="text-txt-tertiary">Model</span>
+        <span className="font-medium truncate max-w-[9rem] sm:max-w-[16rem]">{modelLabel(activeModelLabel) || 'Choose model'}</span>
         <span className="text-[10px] uppercase tracking-wider text-txt-tertiary">
           {effortBadge(workingReasoning)}
         </span>
         <ChevronDown className="w-3 h-3 text-txt-tertiary" />
       </button>
       {modelOpen && (
-        <div className="absolute left-0 bottom-[calc(100%+8px)] w-[22rem] rounded-xl border border-border-subtle bg-surface-canvas shadow-xl z-40 overflow-hidden animate-pop">
+        <div className="absolute left-0 bottom-[calc(100%+8px)] w-[min(22rem,calc(100vw-4rem))] max-h-[60vh] overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-xl z-40 animate-pop">
           <div className="px-3 py-2 border-b border-border-subtle">
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
               Model
@@ -1009,13 +1058,15 @@ export const AgentWorkspace: React.FC = () => {
 
   const composer = (
     <div
-      className={`w-full rounded-2xl border border-border-subtle bg-surface-canvas shadow-lg transition focus-within:border-border-mid focus-within:border-border-mid ${
+      className={`w-full rounded-2xl border border-border-subtle bg-surface-canvas shadow-lg transition focus-within:border-brand/50 ${
         empty ? 'max-w-[40rem]' : 'max-w-3xl'
       }`}
     >
       <div className="px-3 pt-3">
-        {!currentId && <label className="flex items-center gap-2 text-xs text-txt-tertiary mb-2">Task permissions<select aria-label="New task permissions" value={taskPreset} onChange={e => setTaskPreset(e.target.value)} className="bg-surface-base border border-border-subtle rounded px-2 py-1"><option value="workspace">Review edits and approve commands</option><option value="read_only">Read only</option><option value="restricted">Edits and approved checks only</option></select></label>}
-        <ComposerAttach images={pendingImages} onRemove={id => setPendingImages(imgs => imgs.filter(i => i.id !== id))} />
+        {!currentId && <label className="flex flex-wrap items-center gap-2 text-xs text-txt-tertiary mb-2">Task permissions<select aria-label="New task permissions" value={taskPreset} onChange={e => setTaskPreset(e.target.value)} className="bg-surface-base border border-border-subtle rounded px-2 py-1"><option value="workspace">Review edits and approve commands</option><option value="read_only">Read only</option><option value="restricted">Edits and approved checks only</option></select></label>}
+        <ComposerAttach images={pendingImages} disabled={attaching} onRemove={id => { setPendingImages(imgs => imgs.filter(i => i.id !== id)); setAttachmentError(''); }} />
+        {attachmentError && <p role="alert" className="text-xs text-feedback-error-text pb-2">{attachmentError}</p>}
+        {attaching && <p role="status" className="text-xs text-txt-secondary pb-2">Reading attachments…</p>}
       </div>
       <textarea
         ref={textareaRef}
@@ -1032,8 +1083,7 @@ export const AgentWorkspace: React.FC = () => {
           const files = imageFilesFromClipboard(e.clipboardData);
           if (files.length === 0) return;
           e.preventDefault();
-          const { next } = await appendPastedImages(pendingImages, files);
-          setPendingImages(next);
+          await attachFiles(files);
         }}
         placeholder={
           mode === 'agent'
@@ -1049,8 +1099,33 @@ export const AgentWorkspace: React.FC = () => {
           empty ? 'text-[15px] leading-relaxed min-h-[84px]' : 'text-[13px] min-h-[44px] max-h-40'
         }`}
       />
-      <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
-        {modelCard}
+      <div className="relative flex flex-wrap items-center justify-between gap-2 px-2.5 pb-2.5">
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            aria-label="Attach files"
+            disabled={!activeRepo || attaching}
+            onChange={e => {
+              const files = Array.from(e.target.files || []);
+              e.target.value = '';
+              void attachFiles(files);
+            }}
+          />
+          <button
+            type="button"
+            title="Attach images or files"
+            onClick={() => { setModelOpen(false); setRepoOpen(false); setModeOpen(false); fileInputRef.current?.click(); }}
+            disabled={!activeRepo || attaching}
+            className="inline-flex items-center gap-1.5 min-h-11 px-2.5 rounded-lg text-xs text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary disabled:opacity-40 transition"
+          >
+            <Plus className="w-4 h-4" aria-hidden="true" />
+            Attach
+          </button>
+          {modelCard}
+        </div>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -1078,7 +1153,7 @@ export const AgentWorkspace: React.FC = () => {
             <button
               type="button"
               onClick={() => send()}
-              disabled={(!input.trim() && pendingImages.length === 0) || !activeRepo}
+              disabled={attaching || (!input.trim() && pendingImages.length === 0) || !activeRepo}
               title="Send"
               className="w-8 h-8 rounded-full flex items-center justify-center bg-txt-primary text-surface-base hover:opacity-90 disabled:opacity-25 disabled:cursor-not-allowed transition"
             >
@@ -1544,6 +1619,10 @@ export const AgentWorkspace: React.FC = () => {
             >
               <PanelLeft className="w-5 h-5" />
             </button>
+            <div className="text-center mb-5 mt-16 md:mt-0">
+              <h1 className="text-2xl font-semibold tracking-tight">What would you like to build?</h1>
+              <p className="mt-2 text-sm text-txt-secondary">Choose a repository, describe your task, and work with your agent.</p>
+            </div>
             {contextPickers(false)}
             <div className="h-2" />
 
@@ -1558,7 +1637,7 @@ export const AgentWorkspace: React.FC = () => {
                   key={chip.label}
                   type="button"
                   onClick={() => send(chip.prompt)}
-                  disabled={!activeRepo || streaming}
+                  disabled={!activeRepo || streaming || attaching}
                   className="px-3 py-1.5 rounded-full border border-border-subtle text-[12px] text-txt-tertiary hover:text-txt-secondary hover:border-border-mid hover:bg-surface-subtle/70 disabled:opacity-40 transition"
                 >
                   {chip.label}
@@ -1566,7 +1645,8 @@ export const AgentWorkspace: React.FC = () => {
               ))}
             </div>
 
-            <p className="mt-10 text-[11px] text-txt-tertiary">
+            <p className="mt-6 text-center text-[11px] text-txt-tertiary">
+              Attach files with + Attach or paste ·{' '}
               Use{' '}
               <kbd className="px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle font-mono text-[10px]">
                 @file

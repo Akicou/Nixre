@@ -91,20 +91,20 @@ export async function appendPastedImages(
   files: File[],
 ): Promise<{ next: ChatImage[]; error?: string }> {
   const room = MAX_CHAT_IMAGES - current.length;
-  if (room <= 0) return { next: current, error: `At most ${MAX_CHAT_IMAGES} images per message` };
+  if (room <= 0) return { next: current, error: `At most ${MAX_CHAT_IMAGES} attachments per message` };
   const take = files.slice(0, room);
   const added: ChatImage[] = [];
   for (const f of take) {
     try {
       added.push(await fileToChatImage(f));
     } catch (err) {
-      return { next: current, error: err instanceof Error ? err.message : 'Could not attach image' };
+      return { next: current, error: err instanceof Error ? err.message : 'Could not attach file' };
     }
   }
   const extra = files.length > room ? ` (kept first ${room})` : '';
   return {
     next: [...current, ...added],
-    error: extra ? `At most ${MAX_CHAT_IMAGES} images per message${extra}` : undefined,
+    error: extra ? `At most ${MAX_CHAT_IMAGES} attachments per message${extra}` : undefined,
   };
 }
 
