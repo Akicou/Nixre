@@ -1410,7 +1410,7 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
     } catch {
       setFileText(serializeDotenv(seeded));
       setFileLoading(false);
-      setErr('Could not load encrypted values from the server — showing what was already loaded.');
+      setErr('Could not reveal environment variable values from the server — showing what was already loaded.');
     }
   }, [space, repoUid, service.id, fileLoaded, drafts, keys, revealed, values]);
 
@@ -1509,7 +1509,7 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
         <div className="space-y-2" data-testid="env-file-editor">
           {fileLoading ? (
             <p className="text-[11px] text-txt-tertiary flex items-center gap-1.5">
-              <Loader2 className="w-3 h-3 animate-spin" /> Loading encrypted values…
+              <Loader2 className="w-3 h-3 animate-spin" /> Revealing environment variable values…
             </p>
           ) : null}
           <textarea

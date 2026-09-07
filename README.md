@@ -7,7 +7,7 @@ Nixre runs its own backend (nixre-core, Node + PostgreSQL), its own git storage 
 ## Features
 
 - **Minimalist UI**: Booton typography, JetBrains Mono for code, flat layout, dark/light theme.
-- **Sovereign**: nixre-core owns auth, spaces, repos, git transport, pull requests, and account data. No external forge APIs.
+- **Sovereign**: nixre-core owns auth, spaces, repos, git transport, pull requests, and account data. Core forge features run independently; optional GitHub integration uses GitHub APIs.
 - **Passkeys**: WebAuthn credentials stored server-side in your account. A passkey can open a new session.
 - **Git Smart HTTP + SSH**: clone and push over HTTPS (`/git/<space>/<repo>.git`) with session/PAT basic auth, or over SSH (`ssh://git@host:3022/<space>/<repo>.git`) with your registered keys.
 - **Pull requests**: create PRs between branches, view unified diffs per file, merge (`--no-ff`) or squash.
@@ -55,7 +55,7 @@ Open `http://localhost:3000` and register. The first account becomes the instanc
 | Service | What it is |
 | --- | --- |
 | `nixre-agent-sandbox` | Build-only: produces the `nixre-agent-sandbox` image the assistant's `run_command` uses. Exits immediately (`entrypoint: true`), so it is not "running". |
-| `nixre-web` | Caddy: TLS entrypoint, reverse-proxies `/api/*` and `/git/*` to core, serves the static SPA |
+| `nixre-web` | Caddy: HTTP entrypoint on port 3000 (TLS terminates upstream), reverse-proxies `/api/*` and `/git/*` to core, serves the static SPA |
 | `nixre-core` | The backend: REST API, auth, git Smart HTTP (via `git http-backend`), PR merges, webhook delivery |
 | `nixre-ssh` | SSH git transport: sshd with core-resolved keys (AuthorizedKeysCommand), each session locked to a per-key git-shell wrapper |
 | `nixre-db` | PostgreSQL: users, sessions, tokens, spaces, repos, pull requests, webhooks, plugin prefs, chats, passkeys |

@@ -84,7 +84,7 @@ describe('AgentWorkspace', () => {
 
     // Floating composer placeholder (Cursor-style)
     expect(
-      await screen.findByPlaceholderText(/Plan, Build, \/ for tools, @ for context/i),
+      await screen.findByPlaceholderText(/Describe a task, @file or @skill for context/i),
     ).toBeInTheDocument();
 
     // Quick chips under the composer

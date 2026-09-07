@@ -1037,7 +1037,7 @@ export const AgentWorkspace: React.FC = () => {
         }}
         placeholder={
           mode === 'agent'
-            ? 'Plan, Build, / for tools, @ for context'
+            ? 'Describe a task, @file or @skill for context'
             : mode === 'plan'
               ? 'Describe what to plan…'
               : mode === 'debug'

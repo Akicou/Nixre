@@ -78,11 +78,11 @@ services:
       SANDBOX_NANO_CPUS: ${SANDBOX_NANO_CPUS:-2000000000}
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-${COMPOSE_PROJECT_NAME}_default}
       DOCKER_GID: ${DOCKER_GID:-}
-      # Server-side signup kill switch: "true" makes POST /api/v1/register
-      # return 403. Toggle via .env + `docker compose up -d nixre-core`.
-      # Empty when unset on purpose: core treats an unset value as CLOSED
-      # (see instanceSettings.js), so a fresh instance never opens signups by
-      # accident. Set NIXRE_REGISTRATION_CLOSED=false in .env to open them.
+      # Initial signup policy, used only until an admin saves the setting.
+      # The persisted Admin Console setting overrides this environment value.
+      # Unset defaults to CLOSED (see instanceSettings.js). For a fresh
+      # instance, set false deliberately to allow the first registration.
+      # After an admin saves the policy, change it through Admin Console.
       NIXRE_REGISTRATION_CLOSED: ${NIXRE_REGISTRATION_CLOSED:-}
       # --- Deployments -------------------------------------------------
       # Central reverse proxy for deployed apps. Public traffic path:
