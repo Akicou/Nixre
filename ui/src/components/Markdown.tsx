@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
 
 interface MarkdownProps {
   content: string;
@@ -12,6 +13,7 @@ export const Markdown: React.FC<MarkdownProps> = ({ content, className = '' }) =
     <div className={`markdown-body ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[[rehypeHighlight, { plainText: ['text', 'txt', 'plaintext'], aliases: { javascript: ['jsx'], typescript: ['tsx'] } }]]}
         components={{
           table: ({ children }) => (
             <div className="max-w-full overflow-x-auto" role="region" aria-label="Table" tabIndex={0}>

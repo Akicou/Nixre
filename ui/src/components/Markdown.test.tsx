@@ -45,3 +45,18 @@ it('renders HTML examples as text without executing them', () => {
   expect(container.querySelector('code')).toHaveTextContent('<script>alert(1)</script>');
   expect(container.querySelector('a')).not.toHaveAttribute('href', 'javascript:alert%281%29');
 });
+
+it('syntax highlights language-tagged code blocks', () => {
+  const { container } = render(<Markdown content={'```js\nconst greeting = "hello";\n```'} />);
+  expect(container.querySelector('.hljs-keyword')).toHaveTextContent('const');
+  expect(container.querySelector('.hljs-string')).toHaveTextContent('"hello"');
+});
+
+it('keeps unknown languages, plain text, and partial streamed fences readable', () => {
+  const { container, rerender } = render(<Markdown content={'```made-up\nhello <world>\n```'} />);
+  expect(container.querySelector('code')).toHaveTextContent('hello <world>');
+  rerender(<Markdown content={'```text\nconst a = 1;\n```'} />);
+  expect(container.querySelector('.hljs-keyword')).toBeNull();
+  rerender(<Markdown content={'```python\ndef hello():'} />);
+  expect(container.querySelector('.hljs-keyword')).toHaveTextContent('def');
+});
