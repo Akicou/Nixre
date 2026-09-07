@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Brain,
   Check,
@@ -9,6 +10,7 @@ import {
   Loader2,
   Pencil,
   RotateCcw,
+  X,
   XCircle,
 } from 'lucide-react';
 import type { ChatMessage, ToolCall } from '../../lib/assistantEngine';
@@ -296,6 +298,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
 
 export const ImageStrip: React.FC<{ images: ChatImage[] }> = ({ images }) => {
   const [lightbox, setLightbox] = useState<ChatImage | null>(null);
+  const closeLightbox = useCallback(() => setLightbox(null), []);
   if (!images.length) return null;
   return (
     <>
@@ -319,7 +322,10 @@ export const ImageStrip: React.FC<{ images: ChatImage[] }> = ({ images }) => {
             <button
               key={img.id}
               type="button"
-              onClick={() => setLightbox(img)}
+              onClick={event => {
+                event.currentTarget.focus();
+                setLightbox(img);
+              }}
               className="group relative rounded-lg overflow-hidden border border-border-subtle bg-surface-base hover:border-border-mid transition"
               title={img.name || 'Open image'}
             >
@@ -333,18 +339,66 @@ export const ImageStrip: React.FC<{ images: ChatImage[] }> = ({ images }) => {
           );
         })}
       </div>
-      {lightbox && (
-        <div
-          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6"
-          onClick={() => setLightbox(null)}
-        >
-          <img
-            src={lightbox.dataUrl}
-            alt={lightbox.name || 'preview'}
-            className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl"
-          />
-        </div>
-      )}
+      {lightbox && <ImagePreview image={lightbox} onClose={closeLightbox} />}
     </>
+  );
+};
+
+const ImagePreview: React.FC<{ image: ChatImage; onClose: () => void }> = ({ image, onClose }) => {
+  const closeButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    closeButton.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      } else if (event.key === 'Tab') {
+        // The close button is the preview's only interactive element.
+        event.preventDefault();
+        event.stopPropagation();
+        closeButton.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      document.body.style.overflow = overflow;
+      if (trigger?.isConnected) trigger.focus();
+    };
+  }, [onClose]);
+
+  // Animated message wrappers establish a containing block and tool cards clip
+  // overflow. A body portal keeps the backdrop and close control viewport-wide.
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={image.name ? `Image preview: ${image.name}` : 'Image preview'}
+      className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-6 pt-16"
+      onClick={event => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <button
+        ref={closeButton}
+        type="button"
+        aria-label="Close image preview"
+        onClick={onClose}
+        className="absolute top-3 right-3 flex items-center justify-center w-11 h-11 rounded-full bg-black/60 text-white hover:bg-black/90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
+      >
+        <X className="w-6 h-6" aria-hidden="true" />
+      </button>
+      <img
+        src={image.dataUrl}
+        alt={image.name || 'preview'}
+        className="max-h-full max-w-full object-contain rounded-md shadow-2xl"
+      />
+    </div>,
+    document.body,
   );
 };
