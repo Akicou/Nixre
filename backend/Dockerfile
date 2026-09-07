@@ -24,9 +24,10 @@ RUN chmod 755 /app/entrypoint.sh \
     && mkdir -p /data/repos && chown -R 1000:1000 /data
 
 ENV NODE_ENV=production
+ARG NIXRE_REVISION=unknown
+ENV NIXRE_REVISION=$NIXRE_REVISION
 EXPOSE 3002
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["node", "src/server.js"]
-
 

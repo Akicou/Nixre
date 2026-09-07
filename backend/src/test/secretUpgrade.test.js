@@ -180,3 +180,21 @@ test('versioned key and salt rotation is verified before the legacy key can be r
   delete process.env.NIXRE_SECRET_SALT_LEGACY;
   assert.deepEqual(await migrate(pool), { verified: 7, rewritten: 0 });
 });
+
+test('updater rollback metadata fails closed for lost COMMIT responses and missing transaction guards', async () => {
+  for (const failure of ['statement', 'commit', 'lost-guard']) {
+    const pool = fixturePool();
+    const client = await pool.connect();
+    const query = client.query.bind(client);
+    client.query = async (sql, params) => {
+      if ((failure === 'commit' && sql === 'COMMIT') || (failure !== 'commit' && sql === 'SELECT version FROM schema_migrations') ||
+          (failure === 'lost-guard' && sql === 'ROLLBACK TO SAVEPOINT nixre_migration_atomic')) throw new Error('fixture failure');
+      return query(sql, params);
+    };
+    await assert.rejects(migrate(pool), error => {
+      assert.equal(error.migrationRollbackConfirmed, failure === 'statement');
+      if (failure === 'commit') assert.equal(error.migrationPhase, 'commit');
+      return true;
+    });
+  }
+});

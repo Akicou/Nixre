@@ -17,8 +17,12 @@ import { Register } from './pages/Register';
 import { api, User } from './lib/api';
 import { migrateLegacyLocalStorage } from './lib/syncApi';
 import { BrandMark } from './components/BrandMark';
+import { UpdateProgressPage } from './components/InstanceUpdates';
 
-export const App: React.FC = () => {
+export const App: React.FC = () => window.location.pathname === '/update-progress'
+  ? <UpdateProgressPage /> : <SessionApp />;
+
+const SessionApp: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 

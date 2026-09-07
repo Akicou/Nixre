@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Shield, Lock, Unlock, Users, Check, MessageSquareWarning } from 'lucide-react';
 import { api, User, EnvFeedback } from '../lib/api';
 import { Avatar } from '../components/Avatar';
+import { InstanceUpdates } from '../components/InstanceUpdates';
 import { isRegistrationHidden, setRegistrationHidden } from '../lib/authLock';
 
 function formatWhen(iso: string) {
@@ -98,6 +99,8 @@ export const AdminView: React.FC = () => {
           <span>{msg}</span>
         </div>
       )}
+
+      <InstanceUpdates />
 
       {/* Security Controls */}
       <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">

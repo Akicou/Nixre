@@ -15,6 +15,8 @@ import { migrate } from './db/migrate.js';
 import { pool as sharedPool } from './db/pool.js';
 import { resolveBearer } from './lib/auth.js';
 import { authRoutes, adminRoutes } from './routes/auth.js';
+import { updateRoutes } from './routes/updates.js';
+import { updateMaintenance } from './lib/instanceUpdater.js';
 import { syncRoutes } from './routes/sync.js';
 import { forgeRoutes } from './routes/forge.js';
 import { pullRequestRoutes } from './routes/pullreq.js';
@@ -76,9 +78,15 @@ export function createApp({ pool = sharedPool, authenticate: authenticateOverrid
   // No hop counts: a directly connected caller must not be able to supply XFF.
   app.set('trust proxy', String(process.env.TRUSTED_PROXY_CIDRS || '').split(',').map(s => s.trim()).filter(Boolean));
   app.use(securityHeaders);
+  app.use(updateMaintenance());
   app.use(['/api/v1', '/api/sync/v1'], createRequestMiddleware(authenticate));
 
-  app.get('/healthz', (_req, res) => res.json({ ok: true }));
+  app.get('/healthz', async (_req, res) => {
+    try {
+      await pool.query('SELECT 1');
+      res.json({ ok: true, ...(process.env.NIXRE_REVISION ? { revision: process.env.NIXRE_REVISION } : {}) });
+    } catch { res.status(503).json({ ok: false }); }
+  });
   app.use('/api/v1', authRoutes(pool, authenticate));
 
   // Per-route authentication inside each router.
@@ -86,6 +94,7 @@ export function createApp({ pool = sharedPool, authenticate: authenticateOverrid
   app.use('/api/v1', syncApi);
   app.use('/api/sync/v1', syncApi); // compat alias
   app.use('/api/v1', adminRoutes(pool, authenticate));
+  app.use('/api/v1', updateRoutes(authenticate));
   app.use('/api/v1', accountRoutes(pool, authenticate));
   app.use('/api/v1', avatarRoutes(pool, authenticate));
   app.use('/api/v1', forgeRoutes(pool, authenticate));

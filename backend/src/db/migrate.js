@@ -67,9 +67,14 @@ export async function migrate(pool) {
   const client = await pool.connect();
   const completed = [];
   let releaseError;
+  let phase = 'begin';
+  let version = null;
+  let guardCreated = false;
   try {
     await client.query('BEGIN');
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended('nixre.schema-migrations', 0))");
+    await client.query('SAVEPOINT nixre_migration_atomic');
+    guardCreated = true;
     await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version TEXT PRIMARY KEY,
@@ -81,17 +86,36 @@ export async function migrate(pool) {
     const files = readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
     for (const file of files) {
       if (applied.has(file)) continue;
+      phase = 'sql';
+      version = file;
       await client.query(readFileSync(path.join(migrationsDir, file), 'utf8'));
       await client.query('INSERT INTO schema_migrations (version) VALUES ($1)', [file]);
       completed.push(file);
     }
+    phase = 'secrets';
+    version = null;
     const secrets = await reencryptSecrets(client);
+    phase = 'commit';
     await client.query('COMMIT');
     for (const file of completed) console.log(`[migrate] applied ${file}`);
     console.log(`[migrate] verified ${secrets.verified} secrets with current key; rewritten ${secrets.rewritten}`);
     return secrets;
   } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (rollbackError) { releaseError = rollbackError; }
+    err.migrationVersion = version;
+    err.migrationPhase = phase;
+    err.migrationRollbackConfirmed = false;
+    let guardIntact = false;
+    if (guardCreated && phase !== 'commit') {
+      try {
+        await client.query('ROLLBACK TO SAVEPOINT nixre_migration_atomic');
+        guardIntact = true;
+      } catch { /* an unexpected transaction boundary means recovery is uncertain */ }
+    }
+    try {
+      await client.query('ROLLBACK');
+      // A lost COMMIT response is ambiguous even if a later ROLLBACK succeeds.
+      err.migrationRollbackConfirmed = guardIntact && phase !== 'commit';
+    } catch (rollbackError) { releaseError = rollbackError; }
     throw err;
   } finally {
     client.release(releaseError);

@@ -28,6 +28,11 @@
 		-Server
 	}
 
+	# Read-only, scoped progress remains available while core / DB restart.
+	handle /update-status/* {
+		reverse_proxy unix//nixre-update-status/status.sock
+	}
+
 	# All API traffic flows through nixre-core; it owns auth, sync, the
 	# assistant, and deployments.
 	handle /api/* {
@@ -45,8 +50,19 @@
 
 	# Serve Nixre SPA Web UI
 	handle {
-		root * /usr/share/caddy
-		try_files {path} /index.html
-		file_server
+		@managed file {
+			root /nixre-update-web/current
+			try_files /index.html
+		}
+		handle @managed {
+			root * /nixre-update-web/current
+			try_files {path} /index.html
+			file_server
+		}
+		handle {
+			root * /usr/share/caddy
+			try_files {path} /index.html
+			file_server
+		}
 	}
 }

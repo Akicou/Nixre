@@ -36,6 +36,12 @@ fi
 
 cd "$NIXRE_DIR"
 
+if [ -f data/update-control/key ]; then
+  log "ERROR: the managed updater is installed. Use Admin → Instance updates; do not run two update paths." >&2
+  log "       For a manual infrastructure upgrade, follow docs/instance-updates.md first."
+  exit 1
+fi
+
 if [ -n "$(git status --porcelain)" ]; then
   log "ERROR: checkout has uncommitted changes; preserve them before updating." >&2
   exit 1
