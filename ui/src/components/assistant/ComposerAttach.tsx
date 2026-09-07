@@ -6,7 +6,8 @@ import { isImageAttachment, type ChatImage } from '../../lib/chatImages';
 export const ComposerAttach: React.FC<{
   images: ChatImage[];
   onRemove: (id: string) => void;
-}> = ({ images, onRemove }) => {
+  disabled?: boolean;
+}> = ({ images, onRemove, disabled = false }) => {
   if (images.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-2 px-1 pb-2">
@@ -27,7 +28,9 @@ export const ComposerAttach: React.FC<{
             type="button"
             onClick={() => onRemove(img.id)}
             title="Remove"
-            className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-surface-canvas/90 text-txt-secondary hover:text-txt-primary flex items-center justify-center"
+            aria-label={`Remove attachment ${img.name || 'file'}`}
+            disabled={disabled}
+            className="absolute top-0 right-0 w-6 h-6 disabled:opacity-40 rounded-full bg-surface-canvas/90 text-txt-secondary hover:text-txt-primary flex items-center justify-center"
           >
             <X className="w-3 h-3" />
           </button>

@@ -97,6 +97,51 @@ describe('AgentWorkspace', () => {
     });
   });
 
+  it('keeps attachment selection separate from the model picker and sends selected files', async () => {
+    render(<MemoryRouter><AgentWorkspace /></MemoryRouter>);
+    const model = await screen.findByRole('button', { name: /Select model:/ });
+    fireEvent.click(model);
+    expect(screen.getByText('Reasoning effort')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
+    expect(screen.queryByText('Reasoning effort')).not.toBeInTheDocument();
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [file] } });
+    expect(await screen.findByText('notes.txt')).toBeInTheDocument();
+    fireEvent.click(model);
+    fireEvent.click(screen.getByRole('button', { name: /deepseek-reasoner/ }));
+    expect(screen.getByText('notes.txt')).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('Send'));
+    await waitFor(() => expect(lastAiJobBody?.images).toEqual([
+      expect.objectContaining({ name: 'notes.txt', kind: 'file', dataUrl: expect.stringContaining('data:text/plain;base64,') }),
+    ]));
+  });
+
+  it('reports attachment limits and lets users remove and reselect files', async () => {
+    render(<MemoryRouter><AgentWorkspace /></MemoryRouter>);
+    await screen.findByRole('button', { name: 'Attach' });
+    const picker = screen.getByLabelText('Attach files');
+    const files = Array.from({ length: 5 }, (_, i) => new File(['hi'], `file-${i}.txt`, { type: 'text/plain' }));
+    fireEvent.change(picker, { target: { files } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('At most 4 attachments');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove attachment file-0.txt' }));
+    expect(screen.queryByText('file-0.txt')).not.toBeInTheDocument();
+    fireEvent.change(picker, { target: { files: [files[0]] } });
+    expect(await screen.findByText('file-0.txt')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows file-size errors without discarding the draft', async () => {
+    render(<MemoryRouter><AgentWorkspace /></MemoryRouter>);
+    const input = await screen.findByPlaceholderText(/Describe a task, @file or @skill for context/i);
+    fireEvent.change(input, { target: { value: 'Keep my draft' } });
+    const oversized = new File(['x'], 'large.png', { type: 'image/png' });
+    Object.defineProperty(oversized, 'size', { value: 5 * 1024 * 1024 });
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [oversized] } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('File too large');
+    expect(input).toHaveValue('Keep my draft');
+    expect(screen.queryByText('large.png')).not.toBeInTheDocument();
+  });
+
   it('auto-reattaches to a running session on load', async () => {
     syncMockDb.conversations.push({
       id: 'conv_run',
