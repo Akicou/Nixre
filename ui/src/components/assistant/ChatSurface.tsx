@@ -1,3 +1,4 @@
+import { AgentTaskPanel } from './AgentTaskPanel';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -40,6 +41,7 @@ import {
 import { peelTrace } from '../../lib/sessionTrace';
 import {
   startAgentJob,
+  resumeAgentJob,
   stopAgentJob,
   queueAgentJob,
   subscribeAgentJob,
@@ -519,9 +521,22 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
 
   // Dead-turn surfacing, same as the agent workspace.
   const bannerError = !streaming ? runError ?? current?.runError ?? null : null;
-  const continueRun = () => {
+  const continueRun = async () => {
     setRunError(null);
-    void sendToJob('Continue');
+    if (currentIdRef.current) {
+      try {
+        await resumeAgentJob(currentIdRef.current);
+        setStreaming(true);
+        attachFollow(currentIdRef.current);
+        return;
+      } catch (err) {
+        if (!(err instanceof Error) || !err.message.includes('No saved task')) {
+          setRunError(err instanceof Error ? err.message : 'Could not resume task');
+          return;
+        }
+      }
+    }
+    await sendToJob('Continue');
   };
 
   const effortBadge = (r: string) =>
@@ -1099,6 +1114,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
             )
           ) : (
             <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+              {currentId && <AgentTaskPanel key={currentId} conversationId={currentId} running={streaming} onResume={() => { setStreaming(true); attachFollow(currentId); }} />}
               {messages.map((msg, i) =>
                 (msg as any).kind === 'compaction' ? (
                   <CompactionDivider key={msg.id} summary={(msg as any).summary as string} />

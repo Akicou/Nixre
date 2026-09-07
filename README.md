@@ -363,3 +363,7 @@ npm test
 ## License
 
 MIT License © 2026 Nixre Contributors · [nixre.dev](https://nixre.dev)
+
+### Agent task controls
+
+The Assistant now includes a live checklist, per-file change review, checkpoints, verification, project memory, permission presets, local browser checks, specialist agents, explicit task recovery, and usage limits. See [Agent task controls](docs/agent-task-controls.md) for behavior and deployment requirements.

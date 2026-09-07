@@ -1,3 +1,4 @@
+import { AgentTaskPanel } from '../components/assistant/AgentTaskPanel';
 // Agentic engineering workspace — Cursor-inspired void + floating composer.
 //
 // Deliberately not a chat panel. Empty state is a near-black canvas with one
@@ -49,6 +50,7 @@ import {
 import { peelTrace } from '../lib/sessionTrace';
 import {
   startAgentJob,
+  resumeAgentJob,
   stopAgentJob,
   queueAgentJob,
   deleteQueuedJob,
@@ -123,6 +125,7 @@ export const AgentWorkspace: React.FC = () => {
   const [input, setInput] = useState('');
   const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [taskPreset, setTaskPreset] = useState('workspace');
   const [mode, setMode] = useState<ModeId>('agent');
   const [workingModel, setWorkingModel] = useState('');
   const [workingReasoning, setWorkingReasoning] = useState('medium');
@@ -518,9 +521,22 @@ export const AgentWorkspace: React.FC = () => {
   const currentRunError =
     runError ?? allConversations.find(c => c.id === currentId)?.runError ?? null;
   const bannerError = !streaming && !empty ? currentRunError : null;
-  const continueRun = () => {
+  const continueRun = async () => {
     setRunError(null);
-    void sendToJob('Continue');
+    if (currentIdRef.current) {
+      try {
+        await resumeAgentJob(currentIdRef.current);
+        setStreaming(true);
+        attachFollow(currentIdRef.current);
+        return;
+      } catch (err) {
+        if (!(err instanceof Error) || !err.message.includes('No saved task')) {
+          setRunError(err instanceof Error ? err.message : 'Could not resume task');
+          return;
+        }
+      }
+    }
+    await sendToJob('Continue');
   };
 
   // --- turn loop -----------------------------------------------------------
@@ -538,6 +554,7 @@ export const AgentWorkspace: React.FC = () => {
         model: workingModel || profile.model,
         reasoningLevel: workingReasoning,
         kind: opts.kind,
+        ...(!currentIdRef.current ? { taskSettings: { preset: taskPreset } } : {}),
       });
       currentIdRef.current = result.conversationId;
       setCurrentId(result.conversationId);
@@ -997,6 +1014,7 @@ export const AgentWorkspace: React.FC = () => {
       }`}
     >
       <div className="px-3 pt-3">
+        {!currentId && <label className="flex items-center gap-2 text-xs text-txt-tertiary mb-2">Task permissions<select aria-label="New task permissions" value={taskPreset} onChange={e => setTaskPreset(e.target.value)} className="bg-surface-base border border-border-subtle rounded px-2 py-1"><option value="workspace">Review edits and approve commands</option><option value="read_only">Read only</option><option value="restricted">Edits and approved checks only</option></select></label>}
         <ComposerAttach images={pendingImages} onRemove={id => setPendingImages(imgs => imgs.filter(i => i.id !== id))} />
       </div>
       <textarea
@@ -1564,6 +1582,7 @@ export const AgentWorkspace: React.FC = () => {
           <>
             <div ref={scrollRef} className="flex-1 overflow-y-auto">
               <div className="max-w-3xl mx-auto px-5 py-8 space-y-7">
+                {currentId && <AgentTaskPanel key={currentId} conversationId={currentId} running={streaming} onResume={() => { setStreaming(true); attachFollow(currentId); }} />}
                 {messages
                   .filter(msg => (msg as { kind?: string }).kind !== 'session_trace')
                   .map((msg, i, visible) =>

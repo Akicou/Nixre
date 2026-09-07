@@ -71,6 +71,7 @@ export function startAgentJob(body: {
   reasoningLevel?: string;
   extraContext?: string | { label: string; text: string } | null;
   kind?: 'chat' | 'env_audit';
+  taskSettings?: { preset: string };
 }): Promise<{ conversationId: string; run_status: RunStatus; queued?: boolean; item?: RunQueueItem }> {
   return jobRequest('/ai/jobs', { method: 'POST', body: JSON.stringify(body) });
 }
@@ -158,4 +159,11 @@ export function queueToLocal(items: RunQueueItem[] | undefined): {
     images: i.images ?? [],
     kind: i.kind,
   }));
+}
+
+/** Resume the saved provider thread and tool journal after an interruption. */
+export function resumeAgentJob(conversationId: string): Promise<{ resumed: string }> {
+  return jobRequest(`/ai/jobs/${encodeURIComponent(conversationId)}/controls`, {
+    method: 'POST', body: JSON.stringify({ type: 'resume' }),
+  });
 }

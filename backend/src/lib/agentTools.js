@@ -21,7 +21,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import { repoDir } from '../git/repo.js';
 import { webSearch } from './webSearch.js';
-import { isSandboxEnabled, runCommandInSandbox, writeFileInSandbox, readFileInSandbox } from './agentSandbox.js';
+import { isSandboxEnabled, runCommandInSandbox, writeFileInSandbox, readFileInSandbox, agentWorkspaceOperation } from './agentSandbox.js';
 import { getDecryptedSecret } from './userSecrets.js';
 import { READ_SKILL_SCHEMA, readSkill } from './agentSkills.js';
 
@@ -232,8 +232,9 @@ function pathAllowed(p, rules) {
 export async function listFiles(space, repo, args, permissions = {}, context = {}) {
   assertTarget(space, repo, context);
   let out;
+  const live = context.liveReads ? await agentWorkspaceOperation({ ...context, space, repo }, { op: 'list' }, false) : null;
   try {
-    out = await git(readGitDir(context, space, repo), ['ls-tree', '-r', '--name-only', 'HEAD']);
+    out = live ? live.files.join('\n') : await git(readGitDir(context, space, repo), ['ls-tree', '-r', '--name-only', 'HEAD']);
   } catch (err) {
     return { output: `0 files\n(empty or missing repository: ${err.message || 'no HEAD'})` };
   }
@@ -249,6 +250,13 @@ export async function readFile(space, repo, args, permissions = {}, context = {}
   const p = assertSafePath(args?.path);
   const rules = pathRules(permissions);
   if (!pathAllowed(p, rules)) throw new Error(`Path '${p}' is outside the allowed paths for this repo`);
+  if (context.liveReads) {
+    const live = await agentWorkspaceOperation({ ...context, space, repo }, { op: 'read', path: p }, false);
+    if (live) {
+      if (live.content === null) throw new Error('File not found in the current workspace');
+      return { output: live.content };
+    }
+  }
   const dir = readGitDir(context, space, repo);
   // Reject symlinks / submodules cheaply by checking the tracked mode.
   const ls = await git(dir, ['ls-tree', 'HEAD', '--', p]);
@@ -268,6 +276,14 @@ export async function searchCode(space, repo, args, permissions = {}, context = 
   assertTarget(space, repo, context);
   const query = String(args?.query || '');
   if (!query || query.length > 256) throw new Error('Invalid search query');
+  if (context.liveReads) {
+    const live = await agentWorkspaceOperation({ ...context, space, repo }, { op: 'search', query }, false);
+    if (live) {
+      const rules = pathRules(permissions);
+      const matches = live.matches.filter(line => pathAllowed(line.slice(0, line.indexOf(':')), rules));
+      return { output: `${matches.length} matches\n${matches.slice(0, MAX_GREP_MATCHES).join('\n')}` };
+    }
+  }
   const dir = readGitDir(context, space, repo);
   let out;
   try {
@@ -633,4 +649,13 @@ export async function executeTool(tool, space, repo, args, permissions = {}, con
     }
   }
   return fn(space, repo, args, permissions, context);
+}
+
+/** Apply the existing repository path policy before staging a reviewed write. */
+export function assertWritableAgentPath(filePath, permissions = {}) {
+  const safe = assertSafePath(filePath);
+  if (safe.includes('\\') || safe.split('/').includes('.git')) throw new Error('Invalid path');
+  if (permissions.canRunBash === false) throw new Error('File editing is disabled by the repository profile');
+  if (!pathAllowed(safe, pathRules(permissions))) throw new Error('Path is outside the allowed repository paths');
+  return safe;
 }
