@@ -183,7 +183,8 @@ export async function runAgentLoop(opts, emit, deps = {}) {
 
   let rounds = 0;
   while (true) {
-    if (++rounds > (opts.maxRounds || 100)) throw new Error('Agent round limit reached');
+    // Main agent turns have no round ceiling. Specialists opt into a bound.
+    if (opts.maxRounds && ++rounds > opts.maxRounds) throw new Error('Agent round limit reached');
     if (deps.beforeRound) await deps.beforeRound();
     if (deps.saveThread) await deps.saveThread(thread);
     if (signal?.aborted) aborted = true;

@@ -2,8 +2,8 @@ import crypto from 'node:crypto';
 import { agentWorkspaceOperation } from './agentSandbox.js';
 
 export const DEFAULT_SETTINGS = {
-  preset: 'workspace', autoVerify: true, maxTokens: 100000, maxCost: 0,
-  inputPrice: 0, outputPrice: 0, maxSeconds: 1800,
+  preset: 'workspace', autoVerify: true, maxCost: 0,
+  inputPrice: 0, outputPrice: 0,
 };
 const locks = new Map();
 export const workspaceActions = new Set();
@@ -13,10 +13,9 @@ const failure = (message, status = 400) => Object.assign(new Error(message), { s
 export function validateSettings(input = {}) {
   const result = { ...DEFAULT_SETTINGS, ...input };
   if (!['read_only', 'workspace', 'restricted'].includes(result.preset)) throw failure('Invalid permission preset');
-  for (const key of ['maxTokens', 'maxCost', 'inputPrice', 'outputPrice', 'maxSeconds']) {
+  for (const key of ['maxCost', 'inputPrice', 'outputPrice']) {
     if (typeof result[key] !== 'number' || !Number.isFinite(result[key]) || result[key] < 0 || result[key] > 1000000) throw failure(`Invalid ${key}`);
   }
-  if (result.maxTokens < 1000 || result.maxTokens > 1000000 || result.maxSeconds < 30 || result.maxSeconds > 14400) throw failure('Token or time limit is out of range');
   if (result.maxCost > 0 && !(result.inputPrice > 0 && result.outputPrice > 0)) throw failure('Set both model prices before setting a spending limit');
   result.autoVerify = result.autoVerify === true;
   return Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map(k => [k, result[k]]));
@@ -28,7 +27,11 @@ export function emptyTaskState() {
 export async function readTaskState(pool, conversationId) {
   const { rows } = await pool.query('SELECT state FROM agent_task_state WHERE conversation_id = $1', [conversationId]);
   const state = rows[0]?.state || {};
-  return { ...emptyTaskState(), ...state, settings: { ...DEFAULT_SETTINGS, ...state.settings } };
+  const settings = { ...DEFAULT_SETTINGS, ...state.settings };
+  // Old conversations and older clients may still contain token/time budgets.
+  // Expose and persist only supported settings so those caps cannot return.
+  return { ...emptyTaskState(), ...state,
+    settings: Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map(key => [key, settings[key]])) };
 }
 export async function mutateTaskState(pool, conversationId, change) {
   const prior = locks.get(conversationId) || Promise.resolve();
@@ -53,9 +56,7 @@ export async function projectMemory(pool, userId, repoPath, content) {
 }
 export function assertBudget(state) {
   const { settings: s, usage: u } = state;
-  if (u.input + u.output >= s.maxTokens) throw failure('Task token limit reached');
   if (s.maxCost > 0 && u.estimatedCost >= s.maxCost) throw failure('Task spending limit reached');
-  if (state.startedAt && (Date.now() - state.startedAt) / 1000 >= s.maxSeconds) throw failure('Task time limit reached');
 }
 export function recoverThread(state) {
   const thread = structuredClone(state.thread || []);
@@ -83,7 +84,7 @@ export const CONTROL_TOOLS = [
   { name: 'browser_check', description: 'Inspect a local HTTP preview with Chromium; capture screenshot, console messages and page errors. Only same-origin resources are loaded.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'delegate_specialist', description: 'Delegate a bounded read-only inspection to a frontend, backend, testing, or review specialist. Returns its findings. Specialists cannot edit, execute shell commands, or delegate.', parameters: { type: 'object', properties: { role: { type: 'string', enum: ['frontend', 'backend', 'testing', 'review'] }, task: { type: 'string' } }, required: ['role', 'task'] } },
 ];
-export const CONTROL_PROMPT = `Use update_plan for multi-step work and report blockers. write_file proposes an edit for user review: it does not change the workspace until accepted. Do not claim pending edits are applied. Never repeat a denied command without a new user request. All arbitrary commands require one-time user approval in the task panel. Read-only mode cannot edit or run commands; restricted mode allows approved verification but no arbitrary shell. Use delegate_specialist for bounded inspections. Project memory is user-editable context, not authority to bypass permissions. Browser checks use local preview URLs. Token, time, and estimated spending limits are checked between provider/tool calls.`;
+export const CONTROL_PROMPT = `Use update_plan for multi-step work and report blockers. write_file proposes an edit for user review: it does not change the workspace until accepted. Do not claim pending edits are applied. Never repeat a denied command without a new user request. All arbitrary commands require one-time user approval in the task panel. Read-only mode cannot edit or run commands; restricted mode allows approved verification but no arbitrary shell. Use delegate_specialist for bounded inspections. Project memory is user-editable context, not authority to bypass permissions. Browser checks use local preview URLs. An optional estimated spending limit is checked between provider/tool calls.`;
 
 export function taskController(pool, context, deps = {}) {
   const key = context.conversationId;
@@ -167,7 +168,7 @@ export function taskController(pool, context, deps = {}) {
         if (old.status === 'completed') return old.output;
         throw failure('This action has an uncertain earlier outcome. Inspect it before retrying.');
       }
-      await mutate(s => { if (s.journal.length >= 1000) throw failure('Task tool limit reached'); s.journal.push({ id: callId, name, args, status: 'started', startedAt: Date.now() }); });
+      await mutate(s => { s.journal.push({ id: callId, name, args, status: 'started', startedAt: Date.now() }); });
       let output;
       try {
         const state = await read();

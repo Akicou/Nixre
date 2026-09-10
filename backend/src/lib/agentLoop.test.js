@@ -134,6 +134,33 @@ describe('agentLoop', () => {
 
 const loopOptions = { systemPrompt: 'test', prompt: 'go', provider: 'test', model: 'test', tools: [{ name: 'read_file' }] };
 
+it('main agent turns complete more than 100 rounds', async () => {
+  let requests = 0, executions = 0;
+  const events = [];
+  await runAgentLoop(loopOptions, event => events.push(event), {
+    streamChat: async (_opts, send) => {
+      if (++requests <= 105) {
+        await send({ type: 'tool_delta', index: 0, id: `t${requests}`, name: 'read_file', argsDelta: '{}' });
+      } else await send({ type: 'text', text: 'Finished all rounds' });
+    },
+    executeTool: async () => { executions++; return 'ok'; },
+  });
+  assert.equal(requests, 106);
+  assert.equal(executions, 105);
+  assert.ok(events.some(event => event.type === 'message_text' && event.text === 'Finished all rounds'));
+});
+
+it('explicit specialist round limits still apply', async () => {
+  let requests = 0;
+  await assert.rejects(runAgentLoop({ ...loopOptions, maxRounds: 8 }, () => {}, {
+    streamChat: async (_opts, send) => {
+      await send({ type: 'tool_delta', index: 0, id: `t${++requests}`, name: 'read_file', argsDelta: '{}' });
+    },
+    executeTool: async () => 'ok',
+  }), /Agent round limit reached/);
+  assert.equal(requests, 8);
+});
+
 it('does not contact the provider after cancellation', async () => {
   const abort = new AbortController();
   abort.abort();

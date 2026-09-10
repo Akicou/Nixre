@@ -16,20 +16,53 @@ const ctx = { conversationId: 'c', userId: 'u', repoPath: 'a/b' };
 
 test('settings reject invalid limits and require configured prices for spending limits', () => {
   assert.throws(() => validateSettings({ preset: 'unrestricted' }));
-  assert.throws(() => validateSettings({ maxTokens: NaN }));
-  assert.throws(() => validateSettings({ maxSeconds: -1 }));
+  assert.throws(() => validateSettings({ maxCost: NaN }));
+  assert.throws(() => validateSettings({ inputPrice: -1 }));
   assert.throws(() => validateSettings({ maxCost: 1 }));
   assert.equal(validateSettings({ maxCost: 1, inputPrice: 1, outputPrice: 2 }).maxCost, 1);
 });
-test('usage accumulates with configured pricing and enforces token/cost budgets', async () => {
+test('usage accumulates with configured pricing and enforces the optional spending budget', async () => {
   const db = pool(), c = taskController(db, ctx);
-  await c.action({ type: 'settings', settings: { maxTokens: 1000, maxCost: 0.001, inputPrice: 1, outputPrice: 2 } });
+  await c.action({ type: 'settings', settings: { maxCost: 0.001, inputPrice: 1, outputPrice: 2 } });
   await c.usage({ input: 500, output: 300 });
   const state = await c.read();
   assert.equal(state.usage.estimatedCost, 0.0011);
   assert.throws(() => assertBudget(state), /spending/);
-  state.settings.maxCost = 0; state.usage.output = 501;
-  assert.throws(() => assertBudget(state), /token/);
+  state.settings.maxCost = 0; state.usage.output = 2_000_000;
+  assert.doesNotThrow(() => assertBudget(state));
+});
+test('existing task token and time budgets are ignored on reads, resumes, and old-client saves', async () => {
+  const db = pool();
+  const legacy = { ...emptyTaskState(), startedAt: Date.now() - 24 * 60 * 60 * 1000 };
+  Object.assign(legacy.settings, { maxTokens: 1000, maxSeconds: 30 });
+  legacy.usage = { input: 2_000_000, output: 1_000_000, estimatedCost: 0 };
+  db.states.set('c', legacy);
+  assert.doesNotThrow(() => assertBudget(legacy));
+  const c = taskController(db, ctx);
+  await c.beforeRound();
+  assert.equal((await c.read()).settings.maxTokens, undefined);
+  assert.equal((await c.read()).settings.maxSeconds, undefined);
+  await c.start({ mode: 'ask' }, true);
+  assert.equal((await c.read()).usage.input, 2_000_000);
+  await c.beforeRound();
+  await c.action({ type: 'settings', settings: { maxTokens: 1, maxSeconds: 1 } });
+  assert.equal(db.states.get('c').settings.maxTokens, undefined);
+  assert.equal(db.states.get('c').settings.maxSeconds, undefined);
+  await c.beforeRound();
+});
+test('tool execution continues beyond 1000 journal records while retaining replay protection', async () => {
+  const db = pool(), state = emptyTaskState();
+  state.journal = Array.from({ length: 1000 }, (_, i) => ({ id: `old-${i}`, name: 'read_file', args: {}, status: 'completed', output: 'saved' }));
+  db.states.set('c', state);
+  const c = taskController(db, ctx);
+  let executions = 0;
+  const execute = async () => { executions++; return 'new result'; };
+  assert.equal(await c.execute('read_file', {}, { callId: 'next' }, execute), 'new result');
+  assert.equal(await c.execute('read_file', {}, { callId: 'next' }, execute), 'new result');
+  assert.equal(executions, 1);
+  assert.equal((await c.read()).journal.length, 1001);
+  assert.equal(await c.execute('read_file', {}, { callId: 'old-0' }, execute), 'saved');
+  assert.equal(executions, 1);
 });
 test('concurrent state updates do not overwrite one another', async () => {
   const db = pool();

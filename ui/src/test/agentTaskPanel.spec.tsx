@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { AgentTaskPanel } from '../components/assistant/AgentTaskPanel';
 const initial = () => ({
-  settings: { preset: 'workspace', autoVerify: false, maxTokens: 10000, maxCost: 0, inputPrice: 1, outputPrice: 2, maxSeconds: 300 },
+  settings: { preset: 'workspace', autoVerify: false, maxCost: 0, inputPrice: 1, outputPrice: 2 },
   memory: 'Use TypeScript', canResume: true, interrupted: true, startedAt: Date.now(), finishedAt: null,
   plan: [{ text: 'Inspect auth', status: 'completed' }, { text: 'Fix auth', status: 'blocked', blocker: 'Needs test fixture' }],
   proposals: [{ id: 'p', path: 'a.ts', before: 'const a = 1;', content: 'const a = 2;', patch: '-const a = 1;\n+const a = 2;', status: 'pending' }],
@@ -47,7 +47,7 @@ describe('AgentTaskPanel', () => {
   it('saves editable project memory and reconnects to a resumed task', async () => {
     const resume = vi.fn();
     render(<AgentTaskPanel conversationId="c" running={false} onResume={resume} />);
-    fireEvent.click(await screen.findByText('Permissions, limits, and project memory'));
+    fireEvent.click(await screen.findByText('Permissions, spending, and project memory'));
     fireEvent.change(screen.getByLabelText('Project memory'), { target: { value: 'Use strict TypeScript' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save project memory' }));
     await waitFor(() => expect(requests).toContainEqual({ type: 'memory', content: 'Use strict TypeScript' }));
@@ -69,5 +69,17 @@ describe('AgentTaskPanel', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Waiting for your approval');
     expect(abandoned?.aborted).toBe(true);
     expect(requests).toEqual([]);
+  });
+  it('tracks tokens and time without offering removed task caps', async () => {
+    render(<AgentTaskPanel conversationId="c" running={false} onResume={() => {}} />);
+    fireEvent.click(await screen.findByText('Permissions, spending, and project memory'));
+    expect(screen.getByText(/75 tokens/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Token limit')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Time limit (seconds)')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Spending limit USD (0 = off)')).toHaveValue(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Save task settings' }));
+    await waitFor(() => expect(requests).toContainEqual({ type: 'settings', settings: state.settings }));
+    expect(requests[0].settings).not.toHaveProperty('maxTokens');
+    expect(requests[0].settings).not.toHaveProperty('maxSeconds');
   });
 });

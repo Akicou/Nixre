@@ -328,8 +328,6 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
   const priorState = await control.read();
   const resumeThread = job.resume ? recoverThread(priorState) : undefined;
   await control.start({ mode: job.mode, model: job.model, reasoningLevel: job.reasoningLevel, extraContext: job.extraContext }, job.resume);
-  const budgetTimer = setTimeout(() => job.abort.abort(), (await control.read()).settings.maxSeconds * 1000);
-  job.budgetTimer = budgetTimer;
   const rawExecute = async (name, args) => {
     if (name === 'submit_env_feedback') {
       const saved = await saveEnvFeedback(pool, {
@@ -491,7 +489,6 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     },
   );
 
-  clearTimeout(job.budgetTimer);
   job.resume = false;
   await compactIfNeeded(pool, job, providerRow, apiKey, job.model || providerRow.default_model);
 }
@@ -538,7 +535,6 @@ async function driveJob(pool, job) {
       broadcast(job, { type: 'done' });
     }
   } finally {
-    clearTimeout(job.budgetTimer);
     if (job.control) await job.control.mutate(s => { s.finishedAt = Date.now(); }).catch(() => {});
     job.running = false;
     jobs.delete(job.conversationId);

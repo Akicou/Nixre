@@ -13,7 +13,7 @@ The Assistant workspace includes durable task controls. Start a conversation and
 | Browser checks | Chromium visits a local HTTP preview, saves a screenshot, and reports HTTP status, JavaScript errors, and console output. The task panel displays the screenshot. |
 | Specialist agents | The lead can delegate bounded frontend/backend/testing/review inspections. Specialists are read-only, have at most eight model rounds, and cannot delegate. Up to six assignments per task. Their reports and usage are retained. |
 | Resume | Provider threads and tool outcomes are saved. After a restart, choose **Resume saved task**. Completed tool calls are reused; unknown outcomes become explicit warnings to the model instead of replaying actions. |
-| Usage and limits | Reported input/output tokens, estimated cost, and elapsed time appear in the panel. Configure token/time limits and your model's prices and spending limit in settings. |
+| Usage and spending | Reported input/output tokens, estimated cost, and elapsed time appear in the panel. Configure your model's prices and an optional spending limit in settings. Task token/time budgets and main-agent round/tool-call count caps are removed. |
 
 ## Review and permissions
 
@@ -35,9 +35,11 @@ Verification discovers `test`, `lint`, and `build` scripts in the root and commo
 
 Browser checks require an HTTP URL on localhost, 127.0.0.1, or ::1 inside the sandbox. Start the preview server there first. Cross-origin HTTP requests and service workers are blocked; pages relying on CDNs may show incomplete styling, which is reported via blocked resource counts. The viewport is 1280×800. Screenshots up to 2 MiB are displayed inline. This uses the existing sandbox image's Playwright/Chromium installation.
 
-## Usage limits
+## Usage and spending
 
-Counts use provider-reported usage, including specialist calls and compaction. Set input/output prices per million tokens for the currently selected model; prices are not fetched automatically. Update prices when changing models. Cost is an estimate and may differ from billing, especially for caching or provider-specific charges. Limits are checked between model/tool calls; an in-flight request can exceed token or spending limits. The time limit also aborts pending provider requests/approval waits, but cannot roll back an already executed command.
+Counts use provider-reported usage, including specialist calls and compaction. Set input/output prices per million tokens for the currently selected model; prices are not fetched automatically. Update prices when changing models. Cost is an estimate and may differ from billing, especially for caching or provider-specific charges. The optional spending limit is checked between model/tool calls; an in-flight request can exceed it. A spending limit of zero disables that budget.
+
+Main agent turns have no task-level token budget, elapsed-time deadline, round ceiling, or tool-call count cap. Token usage, elapsed time, and the complete tool journal are still recorded. Existing conversations ignore their previously saved token/time budgets, including on resume. Use Stop to interrupt a task. Specialist bounds, individual command/check timeouts, and the other tool and sandbox limits still apply.
 
 ## Deploying
 
