@@ -194,6 +194,14 @@ export function applyEvent(messages, ev) {
       }
       break;
     }
+    case 'tool_approval':
+      parts = parts.map(p => p.type === 'tool' && p.tool.id === ev.toolId
+        ? { type: 'tool', tool: { ...p.tool, status: 'approval', approvalId: ev.approvalId, conversationId: ev.conversationId } } : p);
+      break;
+    case 'tool_approved':
+      parts = parts.map(p => p.type === 'tool' && p.tool.id === ev.toolId
+        ? { type: 'tool', tool: { ...p.tool, status: 'running', approvalId: undefined } } : p);
+      break;
     case 'tool_output':
       parts = parts.map(p => {
         if (p.type !== 'tool' || p.tool.id !== ev.toolId) return p;

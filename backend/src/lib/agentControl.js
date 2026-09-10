@@ -96,7 +96,7 @@ export function taskController(pool, context, deps = {}) {
     await mutate(s => addCheckpoint(s, result, label));
     return result;
   }
-  async function requestApproval(tool, args) {
+  async function requestApproval(tool, args, toolId) {
     const requestId = id();
     let resolveDecision;
     const decision = new Promise(resolve => { resolveDecision = resolve; });
@@ -104,20 +104,23 @@ export function taskController(pool, context, deps = {}) {
     const onAbort = () => resolveDecision(false);
     context.signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      await mutate(s => { s.approvals.push({ id: requestId, tool, args, status: 'pending', createdAt: Date.now() }); });
+      await mutate(s => { s.approvals.push({ id: requestId, toolId, tool, args, status: 'pending', createdAt: Date.now() }); });
+      context.onApproval?.({ type: 'tool_approval', toolId, approvalId: requestId, conversationId: key });
       if (context.signal?.aborted) resolveDecision(false);
       const granted = await decision;
-      if (!granted) throw failure('Action was not approved');
+      if (context.signal?.aborted) throw Object.assign(new Error('Stopped while waiting for approval'), { name: 'AbortError' });
+      if (!granted) throw failure('Command denied by user');
+      context.onApproval?.({ type: 'tool_approved', toolId });
     } finally {
       approvals.delete(requestId);
       context.signal?.removeEventListener('abort', onAbort);
       await mutate(s => { const a = s.approvals.find(a => a.id === requestId); if (a?.status === 'pending') a.status = 'cancelled'; });
     }
   }
-  async function verify(approved = false) {
+  async function verify(approved = false, toolId) {
     const state = await read();
     if (state.settings.preset === 'read_only') throw failure('Read-only mode cannot run verification');
-    if (!approved) await requestApproval('verify_project', await operation(context, { op: 'checks' }));
+    if (!approved) await requestApproval('verify_project', await operation(context, { op: 'checks' }), toolId);
     await mutate(s => { s.verification = { status: 'running', results: [] }; });
     try {
       const result = await operation(context, { op: 'verify' });
@@ -190,10 +193,10 @@ export function taskController(pool, context, deps = {}) {
           output = `Proposed ${args.path}. Awaiting user review; workspace unchanged. Proposal ${proposal.id}`;
         } else if (name === 'run_command') {
           if (state.settings.preset !== 'workspace') throw failure('This preset does not allow arbitrary shell commands');
-          await requestApproval(name, args);
+          await requestApproval(name, args, callId);
           output = await execute(name, args);
         } else if (name === 'verify_project') {
-          output = JSON.stringify(await verify());
+          output = JSON.stringify(await verify(false, callId));
         } else if (name === 'browser_check') {
           if (state.settings.preset === 'read_only') throw failure('Read-only mode cannot launch browser checks');
           const result = await operation(context, { op: 'browser', url: String(args.url || '') });

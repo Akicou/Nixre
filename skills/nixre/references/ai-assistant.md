@@ -36,6 +36,7 @@ The assistant can work on:
 
 - Agent execution runs on the server independently of browser focus. Returning to a tab, reconnecting to the network, or missing 45 seconds of stream activity replaces only the event subscription and reloads a server snapshot; it never resubmits a command.
 - A task can be waiting for command/check approval while its run is active. Task controls explicitly show **Waiting for your approval**. Their reads time out and refresh on focus so a suspended request cannot hide the approval indefinitely.
+- Command approvals are streamed into the transcript and persisted with the tool call. The tool switches from a spinner to **Approval needed**, displays the full command with **Approve command / Deny command**, and raises an in-app notification. Background tabs also receive a desktop notification when browser permission is already granted. Approval reads and decisions check conversation ownership without provisioning or fetching the GitHub workspace. Stopping a pending approval is reported as cancellation, not as a user denial.
 
 - Modes: **Ask, Plan, Agent, Debug** (streaming chat), configurable reasoning levels.
 - The agent can **read files, search code, show images, run shell commands** in a clone of the target repo, and **search the web** — each gated by a **per-repo access profile**.

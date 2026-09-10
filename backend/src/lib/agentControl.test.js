@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { taskController, emptyTaskState, validateSettings, assertBudget, recoverThread, mutateTaskState, readTaskState } from './agentControl.js';
+import { applyEvent } from './chatApply.js';
+import { ownedControlContext } from '../routes/agentControls.js';
 
 function pool() {
   const states = new Map();
@@ -57,23 +59,51 @@ test('read-only and restricted presets block arbitrary commands without calling 
   }
 });
 test('command approval is one-time and bound to its conversation', async () => {
-  const db = pool(), c = taskController(db, ctx);
+  const events = [];
+  const db = pool(), c = taskController(db, { ...ctx, onApproval: event => events.push(event) });
   let executions = 0;
   const pending = c.execute('run_command', { command: 'npm test' }, { callId: 'cmd' }, async () => { executions++; return 'ok'; });
   let approval;
   for (let i = 0; i < 30; i++) { await new Promise(r => setImmediate(r)); approval = (await c.read()).approvals[0]; if (approval) break; }
   assert.ok(approval); assert.equal(executions, 0);
+  assert.deepEqual(events[0], { type: 'tool_approval', toolId: 'cmd', approvalId: approval.id, conversationId: 'c' });
+  let messages = applyEvent([], { type: 'tool_start', tool: { id: 'cmd', name: 'run_command', status: 'running' } });
+  messages = applyEvent(messages, events[0]);
+  assert.equal(messages.at(-1).toolCalls[0].status, 'approval');
+  assert.equal(messages.at(-1).toolCalls[0].approvalId, approval.id);
   await assert.rejects(taskController(db, { ...ctx, conversationId: 'other' }).action({ type: 'approval', id: approval.id, accept: true }), /no longer active/);
   await c.action({ type: 'approval', id: approval.id, accept: true });
   assert.equal(await pending, 'ok'); assert.equal(executions, 1);
+  assert.deepEqual(events[1], { type: 'tool_approved', toolId: 'cmd' });
+  messages = applyEvent(messages, events[1]);
+  assert.equal(messages.at(-1).toolCalls[0].status, 'running');
   assert.equal(await c.execute('run_command', { command: 'npm test' }, { callId: 'cmd' }, () => assert.fail('duplicate')), 'ok');
 });
 test('cancelled approval cannot leave an agent hanging', async () => {
   const abort = new AbortController(), c = taskController(pool(), { ...ctx, signal: abort.signal });
   const pending = c.execute('run_command', { command: 'npm test' }, {}, () => assert.fail());
-  const rejected = assert.rejects(pending, /not approved/);
+  const rejected = assert.rejects(pending, { name: 'AbortError', message: 'Stopped while waiting for approval' });
   abort.abort(); await rejected;
   assert.equal((await c.read()).approvals[0].status, 'cancelled');
+});
+test('denying a streamed command never calls the executor', async () => {
+  const c = taskController(pool(), ctx);
+  const pending = c.execute('run_command', { command: 'npm test' }, { callId: 'deny' }, () => assert.fail('Denied command ran'));
+  const rejected = assert.rejects(pending, /Command denied by user/);
+  let approval;
+  for (let i = 0; i < 30; i++) { await new Promise(r => setImmediate(r)); approval = (await c.read()).approvals[0]; if (approval) break; }
+  await c.action({ type: 'approval', id: approval.id, accept: false });
+  await rejected;
+});
+test('approval reads and responses require conversation ownership but no workspace provisioning', async () => {
+  const db = { async query(sql, params) {
+    assert.equal(sql, 'SELECT * FROM conversations WHERE user_id = $1 AND id = $2');
+    return { rows: params[0] === 'owner' ? [{ id: 'c', repo_path: 'github:acme/private' }] : [] };
+  } };
+  const { context } = await ownedControlContext(db, { uid: 'owner' }, 'c', { resolve: false });
+  assert.equal(context.conversationId, 'c');
+  assert.equal(context.workspace, undefined);
+  await assert.rejects(ownedControlContext(db, { uid: 'other' }, 'c', { resolve: false }), /not found/);
 });
 test('recovery uses completed records and marks uncertain calls without repeating them', () => {
   const state = emptyTaskState();

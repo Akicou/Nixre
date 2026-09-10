@@ -1719,18 +1719,21 @@ const AgentWorkingLine: React.FC<{ messages: ChatMessage[]; queued: number }> = 
 }) => {
   // The most recent tool still marked `running` in the active assistant turn.
   let runningTool: string | null = null;
+  let awaitingApproval = false;
   for (let i = messages.length - 1; i >= 0 && !runningTool; i--) {
     if (messages[i].role === 'user') break;
     for (const p of messageParts(messages[i])) {
       if (p.type === 'tool' && p.tool.status === 'running') runningTool = p.tool.name;
+      if (p.type === 'tool' && p.tool.status === 'approval') awaitingApproval = true;
     }
   }
-  const label = runningTool
+  const label = awaitingApproval ? 'Waiting for command approval'
+    : runningTool
     ? `Running ${runningTool}…`
     : 'Agent working…';
   return (
     <div className="flex items-center gap-2 text-xs text-txt-tertiary chat-part-in">
-      <Loader2 className="w-3.5 h-3.5 animate-spin text-brand" />
+      {!awaitingApproval && <Loader2 className="w-3.5 h-3.5 animate-spin text-brand" />}
       <span>{label}</span>
       {queued > 0 && (
         <span className="text-[10px] text-txt-tertiary/70">

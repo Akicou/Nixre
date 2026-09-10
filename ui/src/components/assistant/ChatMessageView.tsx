@@ -16,6 +16,7 @@ import {
 import type { ChatMessage, ToolCall } from '../../lib/assistantEngine';
 import { messageParts } from '../../lib/assistantEngine';
 import { Markdown } from '../Markdown';
+import { CommandApproval } from './CommandApproval';
 import { isImageAttachment, parseShownImages, type ChatImage } from '../../lib/chatImages';
 
 /**
@@ -264,7 +265,9 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
         className="w-full flex items-center justify-between px-3 py-1.5 text-xs font-mono hover:bg-surface-subtle/40 transition"
       >
         <span className="flex items-center gap-2 truncate">
-          {tool.status === 'running' ? (
+          {tool.status === 'approval' ? (
+            <span className="text-brand" aria-hidden="true">?</span>
+          ) : tool.status === 'running' ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin text-brand" />
           ) : tool.status === 'success' ? (
             <Check className="w-3.5 h-3.5 text-txt-open" />
@@ -272,6 +275,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
             <XCircle className="w-3.5 h-3.5 text-feedback-error-text" />
           )}
           <span className="text-txt-primary">{tool.name}</span>
+          {tool.status === 'approval' && <span className="text-brand">Approval needed</span>}
           {tool.argsText && tool.argsText !== '{}' && (
             <span className="text-txt-tertiary truncate max-w-[16rem]">{tool.argsText}</span>
           )}
@@ -282,6 +286,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
           <ChevronRight className="w-3.5 h-3.5 text-txt-tertiary shrink-0" />
         )}
       </button>
+      {tool.status === 'approval' && tool.approvalId && tool.conversationId && <CommandApproval key={tool.approvalId} tool={tool} />}
       {open && shown.length > 0 && (
         <div className="px-3 pb-3 pt-1">
           <ImageStrip images={shown} />

@@ -4,11 +4,13 @@ import { resolveWorkspace, parseWorkspacePath } from '../lib/workspaces.js';
 import { isJobLive, startJob } from '../lib/agentJobs.js';
 
 const busy = workspaceActions;
-export async function ownedControlContext(pool, user, conversationId) {
+export async function ownedControlContext(pool, user, conversationId, { resolve = true } = {}) {
   const { rows } = await pool.query('SELECT * FROM conversations WHERE user_id = $1 AND id = $2', [user.uid, conversationId]);
   const row = rows[0];
   if (!row) throw Object.assign(new Error('Conversation not found'), { status: 404 });
-  const workspace = await resolveWorkspace(pool, user, row.repo_path);
+  // Reading task state and deciding an existing approval only need ownership.
+  // Provisioning a GitHub mirror here can hide approvals behind network errors.
+  const workspace = resolve ? await resolveWorkspace(pool, user, row.repo_path) : undefined;
   const target = parseWorkspacePath(row.repo_path);
   const context = { userId: user.uid, user: { ...user, name: user.display_name }, conversationId, repoPath: row.repo_path, workspace, space: target.space, repo: target.repo };
   return { row, context };
@@ -20,7 +22,7 @@ export function publicTaskState(state) {
 export function installAgentControlRoutes(api, pool, auth) {
   api.get('/ai/jobs/:conversationId/controls', auth, async (req, res) => {
     try {
-      const { context } = await ownedControlContext(pool, req.auth.user, req.params.conversationId);
+      const { context } = await ownedControlContext(pool, req.auth.user, req.params.conversationId, { resolve: false });
       res.json({ ...publicTaskState(await readTaskState(pool, context.conversationId)), memory: await projectMemory(pool, context.userId, context.repoPath) });
     } catch (err) { res.status(err.status || 400).json({ message: err.message }); }
   });
@@ -28,8 +30,8 @@ export function installAgentControlRoutes(api, pool, auth) {
     const key = req.params.conversationId;
     let acquired = false;
     try {
-      const { context, row } = await ownedControlContext(pool, req.auth.user, key);
       const action = req.body || {};
+      const { context, row } = await ownedControlContext(pool, req.auth.user, key, { resolve: action.type !== 'approval' });
       if (action.type !== 'approval') {
         if (busy.has(key) || isJobLive(key)) throw Object.assign(new Error('Wait for the active agent operation to finish or stop the task first'), { status: 409 });
         busy.add(key); acquired = true;

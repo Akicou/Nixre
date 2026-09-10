@@ -13,7 +13,7 @@ import * as sync from './syncApi';
 import { parseShownImages, toMultimodalParts, type ChatImage } from './chatImages';
 import { peelTrace, withTrace, type SessionTraceEntry, type TokenUsage } from './sessionTrace';
 
-export type ToolStatus = 'running' | 'success' | 'error';
+export type ToolStatus = 'running' | 'approval' | 'success' | 'error';
 
 export interface ToolCall {
   id: string;
@@ -21,6 +21,8 @@ export interface ToolCall {
   status: ToolStatus;
   argsText?: string; // raw JSON arguments requested by the model
   output?: string; // rendered output for a finished tool
+  approvalId?: string;
+  conversationId?: string;
 }
 
 export interface ReasoningBlock {
@@ -227,6 +229,8 @@ export function withCompaction(messages: ChatMessage[], summary: string): ChatMe
 }
 
 export type EngineEvent =
+  | { type: 'tool_approval'; toolId: string; approvalId: string; conversationId: string }
+  | { type: 'tool_approved'; toolId: string }
   | { type: 'reasoning'; blockId: string; text: string }
   | { type: 'tool_start'; tool: ToolCall }
   | { type: 'tool_output'; toolId: string; output: string }
@@ -362,6 +366,14 @@ export function applyEvent(messages: ChatMessage[], ev: EngineEvent): ChatMessag
       }
       break;
     }
+    case 'tool_approval':
+      parts = parts.map(p => p.type === 'tool' && p.tool.id === ev.toolId
+        ? { type: 'tool', tool: { ...p.tool, status: 'approval' as const, approvalId: ev.approvalId, conversationId: ev.conversationId } } : p);
+      break;
+    case 'tool_approved':
+      parts = parts.map(p => p.type === 'tool' && p.tool.id === ev.toolId
+        ? { type: 'tool', tool: { ...p.tool, status: 'running' as const, approvalId: undefined } } : p);
+      break;
     case 'tool_output':
       parts = parts.map(p => {
         if (p.type !== 'tool' || p.tool.id !== ev.toolId) return p;

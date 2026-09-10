@@ -184,6 +184,8 @@ function emitJob(pool, job, ev) {
   job.messages = applyEvent(job.messages, ev);
   broadcast(job, ev);
   const immediate = new Set([
+    'tool_approval',
+    'tool_approved',
     'tool_start',
     'tool_output',
     'tool_error',
@@ -310,6 +312,7 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
   const repo = info.repo;
   const permissions = await loadPermissions(pool, job.userId, job.repoPath);
   const toolCtx = {
+    onApproval: ev => emitJob(pool, job, ev),
     userId: job.userId,
     user: job.user,
     conversationId: job.conversationId,
