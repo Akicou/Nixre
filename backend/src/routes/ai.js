@@ -294,6 +294,10 @@ export function aiRoutes(pool, authenticate) {
 
     const label = req.body?.label !== undefined ? String(req.body.label).trim() : row.label;
     const baseUrl = req.body?.baseUrl !== undefined ? String(req.body.baseUrl).trim() || null : row.base_url;
+    if (!label || (PROVIDERS[row.provider]?.needsBaseUrl && !baseUrl)) {
+      res.status(400).json({ message: !label ? 'A provider name is required' : 'A base URL is required for custom providers' });
+      return;
+    }
     // Same guard as creation: a provider's endpoint is attacker-controlled and
     // core will fetch it.
     if (req.body?.baseUrl !== undefined && baseUrl) {
@@ -303,10 +307,10 @@ export function aiRoutes(pool, authenticate) {
         return;
       }
     }
-    const enabledModels = Array.isArray(req.body?.enabledModels)
+    let enabledModels = Array.isArray(req.body?.enabledModels)
       ? req.body.enabledModels.filter(m => typeof m === 'string')
       : row.enabled_models;
-    const defaultModel = req.body?.defaultModel !== undefined ? String(req.body.defaultModel) : row.default_model;
+    let defaultModel = req.body?.defaultModel !== undefined ? String(req.body.defaultModel) : row.default_model;
     const apiKey = typeof req.body?.apiKey === 'string' && req.body.apiKey.length > 0
       ? req.body.apiKey.trim()
       : null;
@@ -317,12 +321,13 @@ export function aiRoutes(pool, authenticate) {
     let modelCache = row.model_cache;
 
     const endpointChanged = req.body?.baseUrl !== undefined && baseUrl !== row.base_url;
-    if (apiKey || (endpointChanged && row.api_key_enc)) {
-      const effectiveKey = apiKey ?? decryptSecret(row.api_key_enc);
+    if (apiKey || endpointChanged) {
+      const effectiveKey = apiKey ?? (row.api_key_enc ? decryptSecret(row.api_key_enc) : null);
       try {
-        modelCache = await fetchAndCacheModels(pool, { ...row, provider: row.provider, base_url: baseUrl }, effectiveKey);
-        await pool.query('UPDATE ai_providers SET validated_at = $2 WHERE id = $1', [row.id, Date.now()]);
+        modelCache = await listModels(row.provider, effectiveKey, baseUrl);
         validatedAt = Date.now();
+        enabledModels = enabledModels.filter(m => modelCache.includes(m) || (m === 'local-model' && (row.provider === 'custom' || row.provider === 'ollama')));
+        if (!enabledModels.includes(defaultModel)) defaultModel = enabledModels[0] || '';
       } catch (err) {
         if (err instanceof AuthError) {
           res.status(400).json({ message: `Validation failed: ${err.message}` });
@@ -346,10 +351,12 @@ export function aiRoutes(pool, authenticate) {
     const { rows: updated } = await pool.query(
       `UPDATE ai_providers SET
          label = $2, base_url = $3, api_key_enc = $4, key_mask = $5, validated_at = $6,
-         default_model = $7, enabled_models = $8::jsonb, is_default = $9, updated = $10
+         default_model = $7, enabled_models = $8::jsonb, is_default = $9, updated = $10,
+         model_cache = $11::jsonb, model_cache_at = $12
        WHERE id = $1 RETURNING *`,
       [row.id, label, baseUrl, apiKeyEnc, keyMask, validatedAt, defaultModel,
-        JSON.stringify(enabledModels), wantDefault ? true : row.is_default, Date.now()],
+        JSON.stringify(enabledModels), wantDefault ? true : row.is_default, Date.now(),
+        JSON.stringify(modelCache), (apiKey || endpointChanged) ? validatedAt : row.model_cache_at],
     );
     res.json(rowToProvider(updated[0]));
   });

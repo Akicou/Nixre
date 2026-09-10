@@ -12,6 +12,8 @@ Plugin state, assistant profiles, chat sessions, and passkey vaults are stored s
 ## Providers & models
 
 - Add multiple providers (DeepSeek, OpenAI, Anthropic, Ollama, local/custom OpenAI-compatible endpoints). Each is validated against the live provider and its model list fetched automatically.
+- In **Plugins → Configure → Edit**, rename an existing provider, change its base URL, or replace its API key. Leave the replacement key blank to retain the stored key. Connection changes are validated before saving; failed validation preserves the existing connection. Enabled models and the default are retained when still available on the updated connection.
+- Provider settings use flat sections and divided model lists. Expand **Models** for search and selection; the editor supports saving, retrying after an error, and cancelling without changing the connection.
 - Select which models are **enabled for chat** and which provider is **active**. API keys are encrypted server-side and never sent to the browser.
 - The **model list picker** has a **search box** and an **all / enabled / disabled** filter, so long lists are easy to navigate.
 

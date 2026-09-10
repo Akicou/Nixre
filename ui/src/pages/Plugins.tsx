@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Settings2, Shield, Check, Info } from 'lucide-react';
+import { Settings2, Shield, Info } from 'lucide-react';
 import { PLUGINS, getPlugin, isAssistantPlugin } from '../lib/plugins';
 import {
   setServerAvailablePlugin,
@@ -84,7 +84,7 @@ export const Plugins: React.FC = () => {
       </div>
 
       {/* How it works */}
-      <div className="border border-border-subtle rounded-lg bg-surface-canvas p-5 space-y-3">
+      <section className="space-y-3">
         <div className="flex items-center gap-2 text-sm font-semibold text-txt-primary">
           <Info className="w-4 h-4 text-brand" />
           <span>Two-layer activation</span>
@@ -93,23 +93,23 @@ export const Plugins: React.FC = () => {
           <li><span className="text-txt-primary">Server gate</span> — the operator enables a plugin for the instance. If off, it never appears.</li>
           <li><span className="text-txt-primary">User toggle</span> — you turn it on. Every plugin is disabled by default.</li>
         </ol>
-      </div>
+      </section>
 
       {/* Operator controls: server availability */}
-      <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
+      <section className="space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-txt-primary uppercase tracking-wider flex items-center gap-2">
             <Shield className="w-4 h-4 text-brand" />
             <span>Server availability</span>
           </h2>
           <p className="text-xs text-txt-secondary mt-0.5">
-            Simulates the operator-side gate. Toggle which bundled plugins the instance serves.
+            Choose which bundled plugins are available on this instance.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="border border-border-subtle rounded-md divide-y divide-border-subtle">
           {PLUGINS.map(plugin => (
-            <div key={plugin.id} className="flex items-center justify-between p-3 rounded bg-surface-base border border-border-subtle">
+            <div key={plugin.id} className="flex items-center justify-between gap-4 px-4 py-3">
               <div className="flex items-center gap-2 min-w-0">
                 <plugin.icon className="w-4 h-4 shrink-0 text-txt-tertiary" />
                 <span className="text-xs font-medium text-txt-primary truncate">{plugin.name}</span>
@@ -134,11 +134,11 @@ export const Plugins: React.FC = () => {
             </div>
           ))}
         </div>
-      </div>
+      </section>
 
       {/* Configure drawer */}
       {configuredPlugin && (
-        <div className="border border-brand/40 rounded-lg bg-surface-canvas p-6">
+        <section className="border-y border-border-subtle py-6">
           {isAssistantPlugin(configuredPlugin) ? (
             <AssistantProfileForm mode="provider" onClose={() => setConfiguringId(null)} />
           ) : (
@@ -155,11 +155,11 @@ export const Plugins: React.FC = () => {
               />
             )
           )}
-        </div>
+        </section>
       )}
 
       {/* Plugins */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="divide-y divide-border-subtle">
         {PLUGINS.map(plugin => (
           <PluginToggle
             key={plugin.id}

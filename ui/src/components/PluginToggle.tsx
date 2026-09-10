@@ -58,13 +58,11 @@ export const PluginToggle: React.FC<PluginToggleProps> = ({ plugin, available, e
 
   return (
     <div
-      className={`border rounded-lg bg-surface-canvas p-5 space-y-4 transition ${
-        live ? 'border-brand/40' : 'border-border-subtle'
-      }`}
+      className="py-5 space-y-4"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3">
-          <div className={`p-2 rounded bg-surface-subtle border border-border-subtle shrink-0 ${available ? 'text-txt-brand' : 'text-txt-tertiary opacity-60'}`}>
+          <div className={`pt-0.5 shrink-0 ${available ? 'text-txt-brand' : 'text-txt-tertiary opacity-60'}`}>
             <Icon className="w-5 h-5" />
           </div>
           <div className="space-y-1 min-w-0">

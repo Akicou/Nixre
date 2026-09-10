@@ -75,6 +75,6 @@ describe('Plugins page', () => {
     );
     fireEvent.click(screen.getByText('Configure'));
     // The drawer renders the provider manager.
-    expect(await screen.findByText(/Add providers, fetch their models/)).toBeInTheDocument();
+    expect(await screen.findByText(/Manage connections and models/)).toBeInTheDocument();
   });
 });

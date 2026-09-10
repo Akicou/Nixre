@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import {
   Check,
   Bot,
@@ -10,6 +10,7 @@ import {
   Trash2,
   Star,
   Search,
+  Pencil,
 } from 'lucide-react';
 import {
   listAiProviders,
@@ -71,6 +72,7 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
   onClose,
 }) => {
   const [loading, setLoading] = useState(true);
+  const keyHelpId = useId();
   const [providers, setProviders] = useState<AiProvider[]>([]);
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -82,10 +84,29 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
   const [draftUrl, setDraftUrl] = useState('');
   const [draftKey, setDraftKey] = useState('');
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<AiProvider | null>(null);
+
+  const closeEditor = () => {
+    setAdding(false);
+    setEditing(null);
+    setDraftLabel('');
+    setDraftUrl('');
+    setDraftKey('');
+  };
+
+  const editProvider = (p: AiProvider) => {
+    setEditing(p);
+    setAdding(true);
+    setDraftKind(p.provider);
+    setDraftLabel(p.label);
+    setDraftUrl(p.baseUrl);
+    setDraftKey('');
+    setFeedback(null);
+  };
 
   const [repoProfile, setRepoProfileState] = useState<AssistantRepoProfile>(() => defaultRepoProfile());
 
-  // Model-list search + status filter (per provider card).
+  // Shared model search and status filter across providers.
   const [modelQuery, setModelQuery] = useState('');
   const [modelFilter, setModelFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
 
@@ -117,6 +138,17 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
     setCreating(true);
     setFeedback(null);
     try {
+      if (editing) {
+        const updated = await updateAiProvider(editing.id, {
+          label: draftLabel.trim(),
+          ...(draftUrl.trim() !== editing.baseUrl ? { baseUrl: draftUrl.trim() } : {}),
+          ...(draftKey.trim() ? { apiKey: draftKey.trim() } : {}),
+        });
+        setProviders(prev => prev.map(p => p.id === updated.id ? updated : p));
+        setFeedback({ kind: 'ok', text: `${updated.label} updated. ${draftKey.trim() ? 'New API key validated and saved.' : 'Existing API key kept.'}` });
+        closeEditor();
+        return;
+      }
       const kind = PROVIDER_KINDS.find(p => p.id === draftKind)!;
       const created = await createAiProvider({
         label: draftLabel.trim() || kind.label,
@@ -129,12 +161,9 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
         kind: 'ok',
         text: `${created.label} validated — ${created.models.length} models fetched, first ${created.enabledModels.length} enabled for chat.`,
       });
-      setAdding(false);
-      setDraftLabel('');
-      setDraftUrl('');
-      setDraftKey('');
+      closeEditor();
     } catch (err: any) {
-      setFeedback({ kind: 'error', text: err.message || 'Adding the provider failed.' });
+      setFeedback({ kind: 'error', text: err.message || 'Saving the provider failed.' });
     } finally {
       setCreating(false);
     }
@@ -161,20 +190,26 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
       : [...p.enabledModels, model];
     // Keep a default model whenever possible.
     const defaultModel = enabled.includes(p.defaultModel) ? p.defaultModel : enabled[0] ?? '';
-    setProviders(prev => prev.map(x => (x.id === p.id ? { ...x, enabledModels: enabled, defaultModel } : x)));
+    setBusyId(p.id);
     try {
-      await updateAiProvider(p.id, { enabledModels: enabled, defaultModel });
+      const updated = await updateAiProvider(p.id, { enabledModels: enabled, defaultModel });
+      setProviders(prev => prev.map(x => x.id === p.id ? updated : x));
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message || 'Saving the model selection failed.' });
+    } finally {
+      setBusyId(null);
     }
   };
 
   const makeDefault = async (p: AiProvider) => {
-    setProviders(prev => prev.map(x => ({ ...x, isDefault: x.id === p.id })));
+    setBusyId(p.id);
     try {
       await updateAiProvider(p.id, { isDefault: true });
+      setProviders(prev => prev.map(x => ({ ...x, isDefault: x.id === p.id })));
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err.message || 'Could not set the active provider.' });
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -197,7 +232,7 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
 
   if (loading) {
     return (
-      <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 flex items-center justify-center gap-2 text-xs text-txt-tertiary">
+      <div role="status" className="py-6 flex items-center justify-center gap-2 text-xs text-txt-tertiary">
         <Loader2 className="w-4 h-4 animate-spin" />
         Loading assistant configuration…
       </div>
@@ -205,22 +240,23 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
   }
 
   return (
-    <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-6">
-      <div className="flex items-center justify-between">
+    <section className="space-y-6" aria-label="AI providers">
+      <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-2">
-          <div className="p-2 rounded bg-surface-subtle border border-border-subtle text-txt-brand">
+          <div className="text-txt-brand">
             <Bot className="w-4 h-4" />
           </div>
           <div>
             <h2 className="text-sm font-semibold text-txt-primary uppercase tracking-wider">Nixre Assistant</h2>
             <p className="text-xs text-txt-secondary mt-0.5">
-              Add providers, fetch their models, and enable the ones you want to chat with. Keys are stored encrypted server-side.
+              Manage connections and models. Edit a provider to change its endpoint or replace its API key.
             </p>
           </div>
         </div>
         {onClose && (
           <button
             type="button"
+            disabled={creating}
             onClick={onClose}
             className="px-3 py-1.5 rounded text-xs font-medium text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
           >
@@ -231,6 +267,7 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
 
       {feedback && (
         <div
+          role={feedback.kind === 'error' ? 'alert' : 'status'}
           className={`p-3 rounded border text-xs flex items-start gap-2 ${
             feedback.kind === 'ok'
               ? 'bg-feedback-success-bg border-feedback-success-border text-feedback-success-text'
@@ -243,9 +280,9 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
       )}
 
       {/* Provider list */}
-      <div className="space-y-3">
+      <div className="divide-y divide-border-subtle">
         {providers.length === 0 && !adding && (
-          <div className="border border-dashed border-border-subtle rounded-lg p-8 text-center">
+          <div className="py-8 text-center">
             <p className="text-xs text-txt-secondary">
               No AI providers yet. Add one — it gets validated against the live provider and its model list is fetched automatically.
             </p>
@@ -260,12 +297,14 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
         )}
 
         {providers.map(p => (
-          <div key={p.id} className={`rounded-lg border bg-surface-base transition ${p.isDefault ? 'border-brand/40' : 'border-border-subtle'}`}>
+          <section key={p.id} aria-label={p.label} className="py-5 space-y-3">
             {/* Provider header */}
-            <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border-subtle">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0">
                 <button
                   onClick={() => makeDefault(p)}
+                  aria-label={`Make ${p.label} active`}
+                  disabled={creating || busyId !== null}
                   title={p.isDefault ? 'Active provider' : 'Make active'}
                   className={`shrink-0 transition ${p.isDefault ? 'text-brand' : 'text-txt-tertiary hover:text-txt-secondary'}`}
                 >
@@ -285,8 +324,17 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <button
+                  onClick={() => editProvider(p)}
+                  disabled={creating || busyId !== null}
+                  aria-label={`Edit ${p.label}`}
+                  className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-txt-secondary hover:bg-surface-subtle disabled:opacity-50"
+                >
+                  <Pencil className="w-3.5 h-3.5" /> Edit
+                </button>
+                <button
                   onClick={() => refreshModels(p)}
-                  disabled={busyId === p.id}
+                  disabled={busyId !== null || creating}
+                  aria-label={`Refresh models for ${p.label}`}
                   title="Fetch the live model list"
                   className="p-1.5 rounded hover:bg-surface-subtle text-txt-secondary transition disabled:opacity-50"
                 >
@@ -294,6 +342,8 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
                 </button>
                 <button
                   onClick={() => removeProvider(p)}
+                  disabled={creating || adding || busyId !== null}
+                  aria-label={`Remove ${p.label}`}
                   title="Remove provider"
                   className="p-1.5 rounded hover:bg-feedback-error-bg text-txt-tertiary hover:text-feedback-error-text transition"
                 >
@@ -303,7 +353,9 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
             </div>
 
             {/* Model picker */}
-            <div className="px-4 py-3">
+            <details className="group" open={providers.length === 1}>
+              <summary className="cursor-pointer text-xs text-txt-secondary py-1">Models · {p.enabledModels.length} enabled / {p.models.length} available</summary>
+            <div className="py-3">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[10px] font-semibold text-txt-tertiary uppercase tracking-wider">
                   Models — enable the ones you want to chat with
@@ -317,6 +369,7 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
                   <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-txt-tertiary pointer-events-none" />
                   <input
                     value={modelQuery}
+                    aria-label={`Search models for ${p.label}`}
                     onChange={e => setModelQuery(e.target.value)}
                     placeholder="Search models…"
                     className="w-full pl-7 pr-3 py-1.5 text-[11px] font-mono rounded-md bg-surface-base border border-border-subtle text-txt-primary placeholder:text-txt-tertiary focus:border-brand transition outline-none"
@@ -352,24 +405,26 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
                   );
                 }
                 return (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-44 overflow-y-auto">
+                  <div className="border border-border-subtle rounded-md divide-y divide-border-subtle max-h-64 overflow-y-auto">
                     {filtered.map(m => {
                       const on = p.enabledModels.includes(m);
                       const isSentinel = m === LOCAL_MODEL;
                       return (
                         <button
                           key={m}
-                          onClick={() => toggleModel(p, m)}
+                           onClick={() => toggleModel(p, m)}
+                           aria-pressed={on}
+                           disabled={creating || busyId !== null}
                           title={
                             isSentinel
                               ? 'Always answers with the model the server currently has loaded — no need to re-pick when you switch models server-side'
                               : m
                           }
-                          className={`flex items-center gap-2 text-left text-[11px] font-mono px-2.5 py-1.5 rounded border transition ${
+                          className={`w-full flex items-center gap-2 text-left text-xs font-mono px-3 py-2 transition ${
                             on
-                              ? 'bg-brand/10 border-brand/40 text-txt-primary'
-                              : 'border-border-subtle text-txt-tertiary hover:text-txt-secondary hover:border-border-mid'
-                          } ${isSentinel ? 'border-dashed' : ''}`}
+                              ? 'bg-brand/5 text-txt-primary'
+                              : 'text-txt-tertiary hover:text-txt-secondary hover:bg-surface-subtle'
+                          }`}
                         >
                           <span
                             className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
@@ -396,17 +451,19 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
                 );
               })()}
             </div>
-          </div>
+            </details>
+          </section>
         ))}
 
         {/* Add form */}
         {adding ? (
-          <div className="rounded-lg border border-brand/40 bg-surface-base p-4 space-y-3">
-            <div className="text-[10px] font-semibold text-txt-tertiary uppercase tracking-wider">Add a provider</div>
+          <form aria-label={editing ? `Edit ${editing.label}` : 'Add a provider'} onSubmit={e => { e.preventDefault(); if (!creating) void handleAdd(); }} className="py-6 space-y-4">
+            <h3 className="text-sm font-semibold text-txt-primary">{editing ? `Edit ${editing.label}` : 'Add a provider'}</h3>
+            <fieldset disabled={creating} className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <label className="space-y-1.5">
                 <span className="text-[11px] text-txt-secondary">Kind</span>
-                <select value={draftKind} onChange={e => setDraftKind(e.target.value)} className={inputCls}>
+                <select disabled={!!editing} value={draftKind} onChange={e => setDraftKind(e.target.value)} className={inputCls}>
                   {PROVIDER_KINDS.map(k => (
                     <option key={k.id} value={k.id}>
                       {k.label}
@@ -415,46 +472,51 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
                 </select>
               </label>
               <label className="space-y-1.5">
-                <span className="text-[11px] text-txt-secondary">Name (optional)</span>
-                <input value={draftLabel} onChange={e => setDraftLabel(e.target.value)} placeholder="e.g. My DeepSeek" className={inputCls} />
+                <span className="text-[11px] text-txt-secondary">Name{!editing && ' (optional)'}</span>
+                <input autoFocus required={!!editing} value={draftLabel} onChange={e => setDraftLabel(e.target.value)} placeholder="e.g. My DeepSeek" className={inputCls} />
               </label>
               <label className="space-y-1.5">
-                <span className="text-[11px] text-txt-secondary">Base URL (custom only)</span>
-                <input value={draftUrl} onChange={e => setDraftUrl(e.target.value)} placeholder="https://api.example.com" className={inputCls} />
+                <span className="text-[11px] text-txt-secondary">Base URL</span>
+                <input type="url" required={draftKind === 'custom'} value={draftUrl} onChange={e => setDraftUrl(e.target.value)} placeholder="Provider default" className={inputCls} />
               </label>
             </div>
+            <div className="space-y-1.5">
             <label className="block space-y-1.5">
               <span className="text-[11px] text-txt-secondary">
-                API Key <span className="text-txt-tertiary">(validated against the provider before saving)</span>
+                {editing ? 'Replace API key' : 'API Key'}
               </span>
               <input
                 type="password"
+                aria-describedby={keyHelpId}
                 value={draftKey}
                 onChange={e => setDraftKey(e.target.value)}
-                placeholder={draftKind === 'ollama' ? 'not needed for local Ollama' : 'sk-…'}
+                placeholder={editing ? 'Leave blank to keep the current key' : draftKind === 'ollama' ? 'not needed for local Ollama' : 'sk-…'}
                 className={inputCls}
                 autoComplete="off"
               />
             </label>
+              <p id={keyHelpId} className="text-[11px] text-txt-tertiary">{editing ? `Current key: ${editing.keyMask || 'none'}. Leave blank to keep it. ` : ''}New keys are validated before saving and stored encrypted.</p>
+            </div>
             <div className="flex items-center gap-2 justify-end">
-              <button onClick={() => setAdding(false)} className="px-3 py-1.5 rounded text-xs text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition">
+              <button type="button" onClick={closeEditor} className="px-3 py-1.5 rounded text-xs text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition">
                 Cancel
               </button>
               <button
-                onClick={handleAdd}
-                disabled={creating || (draftKind !== 'ollama' && !draftKey.trim()) || (draftKind === 'custom' && !draftUrl.trim())}
+                type="submit"
+                disabled={creating || (!editing && draftKind !== 'ollama' && !draftKey.trim()) || (!!editing && !draftLabel.trim()) || (draftKind === 'custom' && !draftUrl.trim())}
                 className="px-4 py-1.5 rounded bg-brand text-white text-xs font-medium hover:bg-brand-hover disabled:opacity-50 transition shadow-sm flex items-center gap-1.5"
               >
                 {creating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
-                {creating ? 'Validating…' : 'Validate & add'}
+                {creating ? 'Saving…' : editing ? 'Save changes' : 'Validate & add'}
               </button>
             </div>
-          </div>
+            </fieldset>
+          </form>
         ) : (
           providers.length > 0 && (
             <button
               onClick={() => setAdding(true)}
-              className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg border border-dashed border-border-subtle text-xs text-txt-secondary hover:border-brand/50 hover:text-txt-primary transition"
+              className="flex items-center gap-1.5 py-4 text-xs font-medium text-brand hover:text-brand-hover transition"
             >
               <Plus className="w-3.5 h-3.5" />
               Add another provider
@@ -477,6 +539,6 @@ export const AssistantProfileForm: React.FC<AssistantProfileFormProps> = ({
           onSubmitLabel="Save access profile"
         />
       )}
-    </div>
+    </section>
   );
 };
