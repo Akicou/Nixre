@@ -2,6 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Hex-valued theme variables cannot use Tailwind's slash-opacity modifiers.
+   Version this palette with the component CSS: the CDN can cache /colors.css
+   for hours, so new heatmap tokens must ship in the hashed stylesheet. */
+:root {
+  --color-contribution-0: var(--color-surface-subtle);
+  --color-contribution-1: var(--color-accent-green-200);
+  --color-contribution-2: var(--color-accent-green-400);
+  --color-contribution-3: var(--color-accent-green-600);
+  --color-contribution-4: var(--color-accent-green-800);
+}
+:root[data-theme="dark"] {
+  --color-contribution-1: var(--color-accent-green-800);
+  --color-contribution-2: var(--color-accent-green-700);
+  --color-contribution-3: var(--color-accent-green-600);
+  --color-contribution-4: var(--color-accent-green-500);
+}
+.contribution-level-0 { background-color: var(--color-contribution-0, var(--color-surface-subtle)); }
+.contribution-level-1 { background-color: var(--color-contribution-1, var(--color-text-open)); }
+.contribution-level-2 { background-color: var(--color-contribution-2, var(--color-text-open)); }
+.contribution-level-3 { background-color: var(--color-contribution-3, var(--color-text-open)); }
+.contribution-level-4 { background-color: var(--color-contribution-4, var(--color-text-open)); }
+
 /* One mounted workspace, rearranged without losing tree or deployment drafts. */
 .repo-workspace-viewport {
   max-width: 100%;

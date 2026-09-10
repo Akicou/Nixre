@@ -3,11 +3,11 @@ import { Contributions } from '../lib/api';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const LEVEL_CLASS = [
-  'bg-surface-subtle',
-  'bg-txt-open/30',
-  'bg-txt-open/55',
-  'bg-txt-open/80',
-  'bg-txt-open',
+  'contribution-level-0',
+  'contribution-level-1',
+  'contribution-level-2',
+  'contribution-level-3',
+  'contribution-level-4',
 ];
 
 function levelFor(count: number): number {
