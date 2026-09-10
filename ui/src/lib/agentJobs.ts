@@ -122,28 +122,81 @@ export async function subscribeAgentJob(
   onEvent: (evt: JobStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/ai/jobs/${encodeURIComponent(conversationId)}/events`, {
-    headers: authHeaders(),
-    signal,
-  });
-  if (!res.ok || !res.body) {
-    let msg = `HTTP ${res.status}`;
-    try {
-      const body = await res.json();
-      if (body?.message) msg = body.message;
-    } catch {}
-    throw new Error(msg);
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const parsed = parseSseBuffer(buf);
-    buf = parsed.rest;
-    for (const evt of parsed.frames) onEvent(evt);
+  // A suspended tab can retain a fetch whose socket never reports EOF. Only
+  // the subscription is restarted: execution belongs to the server-side job.
+  let connection: AbortController | undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let lastActivity = Date.now();
+  let reconnect = false;
+  const cancelConnection = () => {
+    connection?.abort();
+    void reader?.cancel().catch(() => {});
+  };
+  const wake = () => {
+    if (document.visibilityState === 'hidden' || signal?.aborted) return;
+    reconnect = true;
+    cancelConnection();
+  };
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastActivity >= 45_000) {
+      reconnect = true;
+      cancelConnection();
+    }
+  }, 5_000);
+  signal?.addEventListener('abort', cancelConnection);
+  document.addEventListener('visibilitychange', wake);
+  window.addEventListener('focus', wake);
+  window.addEventListener('pageshow', wake);
+  window.addEventListener('online', wake);
+  try {
+    do {
+      if (signal?.aborted) return;
+      reconnect = false;
+      lastActivity = Date.now();
+      connection = new AbortController();
+      try {
+        const res = await fetch(`${BASE}/ai/jobs/${encodeURIComponent(conversationId)}/events`, {
+          headers: authHeaders(),
+          signal: connection.signal,
+        });
+        if (!res.ok || !res.body) {
+          let msg = `HTTP ${res.status}`;
+          try {
+            const body = await res.json();
+            if (body?.message) msg = body.message;
+          } catch {}
+          throw new Error(msg);
+        }
+        reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (signal?.aborted || reconnect || done) break;
+          lastActivity = Date.now();
+          buf += decoder.decode(value, { stream: true });
+          const parsed = parseSseBuffer(buf);
+          buf = parsed.rest;
+          for (const evt of parsed.frames) {
+            if (signal?.aborted || reconnect) break;
+            onEvent(evt);
+            if (evt.type === 'done') return;
+          }
+        }
+      } catch (error) {
+        if (!reconnect && !signal?.aborted) throw error;
+      } finally {
+        cancelConnection();
+        reader = undefined;
+      }
+    } while (reconnect && !signal?.aborted);
+  } finally {
+    clearInterval(watchdog);
+    signal?.removeEventListener('abort', cancelConnection);
+    document.removeEventListener('visibilitychange', wake);
+    window.removeEventListener('focus', wake);
+    window.removeEventListener('pageshow', wake);
+    window.removeEventListener('online', wake);
   }
 }
 

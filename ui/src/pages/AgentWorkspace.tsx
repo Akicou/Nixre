@@ -456,11 +456,13 @@ export const AgentWorkspace: React.FC = () => {
         await new Promise(r => setTimeout(r, pollMs));
         if (ac.signal.aborted) return;
         const conv = await getConversation(id).catch(() => undefined);
+        if (ac.signal.aborted) return;
         if (!conv) {
           // Unreachable right now (network flap) — back off and retry forever.
           pollMs = Math.min(pollMs * 2, 15000);
           continue;
         }
+        messagesRef.current = conv.messages;
         setMessages(conv.messages);
         const running = conv.runStatus === 'running' || conv.runStatus === 'stopping';
         setStreaming(running);

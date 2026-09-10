@@ -14,9 +14,10 @@ interface State {
   verification: null | { status: string; error?: string; results: { label: string; exitCode: number; output: string }[] };
   browser: null | { title: string; status: number; path: string; errors: string[]; console: { type: string; text: string }[]; blocked: string[]; dataUrl?: string };
 }
-async function request(id: string, action?: unknown): Promise<State & { resumed?: string }> {
+async function request(id: string, action?: unknown, signal?: AbortSignal): Promise<State & { resumed?: string }> {
   const res = await fetch(`/api/v1/ai/jobs/${encodeURIComponent(id)}/controls`, {
     method: action ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('nixre_token') || ''}` },
+    signal,
     ...(action ? { body: JSON.stringify(action) } : {}),
   });
   const body = await res.json().catch(() => ({}));
@@ -33,20 +34,33 @@ export function AgentTaskPanel({ conversationId, running, onResume }: { conversa
   useEffect(() => {
     const current = ++generation.current;
     dirty.current = false; setState(null); setError('');
-    let inflight = false;
-    const refresh = async () => {
-      if (inflight) return;
-      inflight = true;
+    let inflight: AbortController | null = null;
+    const refresh = async (force = false) => {
+      if (inflight && !force) return;
+      inflight?.abort();
+      const controller = new AbortController();
+      inflight = controller;
+      const timeout = setTimeout(() => controller.abort(), 15_000);
       try {
-        const next = await request(conversationId);
-        if (current !== generation.current) return;
+        const next = await request(conversationId, undefined, controller.signal);
+        if (current !== generation.current || controller.signal.aborted) return;
         setState(next); setNow(Date.now());
+        setError('');
         if (!dirty.current) { setSettings(next.settings); setMemory(next.memory || ''); }
-      } catch (err) { if (current === generation.current) setError((err as Error).message); }
-      finally { inflight = false; }
+      } catch (err) { if (current === generation.current && !controller.signal.aborted) setError((err as Error).message); }
+      finally { clearTimeout(timeout); if (inflight === controller) inflight = null; }
     };
+    const wake = () => { if (document.visibilityState !== 'hidden') void refresh(true); };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('focus', wake);
+    window.addEventListener('online', wake);
     void refresh(); const timer = setInterval(refresh, 2500);
-    return () => { clearInterval(timer); generation.current++; };
+    return () => {
+      clearInterval(timer); inflight?.abort(); generation.current++;
+      document.removeEventListener('visibilitychange', wake);
+      window.removeEventListener('focus', wake);
+      window.removeEventListener('online', wake);
+    };
   }, [conversationId]);
   const act = async (action: unknown) => {
     const current = generation.current;
@@ -62,6 +76,7 @@ export function AgentTaskPanel({ conversationId, running, onResume }: { conversa
     <div className="flex flex-wrap justify-between gap-2 font-medium"><span>Task controls {pending.length > 0 && `· ${pending.length} files to review`}</span>
       {state && <span className="text-txt-tertiary">{(state.usage.input + state.usage.output).toLocaleString()} tokens · {elapsed}s · {state.settings.inputPrice > 0 && state.settings.outputPrice > 0 ? `~$${state.usage.estimatedCost.toFixed(4)}` : 'Cost not configured'}</span>}</div>
     {error && <p role="alert" className="text-feedback-error-text">{error}</p>}
+    {state?.approvals.some(a => a.status === 'pending') && <p role="status" className="font-semibold text-brand">Waiting for your approval — the requested command or check has not started. Approve or deny below to continue.</p>}
     {state?.plan.length ? <ol className="space-y-1" aria-label="Task checklist">{state.plan.map((p, i) => <li key={i} className="flex flex-wrap gap-2"><span>{p.status === 'completed' ? '✓' : p.status === 'in_progress' ? '→' : '○'}</span><span>{p.text}</span><span className="text-txt-tertiary">{p.status.replace('_', ' ')}</span>{p.blocker && <span>{p.blocker}</span>}</li>)}</ol> : <p className="text-txt-tertiary">The agent’s checklist will appear here.</p>}
     {state?.approvals.filter(a => a.status === 'pending').map(a => <div key={a.id} className="rounded border border-brand p-3 space-y-2"><strong>Approval requested: {a.tool}</strong><pre className="overflow-x-auto whitespace-pre-wrap break-all">{JSON.stringify(a.args, null, 2)}</pre><button type="button" className={btn} disabled={busy} onClick={() => act({ type: 'approval', id: a.id, accept: true })}>Approve once</button>{' '}<button type="button" className={btn} disabled={busy} onClick={() => act({ type: 'approval', id: a.id, accept: false })}>Deny</button></div>)}
     {state && <details><summary className="cursor-pointer font-medium">Changes, checkpoints, and checks</summary><div className="space-y-3 mt-3">

@@ -34,6 +34,9 @@ The assistant can work on:
 
 ## Chat modes & tools
 
+- Agent execution runs on the server independently of browser focus. Returning to a tab, reconnecting to the network, or missing 45 seconds of stream activity replaces only the event subscription and reloads a server snapshot; it never resubmits a command.
+- A task can be waiting for command/check approval while its run is active. Task controls explicitly show **Waiting for your approval**. Their reads time out and refresh on focus so a suspended request cannot hide the approval indefinitely.
+
 - Modes: **Ask, Plan, Agent, Debug** (streaming chat), configurable reasoning levels.
 - The agent can **read files, search code, show images, run shell commands** in a clone of the target repo, and **search the web** — each gated by a **per-repo access profile**.
 - Sits on the dashboard and per-repo. Per-repo access profile is configured at **Plugins → Repository Access Profile** (or `mode='full'` form with a repo path).

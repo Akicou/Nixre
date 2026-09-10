@@ -39,6 +39,7 @@ describe('AgentTaskPanel', () => {
     (state.approvals as any[]).push({ id: 'a', tool: 'run_command', args: { command: 'npm test' }, status: 'pending' });
     render(<AgentTaskPanel conversationId="c" running onResume={() => {}} />);
     fireEvent.click(await screen.findByText('Changes, checkpoints, and checks'));
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting for your approval');
     expect(screen.getByRole('button', { name: 'Restore files' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }));
     await waitFor(() => expect(requests).toContainEqual({ type: 'approval', id: 'a', accept: true }));
@@ -54,5 +55,19 @@ describe('AgentTaskPanel', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Resume saved task' })).not.toBeDisabled());
     fireEvent.click(screen.getByRole('button', { name: 'Resume saved task' }));
     await waitFor(() => expect(resume).toHaveBeenCalledOnce());
+  });
+  it('replaces a stalled controls request when the tab regains focus', async () => {
+    let abandoned: AbortSignal | undefined;
+    vi.mocked(fetch).mockImplementationOnce((_url, options) => new Promise((_resolve, reject) => {
+      abandoned = options?.signal as AbortSignal;
+      abandoned.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+    }));
+    render(<AgentTaskPanel conversationId="c" running onResume={() => {}} />);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    (state.approvals as any[]).push({ id: 'a', tool: 'run_command', args: { command: 'npm test' }, status: 'pending' });
+    fireEvent(window, new Event('focus'));
+    expect(await screen.findByRole('status')).toHaveTextContent('Waiting for your approval');
+    expect(abandoned?.aborted).toBe(true);
+    expect(requests).toEqual([]);
   });
 });
