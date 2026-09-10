@@ -160,6 +160,14 @@ test('worker authorization, idempotency, concurrent update exclusion, and indepe
   finishPlan();
   await until(async () => (await (await fetch(controlUrl + '/state', { headers })).json()).current.status === 'checked');
   assert.equal((await fetch(controlUrl + '/apply', { method: 'POST', headers, body: JSON.stringify({ requestId: randomUUID(), actor: 'admin', planId: plan.id, target: base, expectedBase: base }) })).status, 409);
+  // A visible "checked" state precedes its final durable save. Wait until the
+  // worker accepts review validation (rather than reporting an active update)
+  // before teardown can remove the state directory under that final write.
+  await until(async () => {
+    const response = await fetch(controlUrl + '/apply', { method: 'POST', headers,
+      body: JSON.stringify({ requestId: randomUUID(), actor: 'admin', planId: plan.id, target: base, expectedBase: base }) });
+    return (await response.json()).message === 'Update review no longer matches. Check for updates again.';
+  });
   // Stop the control connection entirely: observers need no core or control API.
   servers.control.closeAllConnections(); servers.control.close();
   const observed = await (await fetch(publicUrl + '/update-status/current', { headers: observerHeaders })).json();
