@@ -4,11 +4,7 @@ Turn any repo subdirectory into a long-running Docker service. **You bring the D
 
 ## Where they live in the UI
 
-Deployments are **inside the repo's Code view** — not a standalone page or tab. A collapsible "Deployments" bar sits below the file browser/README. Open it with:
-
-- sidebar row (`Deployments`), or
-- deep link `/{space}/{repo}?deploys=1`, or
-- legacy `?tab=deployments`.
+Deployments are **visible immediately inside the repo's Code view**, beside an expandable file tree on desktop. The **Layout** selector saves an account-wide preference: Split view (default, preview below) or Three columns (tree / preview / deployments on wide desktops). Opening a service or creation form can expand its workspace. Existing `/{space}/{repo}?deploys=1` and legacy `?tab=deployments` links remain supported.
 
 There is **no standalone deployments route/page/tab**. Sub-tabs inside a service (Overview / Deploys / Env / Domains / Logs) use `?dtab=<tab>` to avoid colliding with the repo view's `?tab=`.
 

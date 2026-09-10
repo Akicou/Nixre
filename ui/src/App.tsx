@@ -95,7 +95,7 @@ const AppShell: React.FC<{
           <Route path="/register" element={currentUser ? <Navigate to="/" /> : <Register onRegisterSuccess={setCurrentUser} />} />
 
           <Route path="/:space" element={<SpaceView />} />
-          <Route path="/:space/:repo" element={<RepoView />} />
+          <Route path="/:space/:repo" element={<RepoView user={currentUser} />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
         </ErrorBoundary>

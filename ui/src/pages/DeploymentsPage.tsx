@@ -17,6 +17,8 @@ import {
   Globe,
   KeyRound,
   Loader2,
+  Maximize2,
+  Minimize2,
   MemoryStick,
   Pencil,
   Play,
@@ -1066,16 +1068,18 @@ const LogViewer: React.FC<{ detail: DeploymentDetail; onClose: () => void }> = (
 
 type Tab = 'overview' | 'deploys' | 'logs' | 'env' | 'domains' | 'runtime';
 
-const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; onDeleted: () => void; onBack: () => void }> = ({
+const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; onDeleted: () => void; onBack: () => void; canWrite?: boolean }> = ({
   service,
   onChanged,
   onDeleted,
   onBack,
+  canWrite = true,
 }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
   // 'dtab' (not 'tab') so embedded-in-RepoView sub-tabs never fight with the
   // repo view's own ?tab= param.
-  const [tab, setTab] = useSearchParamsTabDefault();
+  const [requestedTab, setTab] = useSearchParamsTabDefault();
+  const tab = !canWrite && !['overview', 'logs'].includes(requestedTab) ? 'overview' : requestedTab;
 
   const triggerRefresh = onChanged;
 
@@ -1180,7 +1184,7 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
             </p>
           </div>
         </div>
-        <div className="flex gap-2">
+        {canWrite && <div className="flex flex-wrap gap-2">
           {!renameEditing && (
             <button
               onClick={beginRename}
@@ -1208,7 +1212,7 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
               <Rocket className="w-3.5 h-3.5" /> Deploy latest
             </button>
           )}
-        </div>
+        </div>}
       </div>
 
       {lastFailedId != null && (
@@ -1227,7 +1231,7 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
       )}
 
       <div className="flex gap-1 border-b border-border-subtle -mt-1 overflow-x-auto scrollbar-thin">
-        {(['overview', 'deploys', 'logs', 'env', 'domains', 'runtime'] as Tab[]).map(t => (
+        {((canWrite ? ['overview', 'deploys', 'logs', 'env', 'domains', 'runtime'] : ['overview', 'logs']) as Tab[]).map(t => (
           <button
             key={t}
             data-tab={t}
@@ -1248,7 +1252,7 @@ const ServiceDetail: React.FC<{ service: DeployService; onChanged: () => void; o
       {tab === 'domains' && <DomainsPanel service={service} />}
       {tab === 'runtime' && <RuntimePanel service={service} onChanged={triggerRefresh} />}
 
-      <DangerZone service={service} onDeleted={onDeleted} />
+      {canWrite && <DangerZone service={service} onDeleted={onDeleted} />}
     </div>
   );
 };
@@ -1830,10 +1834,12 @@ const DangerZone: React.FC<{ service: DeployService; onDeleted: () => void }> = 
 // Services list (cards)
 // ---------------------------------------------------------------------------
 
-const ServiceCard: React.FC<{ svc: DeployService; onOpen: () => void; onChanged: () => void }> = ({
+const ServiceCard: React.FC<{ svc: DeployService; onOpen: () => void; onChanged: () => void; compact?: boolean; canWrite?: boolean }> = ({
   svc,
   onOpen,
   onChanged,
+  compact = false,
+  canWrite = true,
 }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
   const [strip, setStrip] = useState<UptimeResponse | null>(null);
@@ -1842,11 +1848,11 @@ const ServiceCard: React.FC<{ svc: DeployService; onOpen: () => void; onChanged:
   }, [space, repoUid, svc.id]);
 
   return (
-    <div className="border border-border-subtle rounded-lg p-4 space-y-3 hover:border-brand/40 transition cursor-pointer min-w-0" onClick={onOpen} data-testid={`service-card-${svc.name}`}>
-      <div className="flex items-center justify-between gap-2">
+    <div className={compact ? 'py-4 space-y-3 min-w-0' : 'border border-border-subtle rounded-lg p-4 space-y-3 hover:border-brand/40 transition cursor-pointer min-w-0'} onClick={onOpen} data-testid={`service-card-${svc.name}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <Rocket className="w-4 h-4 text-brand shrink-0" />
-          <span className="font-medium text-txt-primary truncate">{svc.name}</span>
+          <button type="button" aria-label={`View service ${svc.name}`} className="font-medium text-txt-primary truncate hover:text-brand" onClick={e => { e.stopPropagation(); onOpen(); }}>{svc.name}</button>
           {svc.alert ? <StatusPill status="failed" /> : <StatusPill status={svc.desired_state === 'stopped' ? 'stopped' : svc.status} />}
         </div>
         {svc.requests_24h != null && <span className="text-[10px] font-mono text-txt-tertiary shrink-0">{svc.requests_24h} req/24h</span>}
@@ -1860,12 +1866,12 @@ const ServiceCard: React.FC<{ svc: DeployService; onOpen: () => void; onChanged:
 
       <UptimeStrip buckets={(strip?.buckets || []).slice(-60)} />
 
-      <div className="flex items-center justify-between text-[11px] text-txt-tertiary font-mono">
-        <span>{svc.branch}{svc.auto_deploy ? ' · auto' : ' · manual'}</span>
-        <span>{svc.current?.short_sha || 'never deployed'}</span>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-txt-tertiary font-mono">
+        <span className="truncate">{svc.branch}{svc.auto_deploy ? ' · auto' : ' · manual'}</span>
+        <span className="shrink-0">{svc.current?.short_sha || 'never deployed'}</span>
       </div>
 
-      <div className="flex gap-2" onClick={e => e.stopPropagation()}>
+      {canWrite && <div className="flex gap-2" onClick={e => e.stopPropagation()}>
         {svc.desired_state === 'running' ? (
           <button title="Stop serving" onClick={() => api.patchDeployService(space!, repoUid!, svc.id, { desired_state: 'stopped' }).then(onChanged)} className="text-txt-tertiary hover:text-txt-primary p-1">
             <Square className="w-3.5 h-3.5" />
@@ -1876,7 +1882,7 @@ const ServiceCard: React.FC<{ svc: DeployService; onOpen: () => void; onChanged:
           </button>
         )}
         <SettingsIconActions name={svc.name} onOpen={onOpen} />
-      </div>
+      </div>}
     </div>
   );
 };
@@ -1892,10 +1898,18 @@ const SettingsIconActions: React.FC<{ name: string; onOpen: () => void }> = ({ n
 // ---------------------------------------------------------------------------
 
 // DeploymentsSection — the full deployments UI (services list, creation
-// wizard, service detail). Rendered as an embedded, collapsible section inside
-// the repo's Code view (deep-link ?deploys=1), so no standalone route:
+// wizard, service detail). Always visible in the repo's Code workspace;
 // useParams supplies space/repo from the repo route.
-export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCollapse }) => {
+interface DeploymentsSectionProps {
+  onCollapse?: () => void;
+  compact?: boolean;
+  authenticated?: boolean;
+  canWrite?: boolean;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+  defaultBranchName?: string;
+}
+export const DeploymentsSection: React.FC<DeploymentsSectionProps> = ({ onCollapse, compact = false, authenticated = true, canWrite = true, expanded = false, onExpandedChange, defaultBranchName }) => {
   const { space, repo: repoUid } = useParams<{ space: string; repo: string }>();
   const [services, setServices] = useState<DeployService[] | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -1903,12 +1917,17 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
   const [cloneFrom, setCloneFrom] = useState<DeployService | null>(null);
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [refresh, setRefresh] = useState(0);
+  const [loadError, setLoadError] = useState('');
 
   const bump = useCallback(() => setRefresh(n => n + 1), []);
 
   useEffect(() => {
-    api.getRepo(`${space}/${repoUid}`).then(r => setDefaultBranch(r.default_branch || 'main')).catch(() => {});
-  }, [space, repoUid]);
+    if (defaultBranchName) { setDefaultBranch(defaultBranchName); return; }
+    if (!authenticated) return;
+    let alive = true;
+    api.getRepo(`${space}/${repoUid}`).then(r => { if (alive) setDefaultBranch(r.default_branch || 'main'); }).catch(() => {});
+    return () => { alive = false; };
+  }, [space, repoUid, defaultBranchName, authenticated]);
 
   // ?svc=<id> deep link (space deployments board) opens that service directly.
   // Applied once, then consumed: leaving it in the URL made every services
@@ -1919,17 +1938,19 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
   useEffect(() => {
     if (!svcParam || !services) return;
     const id = Number(svcParam);
-    if (services.some(s => s.id === id)) setSelectedId(id);
+    if (services.some(s => s.id === id)) { setSelectedId(id); onExpandedChange?.(true); }
     // Consume: remove ?svc= so later refreshes keep the manual selection.
     setSearchParams(prev => {
       const next = new URLSearchParams(prev);
       next.delete('svc');
       return next;
     }, { replace: true });
-  }, [svcParam, services, setSearchParams]);
+  }, [svcParam, services, setSearchParams, onExpandedChange]);
 
   useEffect(() => {
+    if (!authenticated) return;
     let alive = true;
+    setLoadError('');
     api
       .listDeployServices(space!, repoUid!)
       .then(s => {
@@ -1937,25 +1958,24 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
         setServices(s);
         setSelectedId(id => (id != null && s.some(x => x.id === id) ? id : null));
       })
-      .catch(() => {
-        if (alive) setServices([]);
+      .catch((error: Error) => {
+        if (alive) setLoadError(error.message || 'Could not load deployments.');
       });
     return () => {
       alive = false;
     };
-  }, [space, repoUid, refresh]);
+  }, [space, repoUid, refresh, authenticated]);
 
   const selected = services?.find(s => s.id === selectedId) || null;
 
   const header = (
-    <div className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
       <div className="min-w-0">
-        <h2 className="text-lg font-bold text-txt-primary flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-txt-primary flex flex-wrap items-center gap-2">
           <Rocket className="w-5 h-5 text-brand" />
           Deployments
-          <span className="text-xs px-2 py-0.5 rounded-full bg-surface-subtle text-txt-secondary font-mono border border-border-subtle font-normal">
-            {services?.length ?? 0} services
-          </span>
+          {services && <span className="text-[11px] text-txt-tertiary font-mono font-normal">{services.length} services</span>}
+          {onExpandedChange && <button type="button" className="hidden lg:inline-flex p-1 text-txt-secondary hover:text-brand" aria-label={expanded ? 'Restore repository layout' : 'Expand deployments'} onClick={() => onExpandedChange(!expanded)}>{expanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}</button>}
           {onCollapse && (
             <button
               onClick={onCollapse}
@@ -1966,12 +1986,12 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
             </button>
           )}
         </h2>
-        <p className="text-sm text-txt-secondary mt-0.5">
-          Ship any root-directory with its own Dockerfile. Pushes to a watched branch auto-deploy; failures fall back to the last healthy release.
+        <p className="text-xs text-txt-secondary mt-1">
+          {compact ? 'Services and releases from this repository.' : 'Ship any root-directory with its own Dockerfile. Pushes to a watched branch auto-deploy; failures fall back to the last healthy release.'}
         </p>
       </div>
-      {!creating && (
-        <div className="flex items-center gap-2 shrink-0">
+      {!creating && authenticated && canWrite && !loadError && services && (
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
           {!creating && services && services.length > 0 && (
             <select
               aria-label="Duplicate an existing service"
@@ -1981,11 +2001,12 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
                 if (src) {
                   setCloneFrom(src);
                   setCreating(true);
-                  setSelectedId(null);
+                   setSelectedId(null);
+                   onExpandedChange?.(true);
                 }
               }}
               data-testid="duplicate-select"
-              className="px-3 py-2 text-sm rounded-md bg-surface-canvas border border-border-subtle text-txt-secondary hover:text-txt-primary"
+              className="px-2.5 py-1.5 text-xs max-w-full rounded-md bg-surface-canvas border border-border-subtle text-txt-secondary hover:text-txt-primary"
             >
               <option value="" disabled>Duplicate…</option>
               {services.map(s => (
@@ -1993,7 +2014,7 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
               ))}
             </select>
           )}
-          <button onClick={() => { setCloneFrom(null); setCreating(true); setSelectedId(null); }} className="px-3.5 py-2 text-sm font-medium rounded-md bg-brand text-white hover:opacity-90 inline-flex items-center gap-2">
+          <button onClick={() => { setCloneFrom(null); setCreating(true); setSelectedId(null); onExpandedChange?.(true); }} className="px-3 py-1.5 text-xs font-medium rounded-md bg-brand text-white hover:opacity-90 inline-flex items-center gap-2">
             <Plus className="w-4 h-4" /> New service
           </button>
         </div>
@@ -2004,9 +2025,9 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
   return (
     <div className="w-full min-w-0">
       {header}
-      {services === null ? (
+      {!authenticated ? <p className="py-6 text-sm text-txt-secondary"><Link to="/login" className="text-brand underline">Sign in</Link> to view this repository’s deployments.</p> : loadError ? <div role="alert" className="py-6 space-y-2 text-sm text-feedback-error-text"><p>Deployments unavailable: {loadError}</p><button type="button" onClick={bump} className="text-brand underline">Retry deployments</button></div> : services === null ? (
         <div className="py-16 text-center text-txt-tertiary"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading…</div>
-      ) : creating ? (
+      ) : creating && canWrite ? (
         <CreateWizard
           defaultBranch={defaultBranch}
           cloneFrom={cloneFrom ?? undefined}
@@ -2019,22 +2040,23 @@ export const DeploymentsSection: React.FC<{ onCollapse?: () => void }> = ({ onCo
           onCancel={() => {
             setCreating(false);
             setCloneFrom(null);
+            onExpandedChange?.(false);
           }}
         />
       ) : selected ? (
-        <ServiceDetail service={selected} onChanged={bump} onBack={() => setSelectedId(null)} onDeleted={() => { setSelectedId(null); bump(); }} />
+        <ServiceDetail key={selected.id} service={selected} canWrite={canWrite} onChanged={bump} onBack={() => { setSelectedId(null); onExpandedChange?.(false); }} onDeleted={() => { setSelectedId(null); onExpandedChange?.(false); bump(); }} />
       ) : services.length === 0 ? (
-        <div className="text-center py-14 space-y-3">
+        <div className="py-8 space-y-3">
           <p className="text-txt-secondary">No deployment services on this repository yet.</p>
-          <button onClick={() => setCreating(true)} className="px-4 py-2 text-sm rounded-md bg-brand/10 text-brand border border-brand/30 hover:bg-brand/20 inline-flex items-center gap-2">
+          {canWrite && <button onClick={() => { setCreating(true); onExpandedChange?.(true); }} className="px-4 py-2 text-sm rounded-md bg-brand/10 text-brand border border-brand/30 hover:bg-brand/20 inline-flex items-center gap-2">
             <Plus className="w-4 h-4" /> Create your first service
-          </button>
+          </button>}
           <p className="text-[11px] text-txt-tertiary">You can run multiple services from this repo — same Dockerfile with different env vars, ports, or branches.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className={compact ? 'divide-y divide-border-subtle border-y border-border-subtle' : 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4'}>
           {services.map(svc => (
-            <ServiceCard key={svc.id} svc={svc} onOpen={() => setSelectedId(svc.id)} onChanged={bump} />
+            <ServiceCard key={svc.id} svc={svc} compact={compact} canWrite={canWrite} onOpen={() => { setSelectedId(svc.id); onExpandedChange?.(true); }} onChanged={bump} />
           ))}
         </div>
       )}

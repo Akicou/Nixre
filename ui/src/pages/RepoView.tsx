@@ -1,26 +1,23 @@
 import { SourceCode } from '../components/SourceCode';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
   GitBranch,
   GitCommit,
   GitPullRequest,
   File,
-  Folder,
   History,
   Copy,
   Check,
   ChevronDown,
-  Download,
   Plus,
   Pencil,
   ArrowLeft,
   FileCode,
-  FolderGit2,
-  Rocket,
+  LayoutGrid,
   Settings
 } from 'lucide-react';
-import { api, Repository, TreeEntry, Commit, Branch, PullRequest, CommitDetail } from '../lib/api';
+import { api, Repository, Commit, Branch, PullRequest, CommitDetail, User } from '../lib/api';
 import { resolveNodeType } from '../lib/repoPath';
 import { useOutsideClick } from '../lib/useOutsideClick';
 import { PullRequestForm } from '../components/PullRequestForm';
@@ -30,7 +27,11 @@ import { FileEditor } from '../components/FileEditor';
 import { Markdown, isMarkdownFile } from '../components/Markdown';
 import { Avatar } from '../components/Avatar';
 import { DeploymentsSection } from '../pages/DeploymentsPage';
-export const RepoView: React.FC = () => {
+import { RepositoryHeader } from '../components/RepositoryHeader';
+import { RepositoryFileTree } from '../components/RepositoryFileTree';
+import { createRepositoryTreeLoader } from '../lib/repositoryTree';
+import { REPOSITORY_LAYOUTS, parseRepositoryLayout, useRepositoryLayout } from '../lib/repositoryLayout';
+export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
   // useParams values are `string | undefined`; the route only renders with
   // both segments present, so default them rather than casting away the type.
   const params = useParams();
@@ -39,18 +40,9 @@ export const RepoView: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const repoPath = `${space}/${repoUid}`;
 
-  const activeTab = searchParams.get('tab') || 'code';
-  // Deployments live inside the code view as a collapsible section. Deep-link
-  // with ?deploys=1; the legacy ?tab=deployments also opens it.
-  const deploysOpen = searchParams.get('deploys') === '1' || activeTab === 'deployments';
-  const setDeploysOpen = (open: boolean) => setSearchParams(prev => {
-    const next = new URLSearchParams(prev);
-    if (open) next.set('deploys', '1');
-    else next.delete('deploys');
-    if (next.get('tab') === 'deployments') next.delete('tab');
-    return next;
-  });
-  const currentBranch = searchParams.get('branch') || 'main';
+  // Legacy deployment links land in the same always-visible Code workspace.
+  const tabParam = searchParams.get('tab') || 'code';
+  const activeTab = tabParam === 'deployments' ? 'code' : tabParam;
   const currentPath = searchParams.get('path') || '';
   const currentNodeType = resolveNodeType(searchParams.get('type'));
   const prParam = searchParams.get('pr');
@@ -58,8 +50,8 @@ export const RepoView: React.FC = () => {
   const selectedPrNumber: number | 'new' | null = prParam === 'new' ? 'new' : prParam ? Number(prParam) : null;
 
   const [repo, setRepo] = useState<Repository | null>(null);
+  const currentBranch = searchParams.get('branch') || repo?.default_branch || 'main';
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [treeEntries, setTreeEntries] = useState<TreeEntry[]>([]);
   const [fileBlob, setFileBlob] = useState<{ content: string; name: string; size: number } | null>(null);
   const [readmeContent, setReadmeContent] = useState<string | null>(null);
   const [commits, setCommits] = useState<Commit[]>([]);
@@ -69,71 +61,90 @@ export const RepoView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const [cloneDropdownOpen, setCloneDropdownOpen] = useState(false);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [cloneProtocol, setCloneProtocol] = useState<'http' | 'ssh'>('http');
   const [editor, setEditor] = useState<{ mode: 'edit' | 'create'; path: string; content: string } | null>(null);
-  const cloneMenuRef = useRef<HTMLDivElement>(null);
   const branchMenuRef = useRef<HTMLDivElement>(null);
+  const { layout, chooseLayout, error: layoutError, saving: layoutSaving } = useRepositoryLayout(user?.uid);
+  const [deploymentsExpanded, setDeploymentsExpanded] = useState(false);
+  const [treeVersion, setTreeVersion] = useState(0);
+  const [codeLoading, setCodeLoading] = useState(false);
+  const [codeError, setCodeError] = useState('');
+  const loadTree = useMemo(() => createRepositoryTreeLoader(repoPath, currentBranch), [repoPath, currentBranch, treeVersion]);
+  const goToNode = (path: string, type: 'tree' | 'blob', branch = currentBranch) => {
+    setEditor(null);
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', 'code'); next.set('branch', branch); next.set('type', type);
+      if (path) next.set('path', path); else next.delete('path');
+      next.delete('commit'); next.delete('pr');
+      return next;
+    });
+  };
 
-  useOutsideClick(cloneMenuRef, () => setCloneDropdownOpen(false), cloneDropdownOpen);
   useOutsideClick(branchMenuRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
 
   // Load Repo Base Data
   useEffect(() => {
     if (!space || !repoUid) return;
+    let alive = true;
+    setError(''); setRepo(null); setEditor(null); setDeploymentsExpanded(false);
     setLoading(true);
     api.getRepo(repoPath)
       .then(r => {
+        if (!alive) return [];
         setRepo(r);
         return api.getBranches(repoPath);
       })
       .then(b => {
+        if (!alive) return;
         setBranches(b);
         setLoading(false);
       })
       .catch(err => {
+        if (!alive) return;
         setError(err.message || 'Failed to load repository');
         setLoading(false);
       });
+    return () => { alive = false; };
   }, [repoPath]);
 
   // Load Code / Tree / Blob
   useEffect(() => {
     if (!repo) return;
+    let alive = true;
 
     if (activeTab === 'code') {
+      setFileBlob(null); setReadmeContent(null); setCodeError(''); setCodeLoading(true);
       // Latest commit for the current path (repo/folder/file) — the
       // "who made this" line GitHub shows under the file list.
       api.getCommits(repoPath, currentBranch, 1, 1, currentPath || undefined)
-        .then(res => setLatestCommit(res.commits[0] || null))
-        .catch(() => setLatestCommit(null));
+        .then(res => { if (alive) setLatestCommit(res.commits[0] || null); })
+        .catch(() => { if (alive) setLatestCommit(null); });
 
       if (currentNodeType === 'blob') {
         // Fetch Blob
         api.getRawBlob(repoPath, currentBranch, currentPath)
           .then(blob => {
-            setFileBlob(blob);
-            setTreeEntries([]);
+            if (alive) setFileBlob(blob);
           })
-          .catch(() => setFileBlob(null));
+          .catch(err => { if (alive) setCodeError(err.message || 'Could not load this file.'); })
+          .finally(() => { if (alive) setCodeLoading(false); });
       } else {
         // Fetch Tree
         setFileBlob(null);
-        api.getTree(repoPath, currentBranch, currentPath)
-          .then(res => {
-            setTreeEntries(res.entries);
+        loadTree(currentPath)
+          .then(async entries => {
             // Check for README
-            const readmeEntry = res.entries.find(e => e.name.toLowerCase() === 'readme.md');
+            const readmeEntry = entries.find(e => e.name.toLowerCase() === 'readme.md');
             if (readmeEntry) {
               const rPath = currentPath ? `${currentPath}/${readmeEntry.name}` : readmeEntry.name;
-              api.getRawBlob(repoPath, currentBranch, rPath).then(b => setReadmeContent(b.content)).catch(() => {});
-            } else {
-              setReadmeContent(null);
+              const blob = await api.getRawBlob(repoPath, currentBranch, rPath);
+              if (alive) setReadmeContent(blob.content);
             }
           })
-          .catch(() => setTreeEntries([]));
+          .catch(err => { if (alive) setCodeError(err.message || 'Could not load the README.'); })
+          .finally(() => { if (alive) setCodeLoading(false); });
       }
     } else if (activeTab === 'commits') {
       if (commitParam) {
@@ -154,20 +165,13 @@ export const RepoView: React.FC = () => {
         .then(prs => setPullRequests(prs))
         .catch(() => setPullRequests([]));
     }
-  }, [repo, activeTab, currentBranch, currentPath, currentNodeType, commitParam]);
+    return () => { alive = false; };
+  }, [repo, activeTab, currentBranch, currentPath, currentNodeType, commitParam, loadTree]);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const getHttpCloneUrl = () => {
-    return `${window.location.origin}/git/${repoPath}.git`;
-  };
-
-  const getSshCloneUrl = () => {
-    return `ssh://git@${window.location.hostname}:3022/${repoPath}.git`;
   };
 
   const goToCommit = (sha: string) => setSearchParams({ tab: 'commits', branch: currentBranch, commit: sha });
@@ -202,11 +206,12 @@ export const RepoView: React.FC = () => {
   const pathParts = currentPath ? currentPath.split('/').filter(Boolean) : [];
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 w-full min-w-0">
+    <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 w-full min-w-0">
+      <RepositoryHeader repo={repo} space={space} branchCount={branches.length} />
       {/* Tabs — same pattern as user/org profile views */}
       <nav className="border-b border-border-subtle flex items-end gap-1 -mb-px overflow-x-auto">
         <button
-          onClick={() => { setSearchParams({ tab: 'code', branch: currentBranch, type: 'tree' }); }}
+          onClick={() => goToNode('', 'tree')}
           className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
             activeTab === 'code' ? 'border-brand text-txt-primary' : 'border-transparent text-txt-secondary hover:text-txt-primary'
           }`}
@@ -264,153 +269,13 @@ export const RepoView: React.FC = () => {
         </button>
       </nav>
 
-      <div className="py-6 grid grid-cols-1 lg:grid-cols-[296px_minmax(0,1fr)] gap-8">
-        {/* Sidebar — mirrors the profile layout */}
-        <aside className="min-w-0 space-y-4">
-          <div className="relative w-20 h-20 lg:w-[296px] lg:h-[296px]">
-            <Avatar
-              name={space}
-              url={`/api/v1/avatars/space/${encodeURIComponent(space)}`}
-              fill
-              shape="square"
-            />
-            <div className="absolute -bottom-2 -right-2 p-2.5 rounded-xl bg-surface-canvas border border-border-subtle">
-              <FolderGit2 className="w-5 h-5 text-txt-tertiary" />
-            </div>
-          </div>
-
-          <div className="min-w-0 space-y-1">
-            <h1 className="text-2xl font-bold text-txt-primary leading-tight break-words font-mono">{repo.uid}</h1>
-            <Link to={`/${space}`} className="text-lg text-txt-tertiary leading-tight hover:text-txt-brand transition break-words">
-              {space}
-            </Link>
-            <div className="flex items-center gap-2 pt-1">
-              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-border-subtle text-txt-tertiary">
-                {repo.is_public ? 'Public' : 'Private'}
-              </span>
-              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-border-subtle text-txt-tertiary">
-                Repository
-              </span>
-            </div>
-          </div>
-
-          {repo.description && (
-            <p className="text-sm text-txt-primary whitespace-pre-wrap">{repo.description}</p>
-          )}
-
-        {/* Clone Button & Dropdown */}
-        <div className="relative" ref={cloneMenuRef}>
-          <button
-            onClick={() => setCloneDropdownOpen(!cloneDropdownOpen)}
-            className="flex items-center justify-center gap-2 w-full px-3 py-1.5 rounded-md bg-brand text-white hover:bg-brand-hover text-xs font-medium transition shadow-sm"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Clone Repo</span>
-            <ChevronDown className="w-3.5 h-3.5 opacity-80" />
-          </button>
-
-          {cloneDropdownOpen && (
-            <div className="absolute left-0 mt-2 w-80 max-w-[85vw] rounded-md bg-surface-canvas border border-border-mid shadow-xl p-3 z-50 animate-pop">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-txt-primary">Clone with Git</span>
-                <div className="flex items-center rounded border border-border-subtle bg-surface-base p-0.5 text-[11px] font-mono">
-                  <button
-                    onClick={() => setCloneProtocol('http')}
-                    className={`px-2 py-0.5 rounded ${cloneProtocol === 'http' ? 'bg-brand text-white' : 'text-txt-secondary'}`}
-                  >
-                    HTTPS
-                  </button>
-                  <button
-                    onClick={() => setCloneProtocol('ssh')}
-                    className={`px-2 py-0.5 rounded ${cloneProtocol === 'ssh' ? 'bg-brand text-white' : 'text-txt-secondary'}`}
-                  >
-                    SSH
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1.5 p-1.5 rounded bg-surface-base border border-border-subtle">
-                <input
-                  type="text"
-                  readOnly
-                  value={cloneProtocol === 'http' ? getHttpCloneUrl() : getSshCloneUrl()}
-                  className="w-full bg-transparent text-xs font-mono text-txt-primary outline-none truncate"
-                />
-                <button
-                  onClick={() => copyToClipboard(cloneProtocol === 'http' ? getHttpCloneUrl() : getSshCloneUrl())}
-                  className="p-1 rounded hover:bg-surface-subtle text-txt-secondary hover:text-txt-primary transition shrink-0"
-                  title="Copy to clipboard"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-txt-open" /> : <Copy className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-
-              {cloneProtocol === 'http' ? (
-                !repo.is_public ? (
-                  <p className="text-[11px] leading-relaxed text-txt-tertiary mt-2">
-                    When prompted, log in with your username and an{' '}
-                    <span className="text-txt-secondary font-medium">access token</span> as the password — account
-                    passwords are not accepted for git. Create one in{' '}
-                    <a href="/settings" className="text-brand hover:underline">Settings → Access Tokens</a>.
-                  </p>
-                ) : (
-                  <p className="text-[11px] leading-relaxed text-txt-tertiary mt-2">
-                    This repository is public — anyone can clone it without credentials.
-                  </p>
-                )
-              ) : (
-                <p className="text-[11px] leading-relaxed text-txt-tertiary mt-2">
-                  Requires an SSH public key registered in{' '}
-                  <a href="/settings" className="text-brand hover:underline">Settings → SSH Keys</a>.
-                  Port 3022 must be reachable.
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Meta */}
-        <div className="space-y-1.5 pt-1 text-xs text-txt-tertiary">
-          <div className="flex items-center gap-2">
-            <GitBranch className="w-3.5 h-3.5 shrink-0" />
-            <span>default branch <span className="font-mono text-txt-secondary">{repo.default_branch}</span></span>
-          </div>
-          <div className="flex items-center gap-2">
-            <GitPullRequest className="w-3.5 h-3.5 shrink-0" />
-            <span>{repo.num_open_pulls} open pull request{repo.num_open_pulls === 1 ? '' : 's'}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <FolderGit2 className="w-3.5 h-3.5 shrink-0" />
-            <span>{branches.length} branch{branches.length === 1 ? '' : 'es'}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setDeploysOpen(!deploysOpen)}
-            data-testid="deployments-sidebar-toggle"
-            className={`w-full flex items-center gap-2 rounded-md px-2 py-1.5 -mx-2 text-left transition ${
-              deploysOpen
-                ? 'bg-brand/10 text-brand'
-                : 'text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle'
-            }`}
-          >
-            <Rocket className="w-3.5 h-3.5 shrink-0" />
-            <span className={deploysOpen ? 'font-medium' : ''}>Deployments</span>
-            <ChevronDown className={`w-3.5 h-3.5 ml-auto transition-transform ${deploysOpen ? 'rotate-180' : ''}`} />
-          </button>
-        </div>
-      </aside>
-
-      {/* Content column */}
-      <div className="min-w-0 space-y-6">
-      {/* Deployments — embedded section, toggled from the sidebar; renders at
-          the top of the content column when open */}
-      {deploysOpen && <DeploymentsSection onCollapse={() => setDeploysOpen(false)} />}
+      <div className="py-6 min-w-0 space-y-6">
 
       {/* TAB CONTENT: CODE */}
       {activeTab === 'code' && (
-        <div className="space-y-6">
+        <div className="space-y-6 min-w-0">
           {/* Branch & Path Bar */}
-          <div className="flex items-center justify-between gap-4 min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-4 min-w-0">
             <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
               {/* Branch Picker */}
               <div className="relative" ref={branchMenuRef}>
@@ -432,7 +297,7 @@ export const RepoView: React.FC = () => {
                       <button
                         key={b.name}
                         onClick={() => {
-                          setSearchParams({ tab: 'code', branch: b.name, type: 'tree' });
+                          goToNode('', 'tree', b.name);
                           setBranchDropdownOpen(false);
                         }}
                         className="w-full text-left px-3 py-1.5 text-xs font-mono text-txt-primary hover:bg-surface-subtle transition flex items-center justify-between"
@@ -448,7 +313,7 @@ export const RepoView: React.FC = () => {
               {/* Breadcrumb Path */}
               <div className="flex items-center gap-1.5 text-xs font-mono text-txt-secondary min-w-0 overflow-x-auto flex-nowrap scrollbar-thin max-w-full">
                 <button
-                  onClick={() => setSearchParams({ tab: 'code', branch: currentBranch, type: 'tree' })}
+                  onClick={() => goToNode('', 'tree')}
                   className="hover:text-txt-brand transition"
                 >
                   {repo.uid}
@@ -459,7 +324,7 @@ export const RepoView: React.FC = () => {
                     <React.Fragment key={partPath}>
                       <span className="text-txt-tertiary">/</span>
                       <button
-                        onClick={() => setSearchParams({ tab: 'code', branch: currentBranch, path: partPath, type: 'tree' })}
+                        onClick={() => goToNode(partPath, index === pathParts.length - 1 ? currentNodeType : 'tree')}
                         className={`hover:text-txt-brand transition ${index === pathParts.length - 1 ? 'font-semibold text-txt-primary' : ''}`}
                       >
                         {part}
@@ -469,6 +334,13 @@ export const RepoView: React.FC = () => {
                 })}
               </div>
             </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="inline-flex items-center gap-2 text-xs text-txt-secondary">
+                <LayoutGrid className="w-3.5 h-3.5" /><span>Layout</span>
+                <select aria-label="Repository layout" value={layout} onChange={e => { chooseLayout(parseRepositoryLayout(e.target.value)); setDeploymentsExpanded(false); }} className="rounded-md border border-border-subtle bg-surface-canvas px-2 py-1.5 text-txt-primary">
+                  {REPOSITORY_LAYOUTS.map(option => <option key={option.id} value={option.id}>{option.label}{option.id === 'split' ? ' (default)' : ''}</option>)}
+                </select>
+              </label>
             {repo.can_write && currentNodeType !== 'blob' && (
               <button
                 type="button"
@@ -483,7 +355,23 @@ export const RepoView: React.FC = () => {
                 Add file
               </button>
             )}
+            </div>
           </div>
+
+          {layoutError && <p role="alert" className="text-xs text-feedback-error-text">{layoutError}</p>}
+          {layoutSaving && <p role="status" className="text-xs text-txt-tertiary">Saving layout…</p>}
+          <div className="repo-workspace" data-testid="repository-workspace" data-layout={layout} data-deployments-expanded={deploymentsExpanded}>
+            <section className="repo-workspace-tree" aria-label="Repository structure">
+              <div className="flex items-center justify-between border-b border-border-subtle pb-3 mb-2">
+                <h2 className="text-sm font-semibold text-txt-primary">Files</h2>
+                <button type="button" onClick={() => setTreeVersion(n => n + 1)} className="text-xs text-txt-secondary hover:text-brand">Refresh files</button>
+              </div>
+              <RepositoryFileTree key={`${repoPath}:${currentBranch}:${treeVersion}`} loadEntries={loadTree} selectedPath={currentPath} selectedType={currentNodeType} onSelect={goToNode} onHistory={goToPathHistory} />
+            </section>
+            <section className="repo-workspace-deployments" aria-label="Repository deployments">
+              <DeploymentsSection key={repoPath} authenticated={!!user} canWrite={repo.can_write === true} compact expanded={deploymentsExpanded} onExpandedChange={setDeploymentsExpanded} defaultBranchName={repo.default_branch} />
+            </section>
+            <section className="repo-workspace-preview space-y-4" aria-label="File preview">
 
           {/* Latest commit line — who made the most recent change here */}
           {latestCommit && (
@@ -511,11 +399,11 @@ export const RepoView: React.FC = () => {
               baseSha={latestCommit?.sha}
               onCancel={() => setEditor(null)}
               onCommitted={({ branch, path }) => {
-                setEditor(null);
-                setSearchParams({ tab: 'code', branch, path, type: 'blob' });
+                setTreeVersion(n => n + 1);
+                goToNode(path, 'blob', branch);
               }}
             />
-          ) : fileBlob ? (
+          ) : codeLoading ? <p role="status" className="py-6 text-sm text-txt-tertiary">Loading preview…</p> : codeError ? <p role="alert" className="py-6 text-sm text-feedback-error-text">{codeError} <button type="button" onClick={() => setTreeVersion(n => n + 1)} className="underline">Retry preview</button></p> : fileBlob ? (
             <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden">
               <div className="p-3 bg-surface-base border-b border-border-subtle flex items-center justify-between gap-2 text-xs font-mono min-w-0">
                 <div className="flex items-center gap-2 text-txt-primary font-semibold min-w-0">
@@ -560,75 +448,10 @@ export const RepoView: React.FC = () => {
                 </div>
               )}
             </div>
-          ) : (
-            /* File Tree Table */
-            <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden">
-              <table className="w-full text-left text-xs font-mono divide-y divide-border-subtle">
-                <thead className="bg-surface-base text-txt-tertiary">
-                  <tr>
-                    <th className="py-2.5 px-4 font-normal">Name</th>
-                    <th className="py-2.5 px-4 font-normal text-right">Commit / SHA</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border-subtle">
-                  {currentPath && (
-                    <tr
-                      onClick={() => {
-                        const parentPath = pathParts.slice(0, -1).join('/');
-                        setSearchParams({ tab: 'code', branch: currentBranch, path: parentPath, type: 'tree' });
-                      }}
-                      className="hover:bg-surface-subtle/50 cursor-pointer transition"
-                    >
-                      <td className="py-2 px-4 flex items-center gap-2 text-txt-brand">
-                        <Folder className="w-3.5 h-3.5 text-brand" />
-                        <span>..</span>
-                      </td>
-                      <td className="py-2 px-4 text-right text-txt-tertiary"></td>
-                    </tr>
-                  )}
-                  {treeEntries.map(entry => {
-                    const nextPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
-                    return (
-                      <tr
-                        key={entry.name}
-                        onClick={() => {
-                          setSearchParams({ tab: 'code', branch: currentBranch, path: nextPath, type: entry.type });
-                        }}
-                        className="hover:bg-surface-subtle/50 cursor-pointer transition group"
-                      >
-                        <td className="py-2.5 px-4 flex items-center gap-2.5">
-                          {entry.type === 'tree' ? (
-                            <Folder className="w-4 h-4 text-brand shrink-0" />
-                          ) : (
-                            <File className="w-4 h-4 text-txt-tertiary shrink-0" />
-                          )}
-                          <span className={`hover:underline ${entry.type === 'tree' ? 'font-medium text-txt-primary' : 'text-txt-secondary'}`}>
-                            {entry.name}
-                          </span>
-                          <button
-                            onClick={e => {
-                              e.stopPropagation();
-                              goToPathHistory(nextPath);
-                            }}
-                            className="ml-2 p-1 rounded hover:bg-surface-subtle text-txt-tertiary hover:text-txt-primary transition opacity-0 group-hover:opacity-100"
-                            title="History of this path"
-                          >
-                            <History className="w-3.5 h-3.5" />
-                          </button>
-                        </td>
-                        <td className="py-2.5 px-4 text-right text-txt-tertiary font-mono">
-                          {entry.sha.slice(0, 7)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          ) : !readmeContent && <p className="py-6 text-sm text-txt-tertiary">Select a file from the tree to preview its contents.</p>}
 
           {/* README Rendered Box */}
-          {readmeContent && !fileBlob && !editor && (
+          {readmeContent && !fileBlob && !editor && !codeLoading && (
             <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden mt-6">
               <div className="p-3 bg-surface-base border-b border-border-subtle flex items-center gap-2 text-xs font-mono font-semibold text-txt-primary">
                 <File className="w-4 h-4 text-brand" />
@@ -639,6 +462,8 @@ export const RepoView: React.FC = () => {
               </div>
             </div>
           )}
+            </section>
+          </div>
         </div>
       )}
 
@@ -802,7 +627,6 @@ export const RepoView: React.FC = () => {
           onUpdated={setRepo}
         />
       )}
-      </div>
       </div>
     </div>
   );

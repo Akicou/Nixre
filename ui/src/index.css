@@ -2,6 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+/* One mounted workspace, rearranged without losing tree or deployment drafts. */
+.repo-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "tree" "deployments" "preview";
+  gap: 2rem;
+  align-items: start;
+}
+.repo-workspace-tree { grid-area: tree; min-width: 0; }
+.repo-workspace-deployments { grid-area: deployments; min-width: 0; }
+.repo-workspace-preview { grid-area: preview; min-width: 0; }
+@media (min-width: 1024px) {
+  .repo-workspace {
+    grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.7fr);
+    grid-template-areas: "tree deployments" "preview preview";
+  }
+  .repo-workspace-deployments { border-left: 1px solid var(--color-border-subtle); padding-left: 2rem; }
+}
+@media (min-width: 1280px) {
+  .repo-workspace[data-layout="columns"] {
+    grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr) minmax(320px, 1fr);
+    grid-template-areas: "tree preview deployments";
+  }
+  .repo-workspace[data-layout="columns"] .repo-workspace-preview { border-left: 1px solid var(--color-border-subtle); padding-left: 2rem; }
+  .repo-workspace[data-layout="columns"][data-deployments-expanded="true"] {
+    grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr) minmax(320px, 1fr);
+    grid-template-areas: "tree deployments deployments" "preview preview preview";
+  }
+  .repo-workspace[data-deployments-expanded="true"] .repo-workspace-preview { border-left: 0; padding-left: 0; }
+}
+
 @layer base {
   * {
     border-color: var(--color-border-subtle);
