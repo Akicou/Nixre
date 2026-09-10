@@ -3,34 +3,72 @@
 @tailwind utilities;
 
 /* One mounted workspace, rearranged without losing tree or deployment drafts. */
+.repo-workspace-viewport {
+  max-width: 100%;
+  overflow-x: auto;
+  padding-block: 2px;
+}
 .repo-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas: "tree" "deployments" "preview";
-  gap: 2rem;
+  gap: clamp(1rem, 2.5vw, 2rem);
   align-items: start;
 }
 .repo-workspace-tree { grid-area: tree; min-width: 0; }
 .repo-workspace-deployments { grid-area: deployments; min-width: 0; }
 .repo-workspace-preview { grid-area: preview; min-width: 0; }
+.repo-workspace[data-layout="columns"] {
+  /* An explicit selection never silently becomes Split view at a breakpoint. */
+  min-width: 824px;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(300px, 1.6fr) minmax(280px, 1fr);
+  grid-template-areas: "tree preview deployments";
+}
+.repo-workspace[data-layout="columns"] > .repo-workspace-preview,
+.repo-workspace[data-layout="columns"] > .repo-workspace-deployments {
+  border-left: 1px solid var(--color-border-subtle);
+  padding-left: 1rem;
+}
+.repo-workspace[data-layout="preview-left"] { grid-template-areas: "preview" "tree" "deployments"; }
+.repo-workspace[data-layout="stacked"] { grid-template-areas: "tree" "preview" "deployments"; }
+.repo-workspace[data-layout="columns"][data-deployments-expanded="true"] {
+  grid-template-areas: "tree deployments deployments" "preview preview preview";
+}
+.repo-workspace[data-layout="columns"][data-deployments-expanded="true"] > .repo-workspace-preview {
+  border-left: 0;
+  padding-left: 0;
+}
+@media (min-width: 768px) {
+  .repo-workspace[data-layout="preview-left"] {
+    grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
+    grid-template-areas: "preview tree" "preview deployments";
+    grid-template-rows: auto 1fr;
+  }
+  .repo-workspace[data-layout="preview-left"] > .repo-workspace-tree,
+  .repo-workspace[data-layout="preview-left"] > .repo-workspace-deployments {
+    border-left: 1px solid var(--color-border-subtle);
+    padding-left: 1rem;
+  }
+}
 @media (min-width: 1024px) {
-  .repo-workspace {
+  .repo-workspace[data-layout="split"] {
     grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.7fr);
     grid-template-areas: "tree deployments" "preview preview";
   }
-  .repo-workspace-deployments { border-left: 1px solid var(--color-border-subtle); padding-left: 2rem; }
-}
-@media (min-width: 1280px) {
-  .repo-workspace[data-layout="columns"] {
-    grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr) minmax(320px, 1fr);
-    grid-template-areas: "tree preview deployments";
+  .repo-workspace[data-layout="split"] > .repo-workspace-deployments {
+    border-left: 1px solid var(--color-border-subtle);
+    padding-left: 2rem;
   }
-  .repo-workspace[data-layout="columns"] .repo-workspace-preview { border-left: 1px solid var(--color-border-subtle); padding-left: 2rem; }
-  .repo-workspace[data-layout="columns"][data-deployments-expanded="true"] {
-    grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr) minmax(320px, 1fr);
-    grid-template-areas: "tree deployments deployments" "preview preview preview";
+  .repo-workspace[data-layout="split"][data-deployments-expanded="true"],
+  .repo-workspace[data-layout="preview-left"][data-deployments-expanded="true"] {
+    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-areas: "tree deployments" "preview preview";
+    grid-template-rows: auto;
   }
-  .repo-workspace[data-deployments-expanded="true"] .repo-workspace-preview { border-left: 0; padding-left: 0; }
+  .repo-workspace[data-layout="preview-left"][data-deployments-expanded="true"] > .repo-workspace-tree {
+    border-left: 0;
+    padding-left: 0;
+  }
 }
 
 @layer base {

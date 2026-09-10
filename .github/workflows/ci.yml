@@ -120,6 +120,23 @@ jobs:
           fi
           echo "ui/dist is up to date."
 
+      - name: Install browser for responsive layout tests
+        working-directory: ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify repository layouts in Chromium
+        working-directory: ui
+        run: npm run test:layouts
+
+      - name: Preserve browser test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repository-layout-diagnostics
+          path: ui/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Cheap guardrails for the rules that are easiest to break by accident.
   hygiene:
     name: Repo hygiene

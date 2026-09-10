@@ -337,7 +337,7 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
             <div className="flex flex-wrap items-center gap-3">
               <label className="inline-flex items-center gap-2 text-xs text-txt-secondary">
                 <LayoutGrid className="w-3.5 h-3.5" /><span>Layout</span>
-                <select aria-label="Repository layout" value={layout} onChange={e => { chooseLayout(parseRepositoryLayout(e.target.value)); setDeploymentsExpanded(false); }} className="rounded-md border border-border-subtle bg-surface-canvas px-2 py-1.5 text-txt-primary">
+                <select aria-label="Repository layout" aria-describedby="repository-layout-description" value={layout} onChange={e => { chooseLayout(parseRepositoryLayout(e.target.value)); setDeploymentsExpanded(false); }} className="rounded-md border border-border-subtle bg-surface-canvas px-2 py-1.5 text-txt-primary">
                   {REPOSITORY_LAYOUTS.map(option => <option key={option.id} value={option.id}>{option.label}{option.id === 'split' ? ' (default)' : ''}</option>)}
                 </select>
               </label>
@@ -358,8 +358,10 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
             </div>
           </div>
 
+          <p id="repository-layout-description" className="text-xs text-txt-tertiary">{REPOSITORY_LAYOUTS.find(option => option.id === layout)?.description}</p>
           {layoutError && <p role="alert" className="text-xs text-feedback-error-text">{layoutError}</p>}
           {layoutSaving && <p role="status" className="text-xs text-txt-tertiary">Saving layout…</p>}
+          <div className="repo-workspace-viewport" role="region" aria-label="Repository workspace" tabIndex={layout === 'columns' ? 0 : undefined}>
           <div className="repo-workspace" data-testid="repository-workspace" data-layout={layout} data-deployments-expanded={deploymentsExpanded}>
             <section className="repo-workspace-tree" aria-label="Repository structure">
               <div className="flex items-center justify-between border-b border-border-subtle pb-3 mb-2">
@@ -369,7 +371,7 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
               <RepositoryFileTree key={`${repoPath}:${currentBranch}:${treeVersion}`} loadEntries={loadTree} selectedPath={currentPath} selectedType={currentNodeType} onSelect={goToNode} onHistory={goToPathHistory} />
             </section>
             <section className="repo-workspace-deployments" aria-label="Repository deployments">
-              <DeploymentsSection key={repoPath} authenticated={!!user} canWrite={repo.can_write === true} compact expanded={deploymentsExpanded} onExpandedChange={setDeploymentsExpanded} defaultBranchName={repo.default_branch} />
+              <DeploymentsSection key={repoPath} authenticated={!!user} canWrite={repo.can_write === true} compact expanded={deploymentsExpanded} onExpandedChange={layout === 'stacked' ? undefined : setDeploymentsExpanded} defaultBranchName={repo.default_branch} />
             </section>
             <section className="repo-workspace-preview space-y-4" aria-label="File preview">
 
@@ -463,6 +465,7 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
             </div>
           )}
             </section>
+          </div>
           </div>
         </div>
       )}

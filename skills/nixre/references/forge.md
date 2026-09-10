@@ -12,7 +12,7 @@ Everything here is first-class in `nixre-core` (not a plugin).
 
 - List/create under `GET/POST /api/v1/repos` (scoped to a space) and `GET /spaces/:spaceUid/repos`.
 - Sub-resources: `content`, `tree`, `raw`, `commits`, `branches`, `compare`, `transfer`.
-- A repo's UI lives under `/{space}/{repo}`. A compact repository header sits above the tab navigation. Code shows an expandable file tree and deployments immediately. The account-saved Layout selector offers Split view (default: preview below) and Three columns on wide desktops. Layout changes preserve folder expansion and editing state.
+- A repo's UI lives under `/{space}/{repo}`. A compact repository header sits above the tab navigation. Code shows an expandable file tree and deployments immediately. The account-saved Layout selector offers Split view (default: preview below), Three columns, Preview left, and Stacked. Three columns uses horizontal workspace scrolling when needed rather than reverting to another layout. Layout changes preserve folder expansion and editing state.
 
 ## Pull requests
 

@@ -3,12 +3,14 @@ import { getAllPrefs, putPref } from './syncApi';
 
 export const REPOSITORY_LAYOUTS = [
   { id: 'split', label: 'Split view', description: 'Files and deployments side by side; preview below.' },
-  { id: 'columns', label: 'Three columns', description: 'File tree, preview, and deployments on wide screens.' },
+  { id: 'columns', label: 'Three columns', description: 'File tree, preview, and deployments side by side. Scroll the workspace horizontally on smaller screens.' },
+  { id: 'preview-left', label: 'Preview left', description: 'Large file preview on the left, with files and deployments on the right.' },
+  { id: 'stacked', label: 'Stacked', description: 'Full-width files, preview, and deployments arranged vertically.' },
 ] as const;
 export type RepositoryLayout = typeof REPOSITORY_LAYOUTS[number]['id'];
 export const REPOSITORY_LAYOUT_KEY = 'repository_layout';
 export function parseRepositoryLayout(value: unknown): RepositoryLayout {
-  return value === 'columns' ? 'columns' : 'split';
+  return REPOSITORY_LAYOUTS.find(layout => layout.id === value)?.id ?? 'split';
 }
 
 /** Account-scoped, like the other UI preferences; guest choices last this visit. */
