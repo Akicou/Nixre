@@ -1,6 +1,6 @@
 // Live deployment events over SSE — same fetch-reader pattern as agentJobs.ts
 // (Authorization header required, so native EventSource can't be used).
-import { api } from './api';
+import { deploymentServicesPath } from './api';
 
 export interface DeployEvent {
   type: string; // log | status | metrics | uptime | hello
@@ -15,8 +15,8 @@ export interface DeployEvent {
   metrics?: { cpuPctOfLimit: number; memUsedBytes: number; memPctOfLimit: number };
 }
 
-export function deployEventsUrl(space: string, repo: string, serviceId: number): string {
-  return `/api/v1/repos/${space}/${repo}/+/deployments/services/${serviceId}/events`;
+export function deployEventsUrl(space: string, repo: string | null, serviceId: number): string {
+  return `/api/v1${deploymentServicesPath(space, repo)}/${serviceId}/events`;
 }
 
 /**
@@ -26,7 +26,7 @@ export function deployEventsUrl(space: string, repo: string, serviceId: number):
  */
 export function subscribeDeployEvents(
   space: string,
-  repo: string,
+  repo: string | null,
   serviceId: number,
   onEvent: (evt: DeployEvent) => void,
 ): () => void {

@@ -59,6 +59,13 @@ test('archiveSpec builds subtree revspecs', () => {
   assert.equal(archiveSpec('abc123', 'apps/web'), 'abc123:apps/web');
 });
 
+test('Dockerfile detection includes llama.cpp cpu.Dockerfile suffixes under the build context', () => {
+  const tree = ['.devops/cpu.Dockerfile', '.devops/cuda.Dockerfile', '.devops/Dockerfile.cpu',
+    '.devops/Dockerfile.txt.bak', 'outside/cpu.Dockerfile', '.devops/not-a-dockerfile'];
+  assert.deepEqual(filterDockerfiles(tree, '.devops').map(d => d.file).sort(),
+    ['Dockerfile.cpu', 'Dockerfile.txt.bak', 'cpu.Dockerfile', 'cuda.Dockerfile']);
+});
+
 const ROUTES = [
   { host: 'app.example.com', serviceId: 7 },
   { host: 'api.example.com', serviceId: 3 },
@@ -125,6 +132,10 @@ test('naming helpers produce docker-safe deterministic values', () => {
   assert.match(containerName(12, 34), /^nixre-app-[a-f0-9]{10}$/);
   assert.equal(containerName(12, 34), containerName(12, 34));
   assert.notEqual(containerName(12, 34), containerName(12, 35));
+  assert.equal(containerName('12', '34'), containerName(12, 34));
+  assert.equal(makeImageTag('12', '34'), makeImageTag(12, 34));
+  assert.equal(makeImageTag('9007199254740993', '9007199254740995'),
+    'nixre-app-svc9007199254740993-dep9007199254740995:nixre');
 });
 
 test('shortSha truncates display shas', () => {

@@ -15,7 +15,7 @@ Nixre runs its own backend (nixre-core, Node + PostgreSQL), its own git storage 
 - **Spaces**: multi-tenant workspaces with membership-based access control.
 - **Personal access tokens and SSH keys**: mint PATs (returned once, stored hashed) and manage SSH public keys with fingerprints.
 - **Plugin system**: bundled plugins stay inert until enabled. The Nixre Assistant is an AI engineering copilot. Plugin state is account-scoped and server-persisted.
-- **Deployments**: ship any root-directory of a repo as a Docker service (you bring the Dockerfile — Nixre never invents the build). Push-to-branch auto-deploys with automatic fallback to the last healthy release, live build/deploy logs over SSE, Railway-style encrypted env vars, per-service CPU/RAM limits with live usage bars, HTTP request logs that preserve failures by status code by default, uptime/downtime charts, and custom domains routed through a central proxy port (`:3003`) with copy-paste DNS guidance for host Caddy/Nginx or Cloudflare Tunnel.
+- **Deployments**: run hosted-repo Docker builds or standalone space services from public HTTPS Git and container images, with guided llama.cpp and PostgreSQL 16/17 setup. The space Deployments tab lists services and offers a three-step New service flow; existing repo views and routes remain. Repo blue/green deployments retain push automation and fallback to the previous healthy release; standalone services use stop/start (`recreate`) releases and a stable internal hostname. Services include encrypted env vars, CPU/RAM limits, build/status events, logs, health metrics, and optional HTTP domains through the central proxy (`:3003`). Managed volumes are retained, not automatically backed up. See [deployment behavior and runtime options](docs/deployments-runtime.md).
 
 Plugins are gated twice: the operator enables a plugin for the instance, and each user toggles it on from **Plugins** (`/plugins`). Every plugin is disabled by default.
 
@@ -246,28 +246,141 @@ git.yourdomain.com {
 
 Restart Caddy (`sudo systemctl restart caddy`). It completes the ACME HTTP-01 challenge through the Sunrise box and serves a trusted certificate automatically.
 
-## Deployments (Docker apps from your repos)
+## Deployments (repos and standalone services)
 
-Deploy any subdirectory of a hosted repo as a long-running service. **You bring the Dockerfile** — Nixre only detects and builds what you point it at, so a monorepo can ship many services from one repository.
+Deploy a hosted-repo subdirectory, a public external Git source, or a container
+image as a long-running service. **You bring the Dockerfile** for Git builds;
+Nixre does not invent the build. Standalone services belong to a space without
+creating a forge repository.
 
-### How it works
+### Create a standalone service
 
-0. **Organization board:** the space's **Deployments** tab shows every service in the space as a Railway-style card (status, domain, last deploy time/trigger) with a live Activity feed — the fastest way to see everything an organization is shipping. Cards open the service in its repo.
-1. Open a repo → its always-visible **Deployments** section → *New service*. A repo can host **multiple services** — same Dockerfile with different env vars, ports, or branches. **Duplicate…** clones an existing service's config and secrets into the wizard; just rename and adjust.
-2. Pick the **root directory**, hit **Detect Dockerfiles**, choose one, set the container port, CPU/RAM limits, and env vars.
-3. Every push to the watched branch auto-deploys (`auto_deploy` per service), or deploy manually at any ref/sha.
-4. Builds stream live over SSE; releases are blue/green — the new container must answer health probes before it receives traffic. **A failed build/release never touches the serving container**: traffic keeps flowing on the previous release while a red banner warns you about the failure. From history you can inspect logs, redeploy, roll back to an older healthy release, or delete records.
-5. On restart (server reboot included) nixre-core reconciles state and recreates service containers from their stored images — `restart: unless-stopped` plus a boot sweep mean deployments come back up with Nixre itself.
+Open a space's **Deployments** tab, then **New service**. The searchable list
+includes repo services and standalone services, with recent activity. Standalone
+details open in the space; repo entries still open their repo deployment view.
+
+1. **Source:** choose External Git, Container image, llama.cpp, or PostgreSQL.
+   External Git takes a public HTTPS URL and a branch/full ref; the pull-request
+   option produces `refs/pull/123/head`. For tags use `refs/tags/v1.2.3`, not a
+   short tag name. Image sources take an image tag or digest.
+2. **Configure:** set a name, CPU/RAM limits, and the relevant source/runtime
+   fields. For Git, explicitly choose the build root, Dockerfile relative to
+   that root, and optional multi-stage build target. Generic Git/image services
+   offer a port, health check, command, env vars, and optional managed volume.
+   Internal networking is the default; opt into HTTP routing deliberately.
+3. **Review:** inspect the source, runtime, and mounts, then **Create and deploy**.
+   Creation stores configuration first; a separate deployment request resolves
+   Git/pulls an image. The resolved Git commit appears after the build, not in
+   the review. If the deployment request fails after creation, open the existing
+   service or retry its deployment instead of creating a duplicate.
+
+**External Git requirements.** `github.com` is allowed by default;
+`NIXRE_DEPLOY_GIT_HOSTS` adds exact public DNS hostnames. HTTPS port 443 only:
+no credential URLs, redirects, SSH, private-repo auth, submodules, or LFS fetches.
+DNS must be public and is pinned for the fetch. Core needs Git 2.37+ (installed
+from the maintained distribution package in the core image); external builds
+require a Linux amd64/arm64 Docker daemon. Source acquisition uses at most two
+leases per core process, a 120-second acquisition/archive deadline, and 1 GiB
+temporary-file/archive limits. Temporary-file usage is polled, not a disk quota.
+There are no automatic external Git or image updates.
+
+**llama.cpp.** The preset is an editable Git build, initially using the upstream
+CPU Dockerfile and `server` target. An instance admin must **type an existing
+absolute Linux host GGUF path** under `NIXRE_DEPLOY_BIND_ALLOWLIST`; the file is
+mounted read-only at `/models/model.gguf`. There is no filesystem picker, upload,
+or automatic model/hardware detection. NVIDIA mode requests
+`runtime_options.host_config.gpus: "all"`, requires instance-admin permission
+and a working host NVIDIA runtime/Container Toolkit, and suggests the CUDA
+Dockerfile. Review paths, entrypoint, memory, and context for the selected ref
+and model. CPU mode also needs permission for the host mount.
+
+**PostgreSQL 16/17.** Select a major (17 by default), database, and user. The server
+generates and encrypts the initialization password; authorized writers can reveal
+or copy the connection URI after creation. The template is internal on 5432,
+with Docker `pg_isready` health and volume `nixre-service-{id}-data` at
+`/var/lib/postgresql/data`. Stop/delete retain that volume, but deletion removes
+service metadata and stored credentials. There are no automatic backups or disk
+quotas. The image/major, initialization variables, port, runtime, and storage are
+locked: upgrades need a new service and explicit data migration/restore, not
+PATCH. SQL credential rotation is separate. Image rollback is not database
+rollback; template/managed-volume rollback and historical redeploy are disabled.
+
+### Apply, rebuild, and recover
+
+Standalone **Settings / Apply runtime** reuses the current healthy stored image
+with current runtime settings and env. Save settings first. **Rebuild and deploy**
+for Git fetches/builds current source; **Deploy image** pulls the configured image
+and pins the resolved image ID to a Nixre-owned release tag. Apply and restart
+recovery do not refresh an upstream image tag or Git ref.
+
+All standalone releases use **recreate**: the old container stops before its
+replacement starts, with downtime and a stable apps-network alias
+`nixre-svc-{id}`. Builds/pulls that fail before cutover leave the previous release
+alone. Once cutover starts, a failure or interruption leaves the service stopped
+for explicit recovery, including after a core restart. Inspect logs and retained
+data before requesting a new deploy; Start cannot resurrect a release whose safe
+current pointer was cleared. Retaining data does not make it safe to revert an image.
+
+**API:** `/api/v1/spaces/{space}/deployments/services` is the canonical service
+base, with `/{id}` config/lifecycle, `/{id}/deploy`, `/{id}/deployments`, env,
+events, logs, stats, uptime, and domain suffixes. POST creates config only; the
+wizard then POSTs `/{id}/deploy`. Standalone access requires space membership
+or instance-admin access even in public spaces. The existing repo-scoped API
+continues to work. See [the API and runtime reference](docs/deployments-runtime.md)
+for fields, permissions, health checks, mount policy, and recovery limits.
+
+### Hosted-repo deployments
+
+Open a repo's always-visible **Deployments** section and choose **New service**.
+Pick the root, use **Detect Dockerfiles**, and set branch, port, limits, and env.
+A repo can host multiple services; **Duplicate...** copies config and secrets
+into the repo wizard. Push-to-branch automation remains repo-only. Existing
+blue/green services keep the previous healthy release serving if a candidate
+fails, and switch proxy traffic only after health checks pass. They do not expose
+the standalone stable alias. Do not assume this fallback for recreate services.
 
 Deployments are **visible immediately in the repo's Code view**, beside an expandable file tree on desktop. The **Layout** selector remembers each user's choice: **Split view** (default, file/README preview below), **Three columns** (side by side, with workspace scrolling on small screens), **Preview left**, or **Stacked**. See [repository workspace layouts](docs/repository-layouts.md). Existing `?deploys=1` and `?tab=deployments` links remain supported.
 
-Environment variables are editable either as individual variables or as a whole `.env` file, in **two places**: the create wizard has a **Paste .env** mode (serialized rows → editable buffer → validation → merged back before create), and every service's env tab has a full **.env file** editor with client-side validation (valid names `[A-Za-z_][a-zA-Z0-9_]*`, no duplicates, ≤100 vars, `KEY=value` with optional `export` prefix, quotes stripped, `#` comments and blank lines allowed but not stored) before anything reaches the API; the backend re-validates on `PUT …/env`. Saving is a full replace and takes effect on the next deploy. The deployments workspace is embedded in the repo Code view.
+Repo env editors retain row editing and **Paste .env** / **.env file** modes.
+Standalone creation accepts `.env` text; its Environment view reveals individual
+keys and saves variable upserts without replaying masked secrets. API PATCH env
+updates are partial merges; PUT env is full replacement except for protected
+Postgres initialization values. Values are encrypted at rest and take effect on
+the next container launch. Apply runtime uses the current image without a rebuild.
+
+### Publish the feature
+
+Rebuild/restart core with `docker compose up -d --build nixre-core` so migration
+`028_standalone_deployments.sql` applies on boot. Build with `npm run build` from
+`ui/` and publish the resulting `ui/dist` through the existing Caddy setup;
+source changes alone do not update the served UI or `/llms.txt`. Follow the
+[security upgrade guide](docs/security-upgrade.md) for an existing installation,
+then check `/healthz` and test the desired service flow. These instructions do
+not assert that the feature has been verified on a live instance.
 
 ### Routing public traffic
 
-App containers are never port-published. They sit on core's docker network behind a central reverse proxy inside nixre-core on `DEPLOY_PROXY_PORT` (**3003** default, published to loopback in compose). Route your edge to it:
+App containers are not port-published. They use the approved **shared apps
+network**, not per-space isolation. `exposure: "internal"` disables automatic
+addresses, custom-domain routing, and all other edge routes; there is no public
+TCP proxy. Other deployed apps can still reach internal services, so use app/DB
+authentication. The forge database is isolated on its separate data network;
+template databases are app services on the shared network.
 
-- **Cloudflare Tunnel (used by git.nixre.dev)** — the tunnel's catch-all ingress forwards every unmatched hostname to the deploy proxy, which routes by Host header. Attach a domain in the repo's **Deployments → Domains** tab and pick *Cloudflare Tunnel*: when `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_TUNNEL_ID` are configured, nixre-core **creates the proxied CNAME (`<domain>` → `<tunnel-id>.cfargotunnel.com`) automatically via the Cloudflare API** and removes it again when the domain is detached. The UI shows the DNS status per domain (auto-managed / failed with retry / manual guidance). The API token needs `Zone:Read` + `DNS:Edit` on every zone users may attach domains from — domains can live in any zone the token can see, there is no base-domain restriction.
+For `exposure: "http"`, a central reverse proxy inside nixre-core listens on
+`DEPLOY_PROXY_PORT` (**3003** default, published to loopback in compose). Custom
+domains require TXT ownership proof or admin approval; Cloudflare provisioning
+is admin-only and refuses conflicting DNS records. Standalone domain controls
+are in Settings; repo services retain their Domains tab. Route your edge to it:
+
+- **Cloudflare Tunnel (used by git.nixre.dev)**: route intended app hostnames to
+  the deploy proxy, which selects services by Host header. An admin attaching a
+  tunnel domain with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_TUNNEL_ID` configured
+  can provision its proxied CNAME to `<tunnel-id>.cfargotunnel.com`. Conflicting
+  records are not overwritten. Other users need TXT proof and manual DNS setup.
+  The UI reports auto-managed, failed/retry, or manual DNS status. The token
+  needs `Zone:Read` and `DNS:Edit` for each relevant zone; reserved hostnames and
+  the automatic `DEPLOY_BASE_DOMAIN` namespace cannot be claimed as custom domains.
 - **Host Caddy / Nginx** — add a DNS A record `app.example.com → <server-ip>`, then a host block like
   ```
   app.example.com {

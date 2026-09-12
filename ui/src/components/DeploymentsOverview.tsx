@@ -23,9 +23,9 @@ export const DeploymentsOverview: React.FC = () => {
           const top = svcs.slice(0, TOP);
           const results = await Promise.allSettled(
             top.map(s =>
-              s.space && s.repo_uid
-                ? api.serviceUptime(s.space, s.repo_uid, s.id, '24h')
-                : Promise.reject(new Error('no repo ref')),
+              s.space_uid || s.space
+                ? api.serviceUptime((s.space_uid || s.space)!, !s.source_type || s.source_type === 'repo' ? s.repo_uid! : null, s.id, '24h')
+                : Promise.reject(new Error('no space ref')),
             ),
           );
           const map: Record<number, UptimeResponse | undefined> = {};
@@ -74,11 +74,13 @@ export const DeploymentsOverview: React.FC = () => {
       <div className="divide-y divide-border-subtle">
         {services.slice(0, TOP).map(svc => {
           const strip = strips[svc.id];
+          const space = svc.space_uid || svc.space;
+          const repo = !svc.source_type || svc.source_type === 'repo';
           return (
             <Link
               key={svc.id}
-              to={svc.space && svc.repo_uid ? `/${svc.space}/${svc.repo_uid}?deploys=1` : '#'}
-              className="flex items-center gap-4 px-4 py-2.5 hover:bg-surface-subtle/50 transition"
+              to={space ? repo && svc.repo_uid ? `/${space}/${svc.repo_uid}?deploys=1&svc=${svc.id}` : `/${encodeURIComponent(space)}?tab=deployments&service=${svc.id}` : '/'}
+              className="flex flex-wrap sm:flex-nowrap items-center gap-3 px-4 py-2.5 hover:bg-surface-subtle/50 transition"
             >
               <span
                 className={`w-2 h-2 rounded-full shrink-0 ${
@@ -87,16 +89,12 @@ export const DeploymentsOverview: React.FC = () => {
                 title={svc.alert ? 'last deploy failed' : svc.live ? 'serving traffic' : 'not serving'}
               />
               <span className="font-mono text-xs text-txt-primary w-32 truncate">{svc.name}</span>
-              <Link
-                to={`/${svc.space}/${svc.repo_uid}`}
-                onClick={e => e.stopPropagation()}
-                className="font-mono text-[11px] text-txt-brand hover:underline w-48 truncate shrink-0"
-              >
-                {svc.space}/{svc.repo_uid}
-              </Link>
+               <span className="font-mono text-[11px] text-txt-brand max-w-48 truncate">
+                 {repo ? `${space}/${svc.repo_uid}` : svc.source_type === 'git' ? `External Git / ${svc.git_url}` : `Image / ${svc.image_ref}`}
+               </span>
               <span className="flex items-center gap-1.5 text-[11px] text-txt-secondary w-24 shrink-0">
                 <Activity className="w-3 h-3" />
-                {(svc.requests_24h || 0).toLocaleString('en-US')} req
+                 {svc.exposure === 'internal' ? 'Internal' : svc.requests_24h != null ? `${svc.requests_24h.toLocaleString('en-US')} req` : 'No samples'}
               </span>
               <MiniStrip buckets={(strip?.buckets || []).slice(-72)} pct={strip?.uptime_pct ?? null} />
               <span className="font-mono text-[11px] text-txt-tertiary ml-auto shrink-0 hidden sm:inline">

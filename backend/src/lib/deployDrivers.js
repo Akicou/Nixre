@@ -4,8 +4,10 @@
 
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import net from 'node:net';
 import { repoDir } from '../git/repo.js';
 import { spawnedContainerNetwork } from './dockerNetwork.js';
+export { prepareExternalSource } from './deployGit.js';
 
 const DOCKER_SOCKET = process.env.DOCKER_HOST?.replace(/^unix:\/\//, '') || '/var/run/docker.sock';
 
@@ -167,9 +169,24 @@ export function probeHttp() {
     });
 }
 
+export function probeTcp() {
+  return ({ host, port, timeoutMs = 2500, signal } = {}) =>
+    new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host, port, signal });
+      socket.setTimeout(timeoutMs);
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve({ ok: true, status: null });
+      });
+      socket.once('timeout', () => socket.destroy(new Error('TCP probe timed out')));
+      socket.once('error', reject);
+    });
+}
+
 // Network for deployed app containers. Must be a network core is on (core
 // probes the container and proxies to it by IP) and must NEVER be the database
-// network — a deployment's Dockerfile is user-supplied code, and creating one
+// network. This apps network IS shared across deployed apps, not tenant isolated.
+// A deployment's Dockerfile is user-supplied code, and creating one
 // only needs write access to a space.
 //
 // Deliberately not cached across calls: the operator can change

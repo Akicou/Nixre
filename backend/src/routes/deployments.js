@@ -1,21 +1,21 @@
 // Deployment routes — services, env vars, deploys, logs, uptime, domains.
 //
-// Repo-scoped under /repos/{space}/{repo}/+/deployments/... like webhooks and
-// pull requests; write actions need space write access, reads follow repo
-// visibility. Realtime logs/metrics stream over SSE (fetch-reader pattern).
+// Space-scoped services with shipped repo aliases. Repo reads follow repo
+// visibility; standalone reads and all writes require membership or admin.
 
 import express from 'express';
 import { encryptSecret } from '../lib/ai.js';
 import { deployEngine, getDeployProxy } from '../lib/deployRuntime.js';
 import { listTree as gitListTree } from '../lib/deployDrivers.js';
+import { canReadRepo } from '../lib/repoAccess.js';
+import { externalGitHosts } from '../lib/deployGit.js';
+import { validateServiceConfig, validateServiceEnv, validateDeployRef } from '../lib/deployServiceConfig.js';
 import {
   filterDockerfiles,
   normalizeRootDir,
-  sanitizeServiceName,
   shortSha,
 } from '../lib/deployPure.js';
 import {
-  normalizeRuntimeOptions,
   runtimeFlagsFromEnv,
 } from '../lib/deployRuntimeOptions.js';
 import {
@@ -33,7 +33,6 @@ import {
   reservedDomainReason,
 } from '../lib/domainVerify.js';
 
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DOMAIN_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 
 // Bound the number of hostnames one service can claim.
@@ -44,9 +43,21 @@ const MAX_DOMAINS_PER_SERVICE = 20;
 // reserve unbounded host resources.
 const MAX_SERVICES_PER_REPO = Number(process.env.DEPLOY_MAX_SERVICES_PER_REPO || 20);
 
-export function deploymentRoutes(pool, authenticate) {
+export function deploymentRoutes(pool, authenticate, {
+  engine = deployEngine, listTree = gitListTree, proxy = getDeployProxy,
+  env = process.env, validateGitUrl,
+} = {}) {
   const api = express.Router();
-  const auth = authenticate(true);
+  const serviceWrites = new Set();
+  const auth = [authenticate(true), (req, res, next) => {
+    if (!req.auth?.user) return res.status(401).json({ message: 'Authentication required' });
+    if (req.auth.user.blocked) return res.status(403).json({ message: 'This account is blocked' });
+    next();
+  }];
+  const servicePaths = (suffix = '') => [
+    `/spaces/:space/deployments/services${suffix}`,
+    `/repos/:space/:repo/\\+/deployments/services${suffix}`,
+  ];
 
   async function loadRepo(req, res) {
     const { space, repo } = req.params;
@@ -54,7 +65,7 @@ export function deploymentRoutes(pool, authenticate) {
       space,
       repo,
     ]);
-    if (!rows[0]) {
+    if (!rows[0] || !(await canReadRepo(pool, rows[0], req.auth.user))) {
       res.status(404).json({ message: 'Repository not found' });
       return null;
     }
@@ -62,6 +73,7 @@ export function deploymentRoutes(pool, authenticate) {
   }
 
   async function canWrite(spaceUid, user) {
+    if (!user || user.blocked) return false;
     if (user.admin) return true;
     const { rows } = await pool.query(
       'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
@@ -71,42 +83,85 @@ export function deploymentRoutes(pool, authenticate) {
   }
 
   async function requireWriter(req, res) {
-    const repo = await loadRepo(req, res);
-    if (!repo) return null;
-    if (!(await canWrite(repo.space_uid, req.auth.user))) {
+    const owner = req.params.repo ? await loadRepo(req, res) : await loadSpace(req, res);
+    if (!owner) return null;
+    if (!(await canWrite(req.params.space, req.auth.user))) {
       res.status(403).json({ message: 'No write access' });
       return null;
     }
-    return repo;
+    return owner;
   }
 
-  async function loadService(req, res) {
-    const repo = await loadRepo(req, res);
-    if (!repo) return null;
+  async function loadSpace(req, res) {
+    const { rows } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [req.params.space]);
+    const space = rows[0];
+    if (!space || (!space.is_public && !(await canWrite(space.uid, req.auth.user)))) {
+      res.status(404).json({ message: 'Space not found' });
+      return null;
+    }
+    return space;
+  }
+
+  async function loadService(req, res, { allowLatestCancellation = false } = {}) {
+    let repo = req.params.repo ? await loadRepo(req, res) : null;
+    if (req.params.repo && !repo) return null;
     // Routes define the service param as ':id'; reject non-numeric ids with a
     // 404 instead of letting Number() produce NaN and blow up in Postgres.
     const serviceId = Number(req.params.id);
-    if (!Number.isInteger(serviceId) || serviceId <= 0) {
+    if (!Number.isSafeInteger(serviceId) || serviceId <= 0) {
       res.status(404).json({ message: 'Service not found' });
       return null;
     }
-    const { rows } = await pool.query(
-      'SELECT * FROM deploy_services WHERE id = $1 AND repo_id = $2',
-      [serviceId, repo.id],
+    const { rows } = repo ? await pool.query(
+      'SELECT * FROM deploy_services WHERE id = $1 AND repo_id = $2', [serviceId, repo.id],
+    ) : await pool.query(
+      `SELECT s.*, COALESCE(s.space_uid, r.space_uid) AS space_uid, to_jsonb(r) AS repo
+       FROM deploy_services s LEFT JOIN repos r ON r.id = s.repo_id
+       WHERE s.id = $1 AND COALESCE(s.space_uid, r.space_uid) = $2`, [serviceId, req.params.space],
     );
-    if (!rows[0]) {
+    const service = rows[0];
+    repo ||= service?.repo;
+    if (!service || (service.space_uid ?? repo?.space_uid) !== req.params.space
+      || (req.params.repo && Number(service.repo_id) !== Number(repo.id))
+      || !(repo ? await canReadRepo(pool, repo, req.auth.user) : await canWrite(service.space_uid, req.auth.user))) {
       res.status(404).json({ message: 'Service not found' });
       return null;
     }
-    return { repo, service: rows[0] };
+    // Child IDs must belong to this service even for engine-backed actions
+    // (notably cancel, whose engine API only receives the service ID).
+    for (const [param, table, label] of [['depId', 'deployments', 'Deployment'], ['domainId', 'deploy_domains', 'Domain']]) {
+      if (req.params[param] === undefined) continue;
+      // Both shipped UIs address the active run by this sentinel. Only the
+      // POST cancellation handler opts in; all other child IDs stay scoped.
+      if (allowLatestCancellation && req.method === 'POST' && param === 'depId' && req.params[param] === 'latest') continue;
+      const id = Number(req.params[param]);
+      if (!Number.isSafeInteger(id) || id <= 0 || !(await pool.query(
+        `SELECT id FROM ${table} WHERE id = $1 AND service_id = $2`, [id, service.id],
+      )).rows.length) {
+        res.status(404).json({ message: `${label} not found` });
+        return null;
+      }
+    }
+    return { repo: repo || null, service, space_uid: service.space_uid ?? repo.space_uid };
   }
 
-  async function requireServiceWriter(req, res) {
-    const ctx = await loadService(req, res);
+  async function requireServiceWriter(req, res, options) {
+    const ctx = await loadService(req, res, options);
     if (!ctx) return null;
-    if (!(await canWrite(ctx.repo.space_uid, req.auth.user))) {
+    if (!(await canWrite(ctx.space_uid, req.auth.user))) {
       res.status(403).json({ message: 'No write access' });
       return null;
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const key = String(ctx.service.id);
+      if (serviceWrites.has(key)) {
+        res.status(409).json({ message: 'A service mutation is already running' });
+        return null;
+      }
+      // Span engine stop AND metadata deletion. Engine lifecycle locking alone
+      // would admit a manual deploy between these two awaited operations.
+      serviceWrites.add(key);
+      req.deploymentWriteLock = key;
     }
     return ctx;
   }
@@ -115,20 +170,36 @@ export function deploymentRoutes(pool, authenticate) {
   function guard(fn) {
     return (req, res) => {
       fn(req, res).catch(err => {
-        const status = err?.status || 500;
+        const status = err?.code === '23505' ? 409 : err?.status || 500;
         if (status >= 500) console.error('deployments route:', err);
-        res.status(status).json({ message: err?.message || 'Deployment error' });
+        if (res.headersSent) { res.end(); return; }
+        res.status(status).json({ message: err?.code === '23505' ? 'A service or domain with that name already exists' : err?.message || 'Deployment error' });
+      }).finally(() => {
+        if (req.deploymentWriteLock !== undefined) serviceWrites.delete(req.deploymentWriteLock);
       });
     };
   }
 
   async function proxyInvalidate() {
-    getDeployProxy()?.invalidateRoutes();
+    proxy()?.invalidateRoutes();
   }
 
   function rowToService(s, extra = {}) {
     return {
       id: Number(s.id),
+      space_uid: s.space_uid ?? s.repo?.space_uid ?? null,
+      repo_id: s.repo_id == null ? null : Number(s.repo_id),
+      repo_uid: s.repo_uid ?? s.repo?.uid ?? null,
+      source_type: s.source_type ?? 'repo',
+      git_url: s.git_url ?? null,
+      image_ref: s.image_ref ?? null,
+      build_target: s.build_target ?? null,
+      template: s.template ?? null,
+      exposure: s.exposure ?? 'http',
+      deployment_strategy: s.deployment_strategy ?? 'blue_green',
+      volume_path: s.volume_path ?? null,
+      internal_hostname: s.deployment_strategy === 'recreate' ? `nixre-svc-${s.id}` : null,
+      volume_name: s.volume_path ? `nixre-service-${s.id}-data` : null,
       name: s.name,
       root_dir: s.root_dir,
       dockerfile_path: s.dockerfile_path,
@@ -156,8 +227,8 @@ export function deploymentRoutes(pool, authenticate) {
   async function currentDeploymentSummary(service) {
     if (!service.current_deployment_id) return null;
     const { rows } = await pool.query(
-      'SELECT id, ref, sha, message, status, trigger_kind, started, finished FROM deployments WHERE id = $1',
-      [service.current_deployment_id],
+      'SELECT id, ref, sha, message, status, trigger_kind, started, finished FROM deployments WHERE id = $1 AND service_id = $2',
+      [service.current_deployment_id, service.id],
     );
     const d = rows[0];
     if (!d) return null;
@@ -178,23 +249,79 @@ export function deploymentRoutes(pool, authenticate) {
   // Services
   // -------------------------------------------------------------------------
 
-  api.get('/repos/:space/:repo/\\+/deployments/services', auth, guard(async (req, res) => {
-    const repo = await loadRepo(req, res);
-    if (!repo) return;
+  async function visibleServices(user, spaceUid) {
     const { rows } = await pool.query(
-      'SELECT * FROM deploy_services WHERE repo_id = $1 ORDER BY created ASC',
-      [repo.id],
+      `SELECT s.*, COALESCE(s.space_uid, r.space_uid) AS space_uid, r.uid AS repo_uid, to_jsonb(r) AS repo
+       FROM deploy_services s LEFT JOIN repos r ON r.id = s.repo_id
+       ${spaceUid ? 'WHERE COALESCE(s.space_uid, r.space_uid) = $1' : ''} ORDER BY s.created ASC`,
+      spaceUid ? [spaceUid] : [],
     );
+    const visible = [];
+    const writers = new Map();
+    for (const s of rows) {
+      if (!writers.has(s.space_uid)) writers.set(s.space_uid, await canWrite(s.space_uid, user));
+      const writer = writers.get(s.space_uid);
+      if (s.repo_id != null ? await canReadRepo(pool, s.repo, user) : writer) visible.push({ ...s, can_write: writer });
+    }
+    return visible;
+  }
+
+  async function transaction(fn) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally { client.release(); }
+  }
+
+  async function writeEnv(client, id, vars) {
+    for (const [key, value] of Object.entries(vars)) {
+      if (value === null) await client.query('DELETE FROM service_env_vars WHERE service_id = $1 AND key = $2', [id, key]);
+      else await client.query(
+        `INSERT INTO service_env_vars (service_id, key, value_enc, updated) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (service_id, key) DO UPDATE SET value_enc = EXCLUDED.value_enc, updated = EXCLUDED.updated`,
+        [id, key, encryptSecret(value), Date.now()],
+      );
+    }
+  }
+
+  api.get(servicePaths(), auth, guard(async (req, res) => {
+    let rows;
+    if (req.params.repo) {
+      const repo = await loadRepo(req, res);
+      if (!repo) return;
+      rows = (await pool.query('SELECT * FROM deploy_services WHERE repo_id = $1 ORDER BY created ASC', [repo.id])).rows
+        .map(s => ({ ...s, space_uid: s.space_uid ?? repo.space_uid, repo, can_write: false }));
+      const writer = await canWrite(repo.space_uid, req.auth.user);
+      for (const s of rows) s.can_write = writer;
+    } else {
+      if (!(await loadSpace(req, res))) return;
+      rows = await visibleServices(req.auth.user, req.params.space);
+    }
     const out = [];
     for (const s of rows) {
-      out.push(rowToService(s, { current: await currentDeploymentSummary(s) }));
+      out.push(rowToService(s, { current: await currentDeploymentSummary(s), can_write: s.can_write }));
     }
     res.json(out);
   }));
 
-  api.post('/repos/:space/:repo/\\+/deployments/services', auth, guard(async (req, res) => {
-    const repo = await requireWriter(req, res);
-    if (!repo) return;
+  api.get(servicePaths('/:id'), auth, guard(async (req, res) => {
+    const ctx = await loadService(req, res);
+    if (!ctx) return;
+    res.json(rowToService({ ...ctx.service, space_uid: ctx.space_uid, repo: ctx.repo }, {
+      current: await currentDeploymentSummary(ctx.service), can_write: await canWrite(ctx.space_uid, req.auth.user),
+    }));
+  }));
+
+  api.post(servicePaths(), auth, guard(async (req, res) => {
+    const owner = await requireWriter(req, res);
+    if (!owner) return;
+    const repo = req.params.repo ? owner : null;
     const body = req.body || {};
     if (Object.hasOwn(body, 'security_policy_version')) {
       res.status(req.auth.user.admin ? 400 : 403).json({
@@ -202,138 +329,36 @@ export function deploymentRoutes(pool, authenticate) {
       });
       return;
     }
-    const name = sanitizeServiceName(body.name || '');
-    let rootDir;
-    try {
-      rootDir = normalizeRootDir(body.root_dir ?? '.');
-    } catch {
-      res.status(400).json({ message: 'root_dir may not traverse upwards' });
-      return;
-    }
-    const branch = String(body.branch || repo.default_branch || 'main').slice(0, 200);
-    const containerPort = Number(body.container_port || 8080);
-    if (!(Number.isInteger(containerPort) && containerPort > 0 && containerPort < 65536)) {
-      res.status(400).json({ message: 'container_port must be a valid port number' });
-      return;
-    }
-
-    // Cap services per repository before doing any work — an uncapped count
-    // lets any space member reserve unlimited memory/CPU and containers.
-    const { rows: existingServices } = await pool.query(
-      'SELECT count(*)::int AS n FROM deploy_services WHERE repo_id = $1',
-      [repo.id],
-    );
-    if (Number(existingServices[0]?.n || 0) >= MAX_SERVICES_PER_REPO) {
-      res
-        .status(409)
-        .json({
-          message: `A repository can have at most ${MAX_SERVICES_PER_REPO} deployment services`,
-        });
-      return;
-    }
-
-    // The system never guesses: the chosen root must actually contain the
-    // chosen Dockerfile.
-    const ref = String(body.ref || branch);
-    let tree;
-    try {
-      tree = await gitListTree(repo.space_uid, repo.uid, ref);
-    } catch (err) {
-      res.status(400).json({ message: `Cannot read ${ref}: ${err.message}` });
-      return;
-    }
-    const found = filterDockerfiles(tree, rootDir);
-    const wantedRel = String(body.dockerfile_path || '').replace(/^\.\//, '');
-    const match = found.find(d => d.file === wantedRel);
-    if (!match) {
-      res.status(400).json({
-        message: found.length
-          ? `Dockerfile '${wantedRel}' not found under ${rootDir === '.' ? '.' : `${rootDir}/`}. Found: ${found.map(f => f.file).join(', ')}`
-          : `No Dockerfile detected under ${rootDir === '.' ? 'the repo root' : `${rootDir}/`}`,
-        dockerfiles: found,
-      });
-      return;
-    }
-
-    // Optional Docker runtime options (binds, caps, health path, …) are
-    // validated + policy-gated up front so invalid payloads never reach the
-    // database, let alone a container create call.
-    let runtimeOptions = null;
-    if (body.runtime_options != null) {
-      try {
-        runtimeOptions = normalizeRuntimeOptions(body.runtime_options, {
-          admin: Boolean(req.auth.user.admin),
-        });
-      } catch (err) {
-        res.status(400).json({ message: err.message });
+    const { config, vars } = await validateServiceConfig(body, { repo, admin: Boolean(req.auth.user.admin), env, validateGitUrl });
+    if (repo) {
+      let tree;
+      const ref = body.ref ?? config.branch;
+      try { tree = await listTree(repo.space_uid, repo.uid, ref); }
+      catch (err) { throw Object.assign(new Error(`Cannot read ${ref}: ${err.message}`), { status: 400 }); }
+      const found = filterDockerfiles(tree, config.root_dir);
+      if (!found.some(d => d.file === config.dockerfile_path)) {
+        res.status(400).json({ message: `Dockerfile '${config.dockerfile_path}' not found under ${config.root_dir}`, dockerfiles: found });
         return;
       }
     }
-
-    const { rows } = await pool.query(
-      `INSERT INTO deploy_services
-         (repo_id, name, root_dir, dockerfile_path, branch, auto_deploy,
-          container_port, cpu_nano_cpus, memory_bytes, runtime_options, created_by, created, updated)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
-       RETURNING *`,
-      [
-        repo.id,
-        name,
-        rootDir,
-        match.file,
-        branch,
-        body.auto_deploy !== false,
-        containerPort,
-        Math.round(Number(body.cpu_cores || 1) * 1e9) || 1e9,
-        Math.round(Number(body.memory_mb || 512) * 1024 * 1024) || 512 * 1024 * 1024,
-        runtimeOptions,
-        req.auth.user.uid,
-        Date.now(),
-      ],
-    ).catch(err => {
-      if (err.code === '23505') {
-        res.status(409).json({
-          message: `A service named '${name}' already exists on this repository — pick a different name.`,
-        });
-        return { rows: [] };
-      }
-      throw err;
+    // Serialize quota checks per owner and commit metadata + encrypted env on
+    // one client. External source creation does not clone, pull or deploy.
+    const service = await transaction(async client => {
+      await client.query(repo ? 'SELECT id FROM repos WHERE id = $1 FOR UPDATE' : 'SELECT uid FROM spaces WHERE uid = $1 FOR UPDATE', [repo?.id ?? owner.uid]);
+      const { rows: count } = await client.query(repo
+        ? 'SELECT count(*)::int AS n FROM deploy_services WHERE repo_id = $1'
+        : 'SELECT count(*)::int AS n FROM deploy_services WHERE space_uid = $1 AND repo_id IS NULL', [repo?.id ?? owner.uid]);
+      if (Number(count[0]?.n || 0) >= MAX_SERVICES_PER_REPO) throw Object.assign(new Error(`At most ${MAX_SERVICES_PER_REPO} services per ${repo ? 'repository' : 'standalone space'}`), { status: 409 });
+      const data = { repo_id: repo?.id ?? null, ...config, space_uid: req.params.space, created_by: req.auth.user.uid, created: Date.now(), updated: Date.now() };
+      const keys = Object.keys(data);
+      const { rows } = await client.query(`INSERT INTO deploy_services (${keys.join(', ')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING *`, Object.values(data));
+      await writeEnv(client, rows[0].id, vars);
+      return rows[0];
     });
-    if (!rows[0]) return;
-    const service = rows[0];
-
-    // Env vars may be provided at creation time.
-    const env = body.env && typeof body.env === 'object' ? body.env : {};
-    for (const [k, v] of Object.entries(env)) {
-      if (!ENV_KEY_RE.test(k)) continue;
-      await pool.query(
-        `INSERT INTO service_env_vars (service_id, key, value_enc, updated) VALUES ($1,$2,$3,$4)
-         ON CONFLICT (service_id, key) DO UPDATE SET value_enc = EXCLUDED.value_enc, updated = EXCLUDED.updated`,
-        [service.id, k, encryptSecret(String(v)), Date.now()],
-      );
-    }
-
-    res.status(201).json(rowToService(service, { current: null }));
+    res.status(201).json(rowToService(service, { current: null, can_write: true }));
   }));
 
-  const SERVICE_PATCHABLE = new Set([
-    'name',
-    'root_dir',
-    'dockerfile_path',
-    'branch',
-    'auto_deploy',
-    'container_port',
-    'cpu_nano_cpus',
-    'memory_bytes',
-    'preserve_status_min',
-    'success_retention_hours',
-    'failure_retention_hours',
-    'env',
-    'runtime_options',
-    'security_policy_version',
-  ]);
-
-  api.patch('/repos/:space/:repo/\\+/deployments/services/:id', auth, guard(async (req, res) => {
+  api.patch(servicePaths('/:id'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
     const { service } = ctx;
@@ -351,144 +376,36 @@ export function deploymentRoutes(pool, authenticate) {
       }
     }
 
-    const sets = {};
-    for (const key of Object.keys(body)) {
-      if (!SERVICE_PATCHABLE.has(key)) continue;
-      let value = body[key];
-      if (key === 'root_dir') value = normalizeRootDir(value);
-      // Renames must stay slug-safe DNS labels, exactly like creation does.
-      if (key === 'name') value = sanitizeServiceName(value);
-      if (key === 'container_port') {
-        const p = Number(value);
-        if (!(Number.isInteger(p) && p > 0 && p < 65536)) {
-          res.status(400).json({ message: 'container_port invalid' });
-          return;
-        }
+    const { config, vars } = await validateServiceConfig(body, { service, admin: Boolean(req.auth.user.admin), env, validateGitUrl });
+    const want = config.desired_state;
+    delete config.desired_state;
+    await transaction(async client => {
+      if (Object.keys(config).length) {
+        config.updated = Date.now();
+        const entries = Object.entries(config);
+        await client.query(`UPDATE deploy_services SET ${entries.map(([key], i) => `${key} = $${i + 1}`).join(', ')} WHERE id = $${entries.length + 1}`, [...entries.map(([, v]) => v), service.id]);
       }
-      if (key === 'memory_bytes') value = Math.max(32 * 1024 * 1024, Number(value));
-      if (key === 'cpu_nano_cpus') value = Math.max(1e8, Number(value));
-      if (['preserve_status_min'].includes(key)) {
-        value = Math.min(600, Math.max(100, Number(value)));
-      }
-      if (key === 'runtime_options') {
-        // Full replace when an object is provided; explicit null restores the
-        // selected security policy's defaults. Omitted = untouched.
-        if (value === null) {
-          sets[key] = { v: null };
-          continue;
-        }
-        try {
-          sets[key] = {
-            v: normalizeRuntimeOptions(value, {
-              admin: Boolean(req.auth.user.admin),
-            }),
-          };
-        } catch (err) {
-          res.status(400).json({ message: err.message });
-          return;
-        }
-        continue;
-      }
-      if (key === 'env') {
-        // Partial secret update: merged into service_env_vars — keys present
-        // in the patch are upserted, keys absent are left untouched. Deleting
-        // stays on the surgical DELETE …/env/:key endpoint. An empty-string
-        // value is stored as-is; use { env: { K: null } } to delete a key.
-        const vars = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-        if (vars === null) {
-          res.status(400).json({ message: 'env must be an object of KEY -> string|null' });
-          return;
-        }
-        const keys = Object.keys(vars);
-        if (keys.length === 0) continue;
-        if (keys.length > 100) {
-          res.status(400).json({ message: 'At most 100 env vars per service' });
-          return;
-        }
-        for (const k of keys) {
-          if (!ENV_KEY_RE.test(k)) {
-            res.status(400).json({ message: `Invalid env var name '${k}'` });
-            return;
-          }
-          const v = vars[k];
-          if (v !== null && typeof v !== 'string') {
-            res.status(400).json({ message: `Env var '${k}' must be a string or null` });
-            return;
-          }
-        }
-        const nowMs = Date.now();
-        for (const k of keys) {
-          if (vars[k] === null) {
-            await pool.query('DELETE FROM service_env_vars WHERE service_id = $1 AND key = $2', [
-              service.id,
-              k,
-            ]);
-          } else {
-            await pool.query(
-              `INSERT INTO service_env_vars (service_id, key, value_enc, updated) VALUES ($1,$2,$3,$4)
-               ON CONFLICT (service_id, key) DO UPDATE SET value_enc = EXCLUDED.value_enc, updated = EXCLUDED.updated`,
-              [service.id, k, encryptSecret(String(vars[k])), nowMs],
-            );
-          }
-        }
-        continue; // handled — never reaches the column UPDATE below
-      }
-      sets[key] = { v: value };
-    }
-
-    // desired_state is actuated, not just stored.
-    if (typeof body.desired_state === 'string') {
-      const want = body.desired_state;
-      if (want !== 'running' && want !== 'stopped') {
-        res.status(400).json({ message: "desired_state must be 'running' or 'stopped'" });
-        return;
-      }
-      if (want !== service.desired_state) {
-        if (want === 'stopped') await deployEngine.stopService(service.id);
-        else await deployEngine.startService(service.id);
-      }
-    }
-
-    if (Object.keys(sets).length > 0) {
-      sets.updated = { v: Date.now() };
-      const entries = Object.entries(sets);
-      const setSql = entries.map(([name], i) => `${name} = $${i + 1}`).join(', ');
-      try {
-        await pool.query(
-          `UPDATE deploy_services SET ${setSql} WHERE id = $${entries.length + 1}`,
-          [...entries.map(([, v]) => v.v), service.id],
-        );
-      } catch (err) {
-        if (err.code === '23505' && sets.name) {
-          res.status(409).json({
-            message: `A service named '${sets.name.v}' already exists on this repository — pick a different name.`,
-          });
-          return;
-        }
-        throw err;
-      }
-    }
+      await writeEnv(client, service.id, vars);
+    });
+    // The engine serializes stop with in-flight work. Never swallow failures
+    // or remove metadata while a container writer may still be alive.
+    if (want === 'stopped') await engine.stopService(service.id);
+    else if (want === 'running' && want !== service.desired_state) await engine.startService(service.id);
     await proxyInvalidate();
 
     const fresh = (
       await pool.query('SELECT * FROM deploy_services WHERE id = $1', [service.id])
     ).rows[0];
-    res.json(rowToService(fresh, { current: await currentDeploymentSummary(fresh) }));
+    res.json(rowToService({ ...fresh, space_uid: ctx.space_uid, repo: ctx.repo }, { current: await currentDeploymentSummary(fresh), can_write: true }));
   }));
 
-  api.delete('/repos/:space/:repo/\\+/deployments/services/:id', auth, guard(async (req, res) => {
+  api.delete(servicePaths('/:id'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
     const { service } = ctx;
-    // Remove every container/image this service owns before the cascade wipes
-    // its rows.
-    if (service.current_deployment_id) {
-      try {
-        await deployEngine.stopService(service.id);
-      } catch {
-        /* already stopped */
-      }
-    }
+    // stopService must cancel and await active work, including a first build
+    // without a current pointer. Managed volumes are deliberately retained.
+    await engine.stopService(service.id);
     await pool.query('DELETE FROM deploy_services WHERE id = $1', [service.id]);
     await proxyInvalidate();
     res.json({ ok: true });
@@ -498,7 +415,7 @@ export function deploymentRoutes(pool, authenticate) {
   api.get('/repos/:space/:repo/\\+/deployments/dockerfiles', auth, guard(async (req, res) => {
     const repo = await loadRepo(req, res);
     if (!repo) return;
-    const ref = String(req.query.ref || repo.default_branch || 'main');
+    const ref = validateDeployRef(req.query.ref || repo.default_branch || 'main');
     let rootDir = '.';
     try {
       rootDir = normalizeRootDir(String(req.query.root_dir || '.'));
@@ -507,7 +424,7 @@ export function deploymentRoutes(pool, authenticate) {
       return;
     }
     try {
-      const tree = await gitListTree(repo.space_uid, repo.uid, ref);
+      const tree = await listTree(repo.space_uid, repo.uid, ref);
       res.json({ ref, root_dir: rootDir, dockerfiles: filterDockerfiles(tree, rootDir) });
     } catch (err) {
       res.status(400).json({ message: `Cannot read ${ref}: ${err.message}` });
@@ -518,7 +435,7 @@ export function deploymentRoutes(pool, authenticate) {
   // Env vars (Railway-style groups)
   // -------------------------------------------------------------------------
 
-  api.get('/repos/:space/:repo/\\+/deployments/services/:id/env', auth, guard(async (req, res) => {
+  api.get(servicePaths('/:id/env'), auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
     const { rows } = await pool.query(
@@ -528,59 +445,30 @@ export function deploymentRoutes(pool, authenticate) {
     res.json(rows.map(r => ({ key: r.key, updated: Number(r.updated) })));
   }));
 
-  api.put('/repos/:space/:repo/\\+/deployments/services/:id/env', auth, guard(async (req, res) => {
+  api.put(servicePaths('/:id/env'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
-    const vars = req.body?.vars;
-    if (!vars || typeof vars !== 'object' || Array.isArray(vars)) {
-      res.status(400).json({ message: 'vars object required' });
-      return;
-    }
+    const vars = validateServiceEnv(req.body?.vars, { template: ctx.service.template });
     const keys = Object.keys(vars);
-    if (keys.length > 100) {
-      res.status(400).json({ message: 'At most 100 env vars per service' });
-      return;
-    }
-    for (const k of keys) {
-      if (!ENV_KEY_RE.test(k)) {
-        res.status(400).json({ message: `Invalid env var name '${k}'` });
-        return;
-      }
-      if (typeof vars[k] !== 'string') {
-        res.status(400).json({ message: `Env var '${k}' must be a string` });
-        return;
-      }
-    }
-    const nowMs = Date.now();
-    // Transaction on ONE client — pool.query alone would scatter BEGIN/COMMIT.
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query('DELETE FROM service_env_vars WHERE service_id = $1', [ctx.service.id]);
-      for (const k of keys) {
-        await client.query(
-          'INSERT INTO service_env_vars (service_id, key, value_enc, updated) VALUES ($1,$2,$3,$4)',
-          [ctx.service.id, k, encryptSecret(vars[k]), nowMs],
-        );
-      }
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw err;
-    } finally {
-      client.release();
-    }
+    await transaction(async client => {
+      // Template initialization secrets cannot be removed by full replacement.
+      await client.query(ctx.service.template === 'postgres'
+        ? "DELETE FROM service_env_vars WHERE service_id = $1 AND key NOT IN ('POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD')"
+        : 'DELETE FROM service_env_vars WHERE service_id = $1', [ctx.service.id]);
+      await writeEnv(client, ctx.service.id, vars);
+    });
     res.json({ ok: true, keys });
   }));
 
   // Deleting one variable must not require replaying every other secret's
   // plaintext (PUT is intentionally full-replace; deletes are surgical).
   api.delete(
-    '/repos/:space/:repo/\\+/deployments/services/:id/env/:key',
+    servicePaths('/:id/env/:key'),
     auth,
     guard(async (req, res) => {
       const ctx = await requireServiceWriter(req, res);
       if (!ctx) return;
+      validateServiceEnv({ [req.params.key]: null }, { allowNull: true, template: ctx.service.template });
       await pool.query('DELETE FROM service_env_vars WHERE service_id = $1 AND key = $2', [
         ctx.service.id,
         req.params.key,
@@ -590,7 +478,7 @@ export function deploymentRoutes(pool, authenticate) {
   );
 
   api.get(
-    '/repos/:space/:repo/\\+/deployments/services/:id/env/:key/reveal',
+    servicePaths('/:id/env/:key/reveal'),
     auth,
     guard(async (req, res) => {
       const ctx = await requireServiceWriter(req, res);
@@ -612,18 +500,26 @@ export function deploymentRoutes(pool, authenticate) {
   // Deployments & lifecycle
   // -------------------------------------------------------------------------
 
-  api.post('/repos/:space/:repo/\\+/deployments/services/:id/deploy', auth, guard(async (req, res) => {
+  api.post(servicePaths('/:id/deploy'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
-    const ref = req.body?.ref ? String(req.body.ref).slice(0, 200) : undefined;
-    const out = await deployEngine.startDeployment(ctx.service.id, { ref, trigger: 'manual' });
+    if (req.body !== undefined && (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(k => k !== 'ref'))) {
+      res.status(400).json({ message: 'Deploy accepts only an optional ref' });
+      return;
+    }
+    const ref = req.body?.ref === undefined ? undefined : validateDeployRef(req.body.ref);
+    if (ctx.service.source_type === 'image' && ref !== undefined) {
+      res.status(400).json({ message: 'Image deployments do not accept a Git ref' });
+      return;
+    }
+    const out = await engine.startDeployment(ctx.service.id, { ref, trigger: 'manual' });
     res.status(202).json(out);
   }));
 
-  api.get('/repos/:space/:repo/\\+/deployments/services/:id/deployments', auth, guard(async (req, res) => {
+  api.get(servicePaths('/:id/deployments'), auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
-    const limit = Math.min(100, Number(req.query.limit || 30));
+    const limit = queryInteger(req.query.limit, 30, 1, 100);
     const { rows } = await pool.query(
       `SELECT id, ref, sha, message, trigger_kind, status, error, started, finished, duration_ms
        FROM deployments WHERE service_id = $1 ORDER BY started DESC LIMIT $2`,
@@ -645,7 +541,7 @@ export function deploymentRoutes(pool, authenticate) {
     })));
   }));
 
-  api.get('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId', auth, guard(async (req, res) => {
+  api.get(servicePaths('/:id/deployments/:depId'), auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
     const { rows } = await pool.query(
@@ -675,29 +571,29 @@ export function deploymentRoutes(pool, authenticate) {
     });
   }));
 
-  api.post('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/cancel', auth, guard(async (req, res) => {
-    const ctx = await requireServiceWriter(req, res);
+  api.post(servicePaths('/:id/deployments/:depId/cancel'), auth, guard(async (req, res) => {
+    const ctx = await requireServiceWriter(req, res, { allowLatestCancellation: true });
     if (!ctx) return;
-    res.json({ ok: await deployEngine.cancelDeployment(ctx.service.id) });
+    res.json({ ok: await engine.cancelDeployment(ctx.service.id) });
   }));
 
-  api.post('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/redeploy', auth, guard(async (req, res) => {
+  api.post(servicePaths('/:id/deployments/:depId/redeploy'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
-    res.status(202).json(await deployEngine.redeploy(ctx.service.id, Number(req.params.depId)));
+    res.status(202).json(await engine.redeploy(ctx.service.id, Number(req.params.depId)));
   }));
 
-  api.post('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/rollback', auth, guard(async (req, res) => {
+  api.post(servicePaths('/:id/deployments/:depId/rollback'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
-    const dep = await deployEngine.rollback(ctx.service.id, Number(req.params.depId));
+    const dep = await engine.rollback(ctx.service.id, Number(req.params.depId));
     res.status(202).json(dep);
   }));
 
-  api.delete('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId', auth, guard(async (req, res) => {
+  api.delete(servicePaths('/:id/deployments/:depId'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
-    await deployEngine.deleteDeployment(ctx.service.id, Number(req.params.depId));
+    await engine.deleteDeployment(ctx.service.id, Number(req.params.depId));
     res.json({ ok: true });
   }));
 
@@ -705,7 +601,7 @@ export function deploymentRoutes(pool, authenticate) {
   // Live events (SSE): build/release log lines, status changes, metrics.
   // -------------------------------------------------------------------------
 
-  api.get('/repos/:space/:repo/\\+/deployments/services/:id/events', auth, guard(async (req, res) => {
+  api.get(servicePaths('/:id/events'), auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
     const serviceId = ctx.service.id;
@@ -744,12 +640,26 @@ export function deploymentRoutes(pool, authenticate) {
   // HTTP request logs (with preserve-failures defaults)
   // -------------------------------------------------------------------------
 
-  api.get('/repos/:space/:repo/\\+/deployments/services/:id/http-logs', auth, guard(async (req, res) => {
+  function queryInteger(raw, fallback, min, max) {
+    if (raw === undefined) return fallback;
+    const n = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isSafeInteger(n) || n < min || n > max) throw Object.assign(new Error(`Expected integer between ${min} and ${max}`), { status: 400 });
+    return n;
+  }
+
+  api.get(servicePaths('/:id/runtime-logs'), auth, guard(async (req, res) => {
+    const ctx = await requireServiceWriter(req, res);
+    if (!ctx) return;
+    const tail = queryInteger(req.query.tail, 200, 1, 1000);
+    res.json({ logs: await engine.runtimeLogs(ctx.service.id, { tail }) });
+  }));
+
+  api.get(servicePaths('/:id/http-logs'), auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
     const serviceId = ctx.service.id;
-    const limit = Math.min(1000, Math.max(1, Number(req.query.limit || 200)));
-    const minStatus = req.query.min_status ? Number(req.query.min_status) : null;
+    const limit = queryInteger(req.query.limit, 200, 1, 1000);
+    const minStatus = req.query.min_status === undefined ? null : queryInteger(req.query.min_status, null, 100, 599);
     const cls = ['2xx', '3xx', '4xx', '5xx'].includes(String(req.query.class))
       ? String(req.query.class)
       : null;
@@ -762,7 +672,7 @@ export function deploymentRoutes(pool, authenticate) {
       where.push(`(status_code >= $${params.length} OR status_code IS NULL)`);
     }
     if (cls) {
-      params.push(Number(cls[0]), Number(cls[0]) + 99);
+      params.push(Number(cls[0]) * 100, Number(cls[0]) * 100 + 99);
       where.push(`status_code BETWEEN $${params.length - 1} AND $${params.length}`);
     }
     if (q) {
@@ -812,7 +722,7 @@ export function deploymentRoutes(pool, authenticate) {
   // Stats & uptime charts
   // -------------------------------------------------------------------------
 
-  api.get('/repos/:space/:repo/\\+/deployments/services/:id/stats', auth, guard(async (req, res) => {
+  api.get(servicePaths('/:id/stats'), auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
     res.json({
@@ -820,11 +730,11 @@ export function deploymentRoutes(pool, authenticate) {
         cpu_nano_cpus: Number(ctx.service.cpu_nano_cpus),
         memory_bytes: Number(ctx.service.memory_bytes),
       },
-      ...deployEngine.getStatsSnapshot(ctx.service.id),
+      ...engine.getStatsSnapshot(ctx.service.id),
     });
   }));
 
-  api.get('/repos/:space/:repo/\\+/deployments/services/:id/uptime', auth, guard(async (req, res) => {
+  api.get(servicePaths('/:id/uptime'), auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
     const ranges = {
@@ -967,9 +877,16 @@ export function deploymentRoutes(pool, authenticate) {
     }
   }
 
-  api.get('/repos/:space/:repo/\\+/deployments/services/:id/domains', auth, guard(async (req, res) => {
+  function requireHttp(ctx, res) {
+    if (ctx.service.exposure !== 'internal') return true;
+    res.status(400).json({ message: 'Internal services cannot have public domains or DNS automation' });
+    return false;
+  }
+
+  api.get(servicePaths('/:id/domains'), auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
+    if (ctx.service.exposure === 'internal') { res.json([]); return; }
     const { rows } = await pool.query(
       `SELECT id, kind, domain, tls_risk, verified, verify_token, cf_zone_id, cf_record_id, created
        FROM deploy_domains WHERE service_id = $1 ORDER BY created`,
@@ -988,12 +905,13 @@ export function deploymentRoutes(pool, authenticate) {
     })));
   }));
 
-  api.post('/repos/:space/:repo/\\+/deployments/services/:id/domains', auth, guard(async (req, res) => {
+  api.post(servicePaths('/:id/domains'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
+    if (!requireHttp(ctx, res)) return;
     const domain = String(req.body?.domain || '').trim().toLowerCase().replace(/\.$/, '');
     const kind = req.body?.kind === 'tunnel' ? 'tunnel' : 'caddy';
-    if (!DOMAIN_RE.test(domain) || domain.includes('*')) {
+    if (domain.length > 253 || domain.split('.').some(label => label.length > 63) || !DOMAIN_RE.test(domain) || domain.includes('*')) {
       res.status(400).json({ message: 'Enter a concrete hostname like app.example.com' });
       return;
     }
@@ -1100,9 +1018,10 @@ export function deploymentRoutes(pool, authenticate) {
 
   // POST .../domains/:domainId/verify — prove ownership with the TXT
   // challenge, or (admin) mark a domain verified out of band.
-  api.post('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId/verify', auth, guard(async (req, res) => {
+  api.post(servicePaths('/:id/domains/:domainId/verify'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
+    if (!requireHttp(ctx, res)) return;
     const { rows } = await pool.query(
       'SELECT id, domain, verified, verify_token FROM deploy_domains WHERE id = $1 AND service_id = $2',
       [Number(req.params.domainId), ctx.service.id],
@@ -1159,9 +1078,10 @@ export function deploymentRoutes(pool, authenticate) {
 
   // Retry Cloudflare record creation for a tunnel domain whose first attempt
   // failed (expired token, zone not visible yet, transient API error, …).
-  api.post('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId/dns', auth, guard(async (req, res) => {
+  api.post(servicePaths('/:id/domains/:domainId/dns'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
+    if (!requireHttp(ctx, res)) return;
     if (!req.auth.user.admin) {
       res.status(403).json({ message: 'Only an instance admin can use DNS automation; publish the TXT challenge instead' });
       return;
@@ -1194,7 +1114,7 @@ export function deploymentRoutes(pool, authenticate) {
       verification: verificationStatus({ ...row, verified }), dns, guidance: domainGuidance(row.domain, row.kind) });
   }));
 
-  api.delete('/repos/:space/:repo/\\+/deployments/services/:id/domains/:domainId', auth, guard(async (req, res) => {
+  api.delete(servicePaths('/:id/domains/:domainId'), auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
     const { rows } = await pool.query(
@@ -1227,40 +1147,14 @@ export function deploymentRoutes(pool, authenticate) {
 
   // -------------------------------------------------------------------------
   // Space-wide deployments board (Railway-style cards + activity feed).
-  // Visible when the space itself is visible: public, membership, personal
-  // ownership, or admin.
+  // Space visibility alone never grants access to private service activity.
   // -------------------------------------------------------------------------
 
-  api.get('/spaces/:uid/deployments', auth, guard(async (req, res) => {
+  api.get('/spaces/:space/deployments', auth, guard(async (req, res) => {
     const user = req.auth.user;
-    const { rows: spaceRows } = await pool.query(
-      `SELECT sp.uid, sp.is_public, sp.uid AS owner_uid FROM spaces sp WHERE sp.uid = $1`,
-      [req.params.uid],
-    );
-    const space = spaceRows[0];
-    if (!space) {
-      res.status(404).json({ message: 'Space not found' });
-      return;
-    }
-    if (!user.admin && !space.is_public) {
-      const { rows: member } = await pool.query(
-        'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
-        [space.uid, user.uid],
-      );
-      if (!member.length && space.owner_uid !== user.uid) {
-        res.status(403).json({ message: 'No access to this space' });
-        return;
-      }
-    }
-
-    const { rows: services } = await pool.query(
-      `SELECT s.*, r.uid AS repo_uid, r.default_branch
-       FROM deploy_services s
-       JOIN repos r ON r.id = s.repo_id
-       WHERE r.space_uid = $1
-       ORDER BY s.created ASC`,
-      [space.uid],
-    );
+    const space = await loadSpace(req, res);
+    if (!space) return;
+    const services = await visibleServices(user, space.uid);
 
     const domainsByService = new Map();
     const tlsRiskByService = new Map();
@@ -1275,6 +1169,7 @@ export function deploymentRoutes(pool, authenticate) {
         ids,
       );
       for (const d of domainRows) {
+        if (services.find(s => Number(s.id) === Number(d.service_id))?.exposure === 'internal') continue;
         const list = domainsByService.get(Number(d.service_id)) || [];
         list.push(d.domain);
         domainsByService.set(Number(d.service_id), list);
@@ -1296,6 +1191,7 @@ export function deploymentRoutes(pool, authenticate) {
       const summary = await currentDeploymentSummary(s);
       out.push(rowToService(s, {
         current: summary,
+        can_write: s.can_write,
         repo_uid: s.repo_uid,
         alert: s.last_failed_deployment_id != null,
         domains: domainsByService.get(Number(s.id)) || [],
@@ -1331,7 +1227,13 @@ export function deploymentRoutes(pool, authenticate) {
       }));
     }
 
-    res.json({ services: out, activity });
+    const flags = runtimeFlagsFromEnv(env);
+    res.json({ services: out, activity, can_write: await canWrite(space.uid, user), capabilities: {
+      host_mounts: Boolean(user.admin && flags.bindAllowlist.length),
+      bind_allowlist: user.admin ? flags.bindAllowlist : [],
+      gpus: Boolean(user.admin),
+      git_hosts: externalGitHosts(env),
+    } });
   }));
 
   // -------------------------------------------------------------------------
@@ -1340,24 +1242,7 @@ export function deploymentRoutes(pool, authenticate) {
 
   api.get('/deployments/overview', auth, guard(async (req, res) => {
     const user = req.auth.user;
-    // Services in spaces the user can read: public spaces, memberships,
-    // personal spaces owned by them (space uid == owner uid), or admin.
-    const visibility = user.admin
-      ? 'TRUE'
-      : `EXISTS (
-           SELECT 1 FROM repos r
-           JOIN spaces sp ON sp.uid = r.space_uid
-           LEFT JOIN space_members m ON m.space_uid = r.space_uid AND m.user_uid = $1
-           WHERE r.id = s.repo_id AND (sp.is_public OR m.user_uid IS NOT NULL OR sp.uid = $1)
-         )`;
-    const { rows: services } = await pool.query(
-      `SELECT s.*, r.space_uid AS space, r.uid AS repo_uid, r.default_branch
-       FROM deploy_services s
-       JOIN repos r ON r.id = s.repo_id
-       JOIN spaces sp ON sp.uid = r.space_uid
-       WHERE ${visibility}`,
-      [user.uid],
-    );
+    const services = await visibleServices(user);
 
     const ids = services.map(s => s.id);
     const reqCounts = new Map();
@@ -1381,6 +1266,7 @@ export function deploymentRoutes(pool, authenticate) {
       ]);
       for (const r of rows) reqCounts.set(Number(r.service_id), Number(r.n));
       for (const d of domainRows) {
+        if (services.find(s => Number(s.id) === Number(d.service_id))?.exposure === 'internal') continue;
         const list = unverifiedByService.get(Number(d.service_id)) || [];
         list.push(d.domain);
         unverifiedByService.set(Number(d.service_id), list);
@@ -1396,12 +1282,13 @@ export function deploymentRoutes(pool, authenticate) {
       out.push({
         ...rowToService(s, {
           current: summary,
+          can_write: s.can_write,
           requests_24h: reqCounts.get(Number(s.id)) || 0,
           alert: failed,
           live,
           unverified_domains: unverifiedByService.get(Number(s.id)) || [],
         }),
-        space: s.space,
+        space: s.space_uid,
         repo_uid: s.repo_uid,
       });
     }

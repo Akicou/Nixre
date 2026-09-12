@@ -112,6 +112,13 @@ test('workspace Docker Compose configuration contracts (no daemon required)', as
     forwarded(services['nixre-ssh'].environment, { INTERNAL_TOKEN: fixtureEnv.NIXRE_INTERNAL_TOKEN });
   });
 
+  await t.test('standalone Git allowlist reaches core without changing the default', () => {
+    const defaults = config('nixre-contract-git');
+    assert.equal(defaults.services['nixre-core'].environment.NIXRE_DEPLOY_GIT_HOSTS, '');
+    const configured = config('nixre-contract-git', { NIXRE_DEPLOY_GIT_HOSTS: 'gitlab.com,codeberg.org' });
+    assert.equal(configured.services['nixre-core'].environment.NIXRE_DEPLOY_GIT_HOSTS, 'gitlab.com,codeberg.org');
+  });
+
   await t.test('Postgres uses separate fields and preserves URI punctuation in passwords', () => {
     const overrides = {
       POSTGRES_USER: 'compose_fixture_user',

@@ -30,6 +30,7 @@ test('defaults normalize to a stable shape', () => {
     'cap_drop',
     'devices',
     'extra_hosts',
+    'gpus',
     'group_add',
     'network_mode',
     'privileged',
@@ -218,4 +219,30 @@ test('env policy parsing', () => {
   assert.equal(flags.allowPrivileged, true);
   assert.equal(flags.allowHostNetwork, false);
   assert.deepEqual(parseBindAllowlist(''), []);
+});
+
+test('native Docker health commands are bounded and cannot disable checking', () => {
+  assert.equal(normalizeRuntimeOptions({}).health_type, 'http');
+  assert.equal(normalizeRuntimeOptions({ health_type: 'tcp' }).health_command, null);
+  assert.equal(normalizeRuntimeOptions({ health_type: 'docker' }).health_command, null, 'image healthcheck can be inherited');
+  for (const command of [['CMD', 'check', '--ready'], ['CMD-SHELL', 'check || exit 1']]) {
+    assert.deepEqual(normalizeRuntimeOptions({ health_type: 'docker', health_command: command }).health_command, command);
+  }
+  for (const health_command of [['NONE'], ['CMD'], ['CMD-SHELL', 'check', 'extra'], 'check',
+    ['CMD', 'x\0'], ['CMD', 'x'.repeat(2001)], ['CMD', ...Array(32).fill('x')]]) {
+    assert.throws(() => normalizeRuntimeOptions({ health_type: 'docker', health_command }), /health_command/);
+  }
+  assert.throws(() => normalizeRuntimeOptions({ health_type: 'http', health_command: ['CMD', 'check'] }), /health_command/);
+  assert.throws(() => normalizeRuntimeOptions({ health_type: 'bogus' }), /health_type/);
+  assert.throws(() => normalizeRuntimeOptions({ health_path: '/\0' }), /health_path/);
+  assert.equal(getRuntimeOptions({ runtime_options: { health_type: 'docker', health_command: ['NONE'] } }).health_type, 'invalid');
+  assert.equal(getRuntimeOptions({ runtime_options: { health_timeout_ms: 99_000_000 } }).health_timeout_ms, null);
+});
+
+test('GPU requests require admin and normalize only all or null', () => {
+  assert.throws(() => normalizeRuntimeOptions({ host_config: { gpus: 'all' } }), /admin/);
+  assert.equal(normalizeRuntimeOptions({ host_config: { gpus: 'all' } }, ADMIN).host_config.gpus, 'all');
+  assert.equal(normalizeRuntimeOptions({}, ADMIN).host_config.gpus, null);
+  assert.throws(() => normalizeRuntimeOptions({ host_config: { gpus: ['0'] } }, ADMIN), /gpus/);
+  assert.equal(getRuntimeOptions({ runtime_options: { host_config: { gpus: 'all' } } }).host_config.gpus, 'all');
 });

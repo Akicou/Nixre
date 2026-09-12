@@ -98,6 +98,8 @@ services:
       NIXRE_DEPLOY_BIND_ALLOWLIST: ${NIXRE_DEPLOY_BIND_ALLOWLIST:-}
       NIXRE_DEPLOY_ALLOW_PRIVILEGED: ${NIXRE_DEPLOY_ALLOW_PRIVILEGED:-false}
       NIXRE_DEPLOY_ALLOW_HOST_NETWORK: ${NIXRE_DEPLOY_ALLOW_HOST_NETWORK:-false}
+      # Additional public HTTPS Git hosts (github.com is always supported).
+      NIXRE_DEPLOY_GIT_HOSTS: ${NIXRE_DEPLOY_GIT_HOSTS:-}
       # --- Cloudflare DNS automation -----------------------------------
       # When set, tunnel-kind custom domains get their proxied CNAME
       # (<domain> -> <CLOUDFLARE_TUNNEL_ID>.cfargotunnel.com) created/removed

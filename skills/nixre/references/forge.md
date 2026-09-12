@@ -6,7 +6,7 @@ Everything here is first-class in `nixre-core` (not a plugin).
 
 - Multi-tenant workspaces with membership-based access control.
 - Create/list via `GET /api/v1/spaces` and `POST /api/v1/spaces`; manage members under `/spaces/:spaceUid/members`.
-- The **space "Deployments" tab** is the org-wide board: every service in the space as a Railway-style card (status, domain, last deploy time/trigger) + a live activity feed. Cards deep-link to `/{space}/{repo}?deploys=1&svc=<id>`.
+- The **space "Deployments" tab** lists visible services and activity, with guided standalone setup. Repository services open at `/{space}/{repo}?deploys=1&svc=<id>`; standalone Git/image services open at `/{space}?tab=deployments&service=<id>` without a repository.
 
 ## Repos
 

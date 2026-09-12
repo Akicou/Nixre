@@ -3,7 +3,25 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import { once } from 'node:events';
-import { createDeployProxy } from './deployProxy.js';
+import { buildRoutes, createDeployProxy } from './deployProxy.js';
+
+test('internal services never receive custom, vanity or deterministic HTTP routes', async () => {
+  const services = [{ id: 1, name: 'db', exposure: 'internal' }, { id: 2, name: 'web', exposure: 'http' },
+    { id: 3, name: 'web', exposure: 'internal' }, { id: 4, name: 'legacy' }];
+  const domains = [{ domain: 'db.example.com', service_id: 1, verified: true },
+    { domain: 'stopped-db.example.com', service_id: 9, verified: true, exposure: 'internal' },
+    { domain: 'web.example.com', service_id: 2, verified: true, exposure: 'http' }];
+  const routes = buildRoutes(domains, services, 'apps.example.com');
+  assert.deepEqual(routes.map(r => r.host).sort(), ['web.example.com', 'web.apps.example.com', 'svc-2.apps.example.com', 'legacy.apps.example.com', 'svc-4.apps.example.com'].sort());
+  let targets = 0;
+  const proxy = createDeployProxy({ pool: { async query(sql) {
+    assert.ok(sql.includes("exposure = 'http'"));
+    return { rows: sql.includes('SELECT d.domain') ? domains : services };
+  } }, engine: { async findServiceTarget() { targets++; return null; } } });
+  assert.equal((await proxy.routeHost('db.example.com')).matched, false);
+  assert.equal((await proxy.routeHost('stopped-db.example.com')).matched, false);
+  assert.equal(targets, 0);
+});
 
 test('WebSocket connection refusal closes the client without an unhandled error', async t => {
   const placeholder = net.createServer();

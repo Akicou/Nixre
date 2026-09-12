@@ -639,8 +639,8 @@ export const SpaceView: React.FC = () => {
         )}
       </nav>
 
-      <div className="py-6 grid grid-cols-1 lg:grid-cols-[296px_minmax(0,1fr)] gap-8">
-        <aside className="min-w-0 space-y-4">
+      <div className={`py-6 grid grid-cols-1 gap-8 ${activeTab === 'deployments' ? '' : 'lg:grid-cols-[296px_minmax(0,1fr)]'}`}>
+        <aside className={`min-w-0 space-y-4 ${activeTab === 'deployments' ? 'hidden' : ''}`}>
           <div className="relative w-20 h-20 lg:w-[296px] lg:h-[296px]">
             <Avatar
               name={avatarName}
@@ -831,7 +831,7 @@ export const SpaceView: React.FC = () => {
             </div>
           )}
 
-          {activeTab === 'deployments' && <SpaceDeployments spaceUid={space.uid} />}
+          {activeTab === 'deployments' && <SpaceDeployments key={space.uid} spaceUid={space.uid} />}
 
           {activeTab === 'people' && (
             <OrgPeoplePanel

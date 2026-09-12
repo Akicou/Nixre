@@ -127,6 +127,9 @@ export function createRequestMiddleware(authenticate) {
     '/repos/:space/:repo/\\+/deployments/services/:id/deploy',
     '/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/redeploy',
     '/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/rollback',
+    '/spaces/:space/deployments/services/:id/deploy',
+    '/spaces/:space/deployments/services/:id/deployments/:depId/redeploy',
+    '/spaces/:space/deployments/services/:id/deployments/:depId/rollback',
   ], limit(30, 'deploy triggers'));
 
   const auth = authenticate(true);
