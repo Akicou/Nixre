@@ -822,7 +822,11 @@ export function forgeRoutes(pool, authenticate) {
 
     try {
       const { rows } = await pool.query(
-        'UPDATE repos SET space_uid = $1, uid = $2, updated = $3 WHERE id = $4 RETURNING *',
+        `WITH moved AS (
+           UPDATE repos SET space_uid = $1, uid = $2, updated = $3 WHERE id = $4 RETURNING *
+         ), moved_services AS (
+           UPDATE deploy_services SET space_uid = $1 WHERE repo_id = $4 RETURNING id
+         ) SELECT * FROM moved`,
         [destSpace, destUid, now(), repo.id],
       );
       await pool.query(
@@ -858,7 +862,31 @@ export function forgeRoutes(pool, authenticate) {
       res.status(403).json({ message: 'No write access' });
       return;
     }
-    await pool.query('DELETE FROM repos WHERE id = $1', [repo.id]);
+    // Cascading metadata cannot stop Docker processes. Require explicit service
+    // deletion, which awaits container shutdown and retains persistent volumes.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // The FK key-share lock of a concurrent service insert must wait until
+      // this transaction commits, rather than slipping past the empty check.
+      const locked = await client.query('SELECT id FROM repos WHERE id = $1 FOR UPDATE', [repo.id]);
+      if (!locked.rows.length) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ message: 'Repository not found' });
+        return;
+      }
+      const services = await client.query('SELECT id FROM deploy_services WHERE repo_id = $1 LIMIT 1', [repo.id]);
+      if (services.rows.length) {
+        await client.query('ROLLBACK');
+        res.status(409).json({ message: 'Delete this repository\'s deployment services before deleting the repository. Persistent volumes will be retained.' });
+        return;
+      }
+      await client.query('DELETE FROM repos WHERE id = $1', [repo.id]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally { client.release(); }
     await removeBareRepo(repo.space_uid, repo.uid).catch(() => {});
     res.json({ ok: true });
   });

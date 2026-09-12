@@ -3,9 +3,9 @@
 // One engine instance owns the state machine taking a git commit to a healthy,
 // traffic-serving container: resolve ref -> git-archive tarball -> docker build
 // -> labeled container (env, CPU/RAM caps, unless-stopped restart policy,
-// core network) -> health probe -> blue/green swap. A failed build/release
-// NEVER touches the currently serving container — fallback is structural —
-// and the failure lands on last_failed_deployment_id so the UI can warn hard.
+// apps network) -> health probe -> blue/green or recreate cutover. Recreate
+// persists stopped intent before touching storage and never falls back after
+// cutover: the candidate may have mutated a retained volume.
 //
 // Everything impure arrives via `drivers`; production bindings live in
 // deployDrivers.js. Pool access is dependency-injected for hermetic tests.
@@ -20,9 +20,13 @@ import {
 import { decryptSecret } from './ai.js';
 import { getRuntimeOptions } from './deployRuntimeOptions.js';
 import * as bus from './deployBus.js';
+import { Readable, Transform, Writable } from 'node:stream';
 
 const SERVICE_TABLE = 'deploy_services';
 const DEP_TABLE = 'deployments';
+// KILL lets root Tini forward shutdown signals after gosu switches to postgres.
+const POSTGRES_CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'KILL'];
+const POSTGRES_HEALTH = ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'];
 
 class Cancelled extends Error {
   constructor() {
@@ -38,9 +42,13 @@ export function createDeploymentEngine({
   healthTimeoutMs = Number(process.env.DEPLOY_HEALTH_TIMEOUT_MS || 30_000),
   drainMs = Number(process.env.DEPLOY_DRAIN_MS || 5_000),
   keepImages = 8,
+  buildTimeoutMs = 30 * 60_000,
 }) {
-  /** @type {Map<number, {deploymentId:number, controller:AbortController, cancelled:boolean, reuseImage?:string}>} */
+  // pg returns BIGINT IDs as strings; routes may pass numbers. Keep all map
+  // keys and ID comparisons in string form without losing BIGINT precision.
+  /** @type {Map<string, {deploymentId:number|string, controller:AbortController, cancelled:boolean, reuseImage?:string}>} */
   const activeRuns = new Map();
+  const maintenance = new Set();
   const targetCache = new Map(); // serviceId -> { ts, target }
   const metricRings = new Map(); // serviceId -> [{ts, cpuPctOfLimit, memUsedBytes, memPctOfLimit}]
 
@@ -48,13 +56,30 @@ export function createDeploymentEngine({
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   function isBusy(serviceId) {
-    return activeRuns.has(serviceId);
+    return activeRuns.has(String(serviceId)) || maintenance.has(String(serviceId));
   }
   async function waitIdle(serviceId) {
-    while (activeRuns.has(serviceId)) await sleep(2);
+    while (isBusy(serviceId)) await sleep(2);
   }
   async function waitAllIdle() {
-    while (activeRuns.size > 0) await sleep(2);
+    while (activeRuns.size > 0 || maintenance.size > 0) await sleep(2);
+  }
+
+  async function maintain(serviceId, work, { cancel = false } = {}) {
+    if (maintenance.has(String(serviceId)) || (!cancel && activeRuns.has(String(serviceId)))) {
+      throw Object.assign(new Error('Service lifecycle operation already running'), { status: 409 });
+    }
+    // Reserve synchronously, before any SQL or Docker await can admit a deploy.
+    maintenance.add(String(serviceId));
+    try {
+      if (cancel) {
+        await cancelDeployment(serviceId);
+        while (activeRuns.has(String(serviceId))) await sleep(2);
+      }
+      return await work();
+    } finally {
+      maintenance.delete(String(serviceId));
+    }
   }
 
   // --- SQL helpers ----------------------------------------------------------
@@ -103,45 +128,52 @@ export function createDeploymentEngine({
    */
   async function startDeployment(
     serviceId,
-    { ref, trigger = 'manual', _reuseImage } = {},
+    { ref, trigger = 'manual', _reuseImage, _sourceSnapshot } = {},
   ) {
-    if (activeRuns.has(serviceId)) {
+    if (isBusy(serviceId)) {
       throw Object.assign(new Error('A deployment is already running for this service'), {
         status: 409,
       });
     }
-    const service = await getService(serviceId);
-    if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
-    if (service.desired_state === 'stopped' && trigger !== 'manual') {
-      return { deploymentId: null, skipped: 'desired_state stopped' };
-    }
-
     const controller = new AbortController();
-    const entry = { deploymentId: 0, controller, cancelled: false, reuseImage: _reuseImage };
-    activeRuns.set(serviceId, entry);
+    const entry = { deploymentId: 0, controller, cancelled: false, reuseImage: _reuseImage,
+      sourceSnapshot: _sourceSnapshot };
+    activeRuns.set(String(serviceId), entry);
+    try {
+      const service = await getService(serviceId);
+      if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
+      if (service.desired_state === 'stopped' && !['manual', 'redeploy', 'rollback'].includes(trigger)) {
+        activeRuns.delete(String(serviceId));
+        return { deploymentId: null, skipped: 'desired_state stopped' };
+      }
+      const dep = (
+        await pool.query(
+          `INSERT INTO ${DEP_TABLE}
+             (service_id, ref, trigger_kind, status, started)
+           VALUES ($1, $2, $3, 'queued', $4) RETURNING *`,
+          [serviceId, String(service.source_type === 'image'
+            ? _sourceSnapshot?.image_ref || service.image_ref || ''
+            : ref || service.branch || ''), trigger, now()],
+        )
+      ).rows[0];
+      entry.deploymentId = dep.id;
 
-    const dep = (
-      await pool.query(
-        `INSERT INTO ${DEP_TABLE}
-           (service_id, ref, trigger_kind, status, started)
-         VALUES ($1, $2, $3, 'queued', $4) RETURNING *`,
-        [serviceId, String(ref || service.branch || ''), trigger, now()],
-      )
-    ).rows[0];
-    entry.deploymentId = dep.id;
+      await updateServices(serviceId, { status: { v: 'deploying' }, updated: { v: now() } });
+      bus.publishStatus(service.id, 'queued', { deploymentId: dep.id, trigger });
 
-    await updateServices(serviceId, { status: { v: 'deploying' }, updated: { v: now() } });
-    bus.publishStatus(serviceId, 'queued', { deploymentId: dep.id, trigger });
+      void runPipeline(service, dep, entry).catch(err => {
+        console.error(`deploy svc#${serviceId} crashed unexpectedly:`, err.message);
+      });
 
-    void runPipeline(service, dep, entry).catch(err => {
-      console.error(`deploy svc#${serviceId} crashed unexpectedly:`, err.message);
-    });
-
-    return { deploymentId: dep.id, deployment: dep };
+      return { deploymentId: dep.id, deployment: dep };
+    } catch (err) {
+      if (activeRuns.get(String(serviceId)) === entry) activeRuns.delete(String(serviceId));
+      throw err;
+    }
   }
 
   async function cancelDeployment(serviceId) {
-    const entry = activeRuns.get(serviceId);
+    const entry = activeRuns.get(String(serviceId));
     if (!entry) return false;
     entry.cancelled = true;
     entry.controller.abort();
@@ -152,16 +184,22 @@ export function createDeploymentEngine({
   async function rollback(serviceId, sourceDeploymentId) {
     const service = await getService(serviceId);
     if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
-    if (sourceDeploymentId === service.current_deployment_id) {
+    if (service.volume_path || service.template) {
+      throw Object.assign(new Error('Rollback is disabled for stateful/template services'), { status: 400 });
+    }
+    if (String(sourceDeploymentId) === String(service.current_deployment_id)) {
       throw Object.assign(new Error('That deployment is already being served'), { status: 400 });
     }
-    if (activeRuns.has(serviceId)) {
+    if (isBusy(serviceId)) {
       throw Object.assign(new Error('A deployment is already running'), { status: 409 });
     }
     const src = (await pool.query(`SELECT * FROM ${DEP_TABLE} WHERE id = $1`, [sourceDeploymentId]))
       .rows[0];
-    if (!src || src.service_id !== serviceId) {
+    if (!src || String(src.service_id) !== String(serviceId)) {
       throw Object.assign(new Error('No such deployment'), { status: 404 });
+    }
+    if (src.config_snapshot?.volume_path || src.config_snapshot?.template) {
+      throw Object.assign(new Error('Rollback is disabled for stateful/template releases'), { status: 400 });
     }
     if (!src.image_tag) {
       throw Object.assign(new Error('That deployment has no built image to roll back to'), {
@@ -173,18 +211,19 @@ export function createDeploymentEngine({
       ref: src.sha || src.ref,
       trigger: 'rollback',
       _reuseImage: src.image_tag,
+      _sourceSnapshot: src.config_snapshot,
     });
     return deployment;
   }
 
-  /** Re-run a past deployment's exact ref/config as a fresh release. */
+  /** Re-release the stored image with current runtime settings; legacy failures rebuild. */
   async function redeploy(serviceId, deploymentId) {
     const service = await getService(serviceId);
     if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
     let dep = null;
     if (deploymentId != null) {
       dep = (await pool.query(`SELECT * FROM ${DEP_TABLE} WHERE id = $1`, [deploymentId])).rows[0];
-      if (!dep || dep.service_id !== serviceId) {
+      if (!dep || String(dep.service_id) !== String(serviceId)) {
         throw Object.assign(new Error('No such deployment'), { status: 404 });
       }
     } else if (service.current_deployment_id) {
@@ -192,57 +231,72 @@ export function createDeploymentEngine({
         service.current_deployment_id,
       ])).rows[0];
     }
+    if (dep && String(dep.id) !== String(service.current_deployment_id) &&
+        (service.volume_path || service.template || dep.config_snapshot?.volume_path || dep.config_snapshot?.template)) {
+      throw Object.assign(new Error('Historical redeploy is disabled for stateful/template services; deploy explicitly to recover'), { status: 400 });
+    }
     return startDeployment(serviceId, {
       ref: dep?.sha || dep?.ref || service.branch,
       trigger: 'redeploy',
+      _reuseImage: dep?.status === 'live' ? dep.image_tag : undefined,
+      _sourceSnapshot: dep?.status === 'live' ? dep.config_snapshot : undefined,
     });
   }
 
   async function deleteDeployment(serviceId, deploymentId) {
-    const service = await getService(serviceId);
-    if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
-    if (service.current_deployment_id === deploymentId) {
-      throw Object.assign(
-        new Error(
-          'This deployment is serving traffic — deploy something newer or stop the service before deleting it',
-        ),
-        { status: 400 },
-      );
-    }
-    await removeContainerIfExists(serviceId, containerName(serviceId, deploymentId));
-    try {
-      const docker = await requireDocker();
-      await docker.getImage(makeImageTag(serviceId, deploymentId)).remove({ force: true });
-    } catch {
-      /* docker down or image already gone */
-    }
-    await pool.query(`DELETE FROM ${DEP_TABLE} WHERE id = $1`, [deploymentId]);
+    return maintain(serviceId, async () => {
+      const service = await getService(serviceId);
+      if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
+      const dep = (await pool.query(`SELECT * FROM ${DEP_TABLE} WHERE id = $1`, [deploymentId])).rows[0];
+      if (!dep || String(dep.service_id) !== String(serviceId)) {
+        throw Object.assign(new Error('No such deployment'), { status: 404 });
+      }
+      if (String(service.current_deployment_id) === String(deploymentId)) {
+        throw Object.assign(new Error('This is the current release; deploy something newer before deleting it'), { status: 400 });
+      }
+      await removeContainerIfExists(serviceId, containerName(serviceId, deploymentId));
+      const tag = makeImageTag(serviceId, deploymentId);
+      const shared = (await pool.query(`SELECT * FROM ${DEP_TABLE} WHERE image_tag = $1 AND id <> $2`,
+        [tag, deploymentId])).rows.length > 0;
+      try {
+        const docker = await requireDocker();
+        if (!shared) await docker.getImage(tag).remove();
+      } catch {
+        /* docker down or image already gone */
+      }
+      await pool.query(`DELETE FROM ${DEP_TABLE} WHERE id = $1`, [deploymentId]);
+    });
   }
 
   async function stopService(serviceId) {
-    const service = await getService(serviceId);
-    if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
-    await updateServices(serviceId, {
-      desired_state: { v: 'stopped' },
-      status: { v: 'stopped' },
-      updated: { v: now() },
-    });
-    targetCache.delete(serviceId);
-    if (service.current_deployment_id) {
-      await retireOldContainer(serviceId, service.current_deployment_id);
-    }
+    return maintain(serviceId, async () => {
+      const service = await getService(serviceId);
+      if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
+      await updateServices(serviceId, {
+        desired_state: { v: 'stopped' },
+        status: { v: 'stopped' },
+        updated: { v: now() },
+      });
+      targetCache.delete(String(serviceId));
+      await quiesceService(await requireDocker(), service);
+    }, { cancel: true });
   }
 
   async function startService(serviceId) {
-    const service = await getService(serviceId);
-    if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
-    await updateServices(serviceId, {
-      desired_state: { v: 'running' },
-      updated: { v: now() },
+    return maintain(serviceId, async () => {
+      const service = await getService(serviceId);
+      if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
+      if (!service.current_deployment_id && service.desired_state === 'stopped') {
+        throw Object.assign(new Error('No safe current release; deploy explicitly to recover'), { status: 409 });
+      }
+      await updateServices(serviceId, {
+        desired_state: { v: 'running' },
+        updated: { v: now() },
+      });
+      targetCache.delete(String(serviceId));
+      await sweepService({ ...service, desired_state: 'running' });
+      return { started: Boolean(service.current_deployment_id) };
     });
-    targetCache.delete(serviceId);
-    await sweepService(service);
-    return { started: Boolean(service.current_deployment_id) };
   }
 
   // --- pipeline -------------------------------------------------------------
@@ -250,19 +304,46 @@ export function createDeploymentEngine({
   async function runPipeline(service, dep, entry) {
     const { deploymentId } = entry;
     const startedAt = dep.started;
+    let externalSource;
     try {
       const serviceFresh = (await getService(service.id)) || service;
-      const repo = await getRepoById(serviceFresh.repo_id);
-      if (!repo) throw new Error('Repository for this service no longer exists');
-
+      validateServiceRuntime(serviceFresh);
+      throwIfCancelled(entry);
+      const sourceType = serviceFresh.source_type || 'repo';
+      // Stored images do not depend on a Git server (including deleted repos).
+      const repo = sourceType === 'repo' && serviceFresh.repo_id
+        ? await getRepoById(serviceFresh.repo_id) : null;
+      if (!entry.reuseImage && sourceType === 'repo' && !repo) {
+        throw new Error('Repository for this service no longer exists');
+      }
       const docker = await requireDocker();
       let imageTag;
+      const ro = getRuntimeOptions(serviceFresh);
+      const sourceConfig = entry.sourceSnapshot || serviceFresh;
+      await updateDeployments(deploymentId, { config_snapshot: {
+        source_type: sourceConfig.source_type || 'repo',
+        repo_id: sourceConfig.repo_id ?? null,
+        git_url: sourceConfig.git_url ?? null,
+        image_ref: sourceConfig.image_ref ?? null,
+        root_dir: sourceConfig.root_dir ?? '.',
+        dockerfile_path: sourceConfig.dockerfile_path ?? 'Dockerfile',
+        build_target: sourceConfig.build_target ?? null,
+        template: serviceFresh.template ?? null,
+        volume_path: serviceFresh.volume_path ?? null,
+        exposure: serviceFresh.exposure || 'http',
+        deployment_strategy: serviceFresh.deployment_strategy || 'blue_green',
+        container_port: serviceFresh.container_port,
+        cpu_nano_cpus: serviceFresh.cpu_nano_cpus,
+        memory_bytes: serviceFresh.memory_bytes,
+        health_type: serviceFresh.template === 'postgres' ? 'docker' : ro?.health_type || 'http',
+        health_timeout_ms: ro?.health_timeout_ms ?? null,
+      } });
 
       if (entry.reuseImage) {
         // Rollback path — no ref resolution, no build.
         imageTag = entry.reuseImage;
         await updateDeployments(deploymentId, {
-          sha: { v: dep.ref },
+          sha: { v: sourceConfig.source_type === 'image' ? '' : dep.ref },
           status: { v: 'releasing' },
           image_tag: { v: imageTag },
         });
@@ -271,7 +352,21 @@ export function createDeploymentEngine({
       } else {
         const ref = dep.ref || serviceFresh.branch || '';
         bus.publishLog(serviceFresh.id, 'release', `Resolving ${ref}…`);
-        const { sha, message } = await drivers.resolveRef(repo.space_uid, repo.uid, ref);
+        let sha = '';
+        let message = '';
+        if (sourceType === 'git') {
+          externalSource = await drivers.prepareExternalSource({
+            gitUrl: serviceFresh.git_url, ref,
+            rootDir: serviceFresh.root_dir || '.',
+            dockerfilePath: serviceFresh.dockerfile_path || 'Dockerfile',
+            signal: entry.controller.signal,
+          });
+          ({ sha, message } = externalSource);
+        } else if (sourceType === 'repo') {
+          ({ sha, message } = await drivers.resolveRef(repo.space_uid, repo.uid, ref));
+        } else if (sourceType !== 'image') {
+          throw new Error('Unsupported deployment source type');
+        }
         throwIfCancelled(entry);
 
         imageTag = makeImageTag(serviceFresh.id, deploymentId);
@@ -283,7 +378,11 @@ export function createDeploymentEngine({
         });
         bus.publishStatus(serviceFresh.id, 'building', { deploymentId });
 
-        await buildImage({ docker, service: serviceFresh, repo, sha, imageTag, entry });
+        if (sourceType === 'image') {
+          await buildImage({ docker, service: serviceFresh, imageTag, entry, pull: true });
+        } else {
+          await buildImage({ docker, service: serviceFresh, repo, sha, imageTag, entry, externalSource });
+        }
         throwIfCancelled(entry);
         await updateDeployments(deploymentId, { status: { v: 'releasing' } });
         bus.publishStatus(serviceFresh.id, 'releasing', { deploymentId });
@@ -296,7 +395,19 @@ export function createDeploymentEngine({
         )
       ).rows;
       const env = envRows.map(r => `${r.key}=${decryptValue(r.value_enc)}`);
-
+      throwIfCancelled(entry);
+      entry.previousId = serviceFresh.current_deployment_id;
+      if (serviceFresh.deployment_strategy === 'recreate') {
+        // One durable intent write precedes every stop/start. Do not restore the
+        // old pointer after this point, even if the candidate never gets healthy.
+        await updateServices(serviceFresh.id, {
+          desired_state: 'stopped', current_deployment_id: null, updated: now(),
+        });
+        entry.recreateIntent = true;
+        targetCache.delete(String(serviceFresh.id));
+        await quiesceService(docker, { ...serviceFresh, current_deployment_id: entry.previousId });
+      }
+      throwIfCancelled(entry);
       const info = await launchContainer({
         docker,
         service: serviceFresh,
@@ -304,6 +415,7 @@ export function createDeploymentEngine({
         deploymentId,
         imageTag,
         env,
+        entry,
       });
       bus.publishLog(
         serviceFresh.id,
@@ -311,21 +423,24 @@ export function createDeploymentEngine({
         `Waiting for the app to answer on :${serviceFresh.container_port}…`,
       );
       await waitForHealth({ docker, service: serviceFresh, info, entry });
+      throwIfCancelled(entry);
 
       // ---- swap ----
-      const previousId = serviceFresh.current_deployment_id;
+      const previousId = entry.previousId;
       await updateDeployments(deploymentId, {
         status: { v: 'live' },
         finished: { v: now() },
         duration_ms: { v: Math.max(0, now() - startedAt) },
       });
+      throwIfCancelled(entry);
       await updateServices(serviceFresh.id, {
         current_deployment_id: { v: deploymentId },
+        desired_state: { v: 'running' },
         status: { v: 'running' },
         last_failed_deployment_id: { v: null },
         updated: { v: now() },
       });
-      targetCache.delete(serviceFresh.id);
+      targetCache.delete(String(serviceFresh.id));
       bus.publishStatus(serviceFresh.id, 'live', { deploymentId, previousId });
       bus.publishLog(
         serviceFresh.id,
@@ -333,16 +448,18 @@ export function createDeploymentEngine({
         `Live${dep.sha ? `, serving ${(dep.sha || '').slice(0, 7)}` : ''}.`,
       );
 
-      if (previousId && previousId !== deploymentId) {
-        void retireOldContainer(serviceFresh.id, previousId)
-          .catch(() => {})
-          .finally(() => {});
+      if (!entry.recreateIntent && previousId && String(previousId) !== String(deploymentId)) {
+        await retireOldContainer(serviceFresh.id, previousId);
       }
-      void pruneServiceImages(docker, serviceFresh.id, deploymentId).catch(() => {});
+      await pruneServiceImages(docker, serviceFresh.id, deploymentId).catch(() => {});
     } catch (err) {
       await settleFailure(service, dep, entry, err);
     } finally {
-      if (activeRuns.get(service.id) === entry) activeRuns.delete(service.id);
+      if (externalSource) {
+        try { await externalSource.cleanup(); }
+        catch (err) { console.error(`external source cleanup svc#${service.id}:`, err.message); }
+      }
+      if (activeRuns.get(String(service.id)) === entry) activeRuns.delete(String(service.id));
     }
   }
 
@@ -358,9 +475,11 @@ export function createDeploymentEngine({
         finished: { v: now() },
         duration_ms: { v: Math.max(0, now() - dep.started) },
       });
-      const wasServing = Boolean(service.current_deployment_id);
+      const fresh = await getService(service.id);
+      const stopped = entry.recreateIntent || fresh?.desired_state === 'stopped';
+      const wasServing = !stopped && Boolean(fresh?.current_deployment_id);
       await updateServices(service.id, {
-        status: { v: wasServing ? 'running' : cancelled ? 'idle' : 'failed' },
+        status: { v: stopped ? 'stopped' : wasServing ? 'running' : cancelled ? 'idle' : 'failed' },
         ...(cancelled ? {} : { last_failed_deployment_id: { v: entry.deploymentId } }),
         updated: { v: now() },
       });
@@ -369,9 +488,13 @@ export function createDeploymentEngine({
         error: cancelled ? undefined : message,
         servingPrevious: wasServing,
       });
-      targetCache.delete(service.id);
+      targetCache.delete(String(service.id));
       if (!err.preserveContainer) {
-        await removeContainerIfExists(service.id, containerName(service.id, entry.deploymentId));
+        if (entry.recreateIntent) {
+          await stopContainer(await requireDocker(), containerName(service.id, entry.deploymentId));
+        } else {
+          await removeContainerIfExists(service.id, containerName(service.id, entry.deploymentId));
+        }
       }
     } catch (err2) {
       console.error('failure handling error:', err2.message);
@@ -382,71 +505,127 @@ export function createDeploymentEngine({
     if (entry.cancelled || entry.controller.signal.aborted) throw new Cancelled();
   }
 
-  async function buildImage({ docker, service, repo, sha, imageTag, entry }) {
-    const rootDir = normalizeRootDir(service.root_dir);
-    const spec = archiveSpec(sha, rootDir);
-
+  async function buildImage({ docker, service, repo, sha, imageTag, entry, externalSource, pull = false }) {
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(new Error('Image build/pull timed out')), buildTimeoutMs);
+    timer.unref?.();
+    const signal = AbortSignal.any([entry.controller.signal, deadline.signal]);
     let tarStream;
-    try {
-      tarStream = await drivers.archiveTar(
-        repo.space_uid,
-        repo.uid,
-        spec,
-        entry.controller.signal,
-      );
-    } catch (err) {
-      if (entry.controller.signal.aborted) throw new Cancelled();
-      throw err;
-    }
-
-    const aborted = new Promise((_, reject) => {
-      entry.controller.signal.addEventListener('abort', () => reject(new Cancelled()), {
-        once: true,
-      });
-    });
-
+    let res;
+    let progress;
     let logText = '';
-    const res = await Promise.race([aborted, docker.buildImage(tarStream, { t: imageTag })]);
-
-    await new Promise((resolve, reject) => {
-      let buf = '';
-      res.on('data', chunk => {
-        buf += chunk.toString('utf8');
-        let idx;
-        while ((idx = buf.indexOf('\n')) >= 0) {
-          const raw = buf.slice(0, idx).trim();
-          buf = buf.slice(idx + 1);
-          if (!raw) continue;
-          let evt;
-          try {
-            evt = JSON.parse(raw);
-          } catch {
-            evt = { stream: raw };
-          }
-          const text =
-            evt.stream ?? evt.errorDetail?.message ?? evt.error ?? '';
-          if (text) {
-            logText += text.endsWith('\n') || text.endsWith('\r') ? text : `${text}\n`;
-            bus.publishLog(service.id, 'build', String(text).trimEnd().slice(0, 300));
-          }
-          if (evt.error) {
-            reject(new Error(evt.error));
-            return;
-          }
-        }
-      });
-      res.on('end', resolve);
-      res.on('error', reject);
-    }).catch(err => {
-      if (err instanceof Cancelled || entry.controller.signal.aborted) throw new Cancelled();
-      throw err;
-    });
-
+    let onAbort;
+    const append = text => {
+      if (!text) return;
+      text = String(text).slice(0, 16_384);
+      logText = (logText + text + '\n').slice(-900_000);
+      bus.publishLog(service.id, 'build', text.trimEnd().slice(0, 300));
+    };
     try {
-      await Promise.race([aborted, saveBuildLog(service.id, entry.deploymentId, logText)]);
-    } catch (err) {
-      if (entry.controller.signal.aborted) throw new Cancelled();
-      /* log persistence failures must not fail an otherwise-good build */
+      const aborted = new Promise((_, reject) => {
+        onAbort = () => {
+          tarStream?.destroy();
+          res?.destroy();
+          progress?.destroy();
+          reject(entry.controller.signal.aborted ? new Cancelled() : signal.reason);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
+      await Promise.race([aborted, (async () => {
+        signal.throwIfAborted();
+        if (pull) {
+          if (!service.image_ref) throw new Error('An image reference is required');
+          res = await docker.pull(service.image_ref);
+        } else {
+          let buildargs;
+          if (externalSource) {
+            // The classic builder does not supply BuildKit's automatic target
+            // args. The daemon may run on a different architecture than core.
+            let info;
+            try { info = await docker.info(); }
+            catch (cause) { throw new Error('Cannot read Docker daemon architecture for external Git build', { cause }); }
+            const arch = new Map([['x86_64', 'amd64'], ['amd64', 'amd64'],
+              ['aarch64', 'arm64'], ['arm64', 'arm64']]).get(info?.Architecture);
+            if (!arch || info?.OSType !== 'linux') {
+              throw new Error('External Git builds require a Linux Docker daemon reporting amd64 or arm64 architecture');
+            }
+            buildargs = { TARGETARCH: arch, TARGETPLATFORM: `${info.OSType}/${arch}` };
+            signal.throwIfAborted();
+          }
+          tarStream = externalSource ? await externalSource.archive() : await drivers.archiveTar(
+            repo.space_uid, repo.uid, archiveSpec(sha, normalizeRootDir(service.root_dir)), signal,
+          );
+          if (signal.aborted) { tarStream.destroy(); signal.throwIfAborted(); }
+          res = await docker.buildImage(tarStream, {
+            t: imageTag,
+            dockerfile: service.dockerfile_path || 'Dockerfile',
+            ...(service.build_target ? { target: service.build_target } : {}),
+            ...(buildargs ? { buildargs } : {}),
+          });
+        }
+        if (signal.aborted) { res.destroy(); signal.throwIfAborted(); }
+        if (pull) {
+          // followProgress retains parsed events internally; bound its input too.
+          let bytes = 0;
+          progress = new Transform({ transform(chunk, _encoding, cb) {
+            bytes += chunk.length;
+            cb(bytes > 8_000_000 ? new Error('Docker pull progress exceeds limit') : null,
+              bytes > 8_000_000 ? undefined : chunk);
+          } });
+          res.once('error', err => progress.destroy(err));
+          await new Promise((resolve, reject) => {
+            docker.modem.followProgress(progress,
+              err => err ? reject(err) : resolve(),
+              event => {
+                append(event.errorDetail?.message || event.error ||
+                  [event.id, event.status, event.progress].filter(Boolean).join(' '));
+                if (event.error || event.errorDetail) {
+                  const err = new Error(event.errorDetail?.message || event.error);
+                  reject(err);
+                  progress.destroy();
+                  res.destroy();
+                }
+              },
+            );
+            res.pipe(progress);
+          });
+          signal.throwIfAborted();
+          // Tag the immutable image ID, never launch or prune the shared registry tag.
+          const image = await docker.getImage(service.image_ref).inspect();
+          signal.throwIfAborted();
+          const colon = imageTag.lastIndexOf(':');
+          await docker.getImage(image.Id).tag({ repo: imageTag.slice(0, colon), tag: imageTag.slice(colon + 1) });
+        } else {
+          await new Promise((resolve, reject) => {
+            let buf = '';
+            res.on('data', chunk => {
+              buf += chunk.toString('utf8');
+              if (buf.length > 1_000_000) { res.destroy(new Error('Docker build log frame too large')); return; }
+              let idx;
+              while ((idx = buf.indexOf('\n')) >= 0) {
+                const raw = buf.slice(0, idx).trim();
+                buf = buf.slice(idx + 1);
+                if (!raw) continue;
+                let evt;
+                try { evt = JSON.parse(raw); } catch { evt = { stream: raw }; }
+                append(evt.stream ?? evt.errorDetail?.message ?? evt.error);
+                if (evt.error) { reject(new Error(evt.error)); return; }
+              }
+            });
+            res.on('end', resolve);
+            res.on('error', reject);
+          });
+        }
+      })()]);
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      tarStream?.destroy();
+      res?.destroy();
+      progress?.destroy();
+      try { await saveBuildLog(service.id, entry.deploymentId, logText); }
+      catch { /* Logging must not hide the build/pull outcome. */ }
     }
   }
 
@@ -457,7 +636,38 @@ export function createDeploymentEngine({
     void serviceId;
   }
 
-  async function launchContainer({ docker, service, repo, deploymentId, imageTag, env }) {
+  function validateServiceRuntime(service) {
+    const ro = getRuntimeOptions(service);
+    if (ro?.health_type === 'invalid') throw new Error('Invalid stored health configuration');
+    if (service.volume_path) {
+      if (service.deployment_strategy !== 'recreate') throw new Error('Managed volumes require recreate deployment strategy');
+      if (typeof service.volume_path !== 'string' || !service.volume_path.startsWith('/') ||
+          service.volume_path === '/' || service.volume_path.length > 500 ||
+          /[\x00-\x20\x7f\\:]/.test(service.volume_path) || service.volume_path.split('/').includes('..')) {
+        throw new Error('volume_path must be a safe absolute container mount path');
+      }
+      if (ro?.host_config?.binds.some(b => b.split(':')[1] === service.volume_path) ||
+          Object.hasOwn(ro?.host_config?.tmpfs || {}, service.volume_path)) {
+        throw new Error('Managed volume conflicts with another runtime mount');
+      }
+    }
+    if (service.source_type && service.source_type !== 'repo' && ro?.host_config?.network_mode) {
+      throw new Error('Standalone services must use the approved shared apps network');
+    }
+    if (service.template) {
+      if (service.template !== 'postgres' || service.source_type !== 'image' ||
+          !/^(?:docker\.io\/library\/)?postgres:(?:16|17)$/.test(service.image_ref || '')) {
+        throw new Error('Postgres template requires an approved postgres:16 or postgres:17 image');
+      }
+      if (!service.volume_path || service.deployment_strategy !== 'recreate') {
+        throw new Error('Postgres template requires a retained volume and recreate strategy');
+      }
+      if (ro?.host_config?.privileged) throw new Error('Postgres template cannot be privileged');
+    }
+  }
+
+  async function launchContainer({ docker, service, repo, deploymentId, imageTag, env, entry }) {
+    validateServiceRuntime(service);
     const name = containerName(service.id, deploymentId);
     // Never destroy an existing container during recovery: an inspection error
     // or a concurrent reconciler must not turn into loss of its writable layer.
@@ -478,7 +688,7 @@ export function createDeploymentEngine({
     // default to 2. Recreating an old image must not silently remove the caps
     // its entrypoint needs (e.g. nginx's setgid/setuid or gosu).
     const privileged = Boolean(hc?.privileged);
-    const legacySecurity = Number(service.security_policy_version ?? 1) < 2;
+    const legacySecurity = !service.template && Number(service.security_policy_version ?? 1) < 2;
     const hostConfig = {
       Memory: Number(service.memory_bytes),
       NanoCpus: Number(service.cpu_nano_cpus),
@@ -505,6 +715,27 @@ export function createDeploymentEngine({
       if (hc.shm_size != null) hostConfig.ShmSize = hc.shm_size;
       if (Object.keys(hc.tmpfs).length) hostConfig.Tmpfs = hc.tmpfs;
       if (hc.network_mode) hostConfig.NetworkMode = hc.network_mode;
+      // Requires the operator-installed NVIDIA Container Toolkit; no detection/fallback.
+      if (hc.gpus === 'all') hostConfig.DeviceRequests = [{ Driver: 'nvidia', Count: -1, Capabilities: [['gpu']] }];
+    }
+    if (service.template === 'postgres') {
+      hostConfig.CapDrop = ['ALL'];
+      hostConfig.CapAdd = POSTGRES_CAPS;
+    }
+    if (service.volume_path) {
+      const volumeName = `nixre-service-${service.id}-data`;
+      let volume;
+      try { volume = await docker.getVolume(volumeName).inspect(); }
+      catch (err) {
+        if (err.statusCode !== 404) throw err;
+        await docker.createVolume({ Name: volumeName,
+          Labels: { 'nixre.deploy': 'true', 'nixre.service': String(service.id) } });
+        volume = await docker.getVolume(volumeName).inspect();
+      }
+      if (volume.Labels?.['nixre.deploy'] !== 'true' || volume.Labels?.['nixre.service'] !== String(service.id)) {
+        throw new Error('Managed volume ownership labels do not match this service');
+      }
+      hostConfig.Mounts = [{ Type: 'volume', Source: volumeName, Target: service.volume_path }];
     }
     // `undefined` values are not valid in the Docker API payload.
     if (hostConfig.SecurityOpt === undefined) delete hostConfig.SecurityOpt;
@@ -517,7 +748,8 @@ export function createDeploymentEngine({
         'nixre.deploy': 'true',
         'nixre.service': String(service.id),
         'nixre.deployment': String(deploymentId),
-        'nixre.repo': `${repo.space_uid}/${repo.uid}`,
+        ...(repo ? { 'nixre.repo': `${repo.space_uid}/${repo.uid}` } : {}),
+        ...(service.space_uid ? { 'nixre.space': service.space_uid } : {}),
         'nixre.name': service.name,
       },
       Env: env,
@@ -525,11 +757,19 @@ export function createDeploymentEngine({
     };
     if (ro?.command) createOpts.Cmd = ro.command;
     if (ro?.entrypoint) createOpts.Entrypoint = ro.entrypoint;
+    const healthCommand = service.template === 'postgres' ? POSTGRES_HEALTH : ro?.health_command;
+    if (healthCommand) {
+      createOpts.Healthcheck = { Test: healthCommand, Interval: 2_000_000_000,
+        Timeout: 2_000_000_000, Retries: 3 };
+    }
     // Explicit network modes conflict with EndpointsConfig — omit ours then.
     if (net && !(hc && hc.network_mode)) {
-      createOpts.NetworkingConfig = { EndpointsConfig: { [net]: {} } };
+      createOpts.NetworkingConfig = { EndpointsConfig: { [net]: service.deployment_strategy === 'recreate'
+        ? { Aliases: [`nixre-svc-${service.id}`] } : {} } };
     }
+    if (entry) throwIfCancelled(entry);
     const created = await docker.createContainer(createOpts);
+    if (entry) throwIfCancelled(entry);
     await created.start();
     return created.inspect();
   }
@@ -540,9 +780,9 @@ export function createDeploymentEngine({
     const ip = getRuntimeOptions(service)?.host_config?.network_mode
       ? Object.values(networks).map(n => n.IPAddress).find(Boolean)
       : networks[net]?.IPAddress;
-    if (!ip) throw new Error('Container has no routable IP yet');
-
     const ro = getRuntimeOptions(service);
+    const healthType = service.template === 'postgres' ? 'docker' : ro?.health_type || 'http';
+    if (!ip && healthType !== 'docker') throw new Error('Container has no routable IP yet');
     const probePath = ro?.health_path || '/';
     const budgetMs = ro?.health_timeout_ms || healthTimeoutMs;
     const deadline = Date.now() + budgetMs;
@@ -550,19 +790,14 @@ export function createDeploymentEngine({
     while (Date.now() < deadline) {
       throwIfCancelled(entry);
       try {
-        const prober = await drivers.probeHttp();
-        const out = await prober({
-          host: ip,
-          port: service.container_port,
-          path: probePath,
-          timeoutMs: 2500,
-          signal: entry.controller.signal,
-        });
+        const out = await probeService(service, docker, { ip, port: service.container_port,
+          deploymentId: entry.deploymentId }, entry.controller.signal, Math.min(2500, deadline - Date.now()));
+        throwIfCancelled(entry);
         if (out.ok === true) {
           bus.publishLog(
             service.id,
             'release',
-            `Health probe answered HTTP ${out.status ?? 'OK'} — releasing.`,
+            `Health probe (${healthType}) passed ${out.status ?? ''}; releasing.`,
           );
           return { ip };
         }
@@ -579,8 +814,47 @@ export function createDeploymentEngine({
     );
   }
 
+  async function probeService(service, docker, target, signal, timeoutMs = 3000) {
+    const ro = getRuntimeOptions(service);
+    const type = service.template === 'postgres' ? 'docker' : ro?.health_type || 'http';
+    if (type === 'docker') {
+      const info = await docker.getContainer(containerName(service.id, target.deploymentId)).inspect();
+      return { ok: info.State?.Status === 'running' && info.State?.Health?.Status === 'healthy', status: null };
+    }
+    if (!['http', 'tcp'].includes(type)) throw new Error('Invalid stored health configuration');
+    const prober = await (type === 'tcp' ? drivers.probeTcp() : drivers.probeHttp());
+    return prober({ host: target.ip, port: target.port, path: ro?.health_path || '/', timeoutMs: Math.max(1, timeoutMs), signal });
+  }
+
+  async function stopContainer(docker, name) {
+    try {
+      const c = docker.getContainer(name);
+      try { await c.stop({ t: 10 }); }
+      catch (err) { if (err.statusCode !== 304) throw err; }
+      // Never force-remove a stateful container when stopping it failed.
+      await c.remove();
+    } catch (err) {
+      if (err.statusCode !== 404) throw err;
+    }
+  }
+
+  async function quiesceService(docker, service) {
+    const names = new Set();
+    if (service.current_deployment_id) names.add(containerName(service.id, service.current_deployment_id));
+    const containers = await docker.listContainers({ all: true, filters: {
+      label: [`nixre.service=${service.id}`],
+    } });
+    for (const c of containers) {
+      if (c.Labels?.['nixre.service'] === String(service.id)) {
+        names.add(c.Names?.[0]?.replace(/^\//, '') || c.Id);
+      }
+    }
+    for (const name of names) await stopContainer(docker, name);
+    targetCache.delete(String(service.id));
+  }
+
   async function retireOldContainer(serviceId, oldDeploymentId) {
-    targetCache.delete(serviceId);
+    targetCache.delete(String(serviceId));
     await sleep(drainMs); // let in-flight proxy requests drain first
     try {
       const docker = await requireDocker();
@@ -593,7 +867,7 @@ export function createDeploymentEngine({
   }
 
   async function removeContainerIfExists(serviceId, name) {
-    targetCache.delete(serviceId);
+    targetCache.delete(String(serviceId));
     try {
       const docker = await requireDocker();
       await docker.getContainer(name).remove({ force: true });
@@ -614,14 +888,18 @@ export function createDeploymentEngine({
     for (const img of listed) {
       for (const tag of img.RepoTags || []) {
         const m = tag.match(new RegExp(`^${prefix}(\\d+):`));
-        if (m) ours.push({ tag, dep: Number(m[1]) });
+        if (m) ours.push({ tag, dep: m[1] });
       }
     }
-    ours.sort((a, b) => b.dep - a.dep);
+    ours.sort((a, b) => BigInt(a.dep) > BigInt(b.dep) ? -1 : BigInt(a.dep) < BigInt(b.dep) ? 1 : 0);
+    const current = (await pool.query(`SELECT * FROM ${DEP_TABLE} WHERE id = $1`, [currentDeploymentId])).rows[0];
     for (const item of ours.slice(keepImages)) {
-      if (item.dep === currentDeploymentId) continue;
+      if (item.dep === String(currentDeploymentId) || item.tag === current?.image_tag) continue;
+      const shared = (await pool.query(`SELECT * FROM ${DEP_TABLE} WHERE image_tag = $1 AND id <> $2`,
+        [item.tag, item.dep])).rows.length > 0;
+      if (shared) continue;
       try {
-        await docker.getImage(item.tag).remove({ force: true });
+        await docker.getImage(item.tag).remove();
       } catch {
         /* in use or gone */
       }
@@ -634,17 +912,9 @@ export function createDeploymentEngine({
     const ts = clockNow ?? now();
 
     // 1) Runs that were mid-flight when a previous core process died.
-    const ownedIds = new Set([...activeRuns.values()].map(e => e.deploymentId));
     const { rows: stuck } = await pool.query(
       `SELECT * FROM ${DEP_TABLE} WHERE status IN ('queued','building','releasing')`,
     );
-    for (const row of stuck) {
-      if (ownedIds.has(row.id)) continue;
-      await pool.query(
-        `UPDATE ${DEP_TABLE} SET status = $1, error = $2, finished = $3, duration_ms = $4 WHERE id = $5`,
-        ['failed', 'Interrupted by restart', ts, Math.max(0, ts - row.started), row.id],
-      );
-    }
 
     let docker = null;
     try {
@@ -655,8 +925,24 @@ export function createDeploymentEngine({
 
     const { rows: services } = await pool.query(`SELECT * FROM ${SERVICE_TABLE}`);
     for (const service of services) {
-      if (activeRuns.has(service.id)) continue;
-      if (docker) await sweepService(service, { docker, ts });
+      if (isBusy(service.id)) continue;
+      await maintain(service.id, async () => {
+        const fresh = await getService(service.id);
+        if (!fresh) return;
+        for (const row of stuck.filter(d => String(d.service_id) === String(service.id))) {
+          // A run may have finished after the sweep's initial SELECT but before
+          // we acquired this service. Never stop that newly promoted release.
+          const latest = (await pool.query(`SELECT * FROM ${DEP_TABLE} WHERE id = $1`, [row.id])).rows[0];
+          if (!latest || !['queued', 'building', 'releasing'].includes(latest.status) ||
+              String(fresh.current_deployment_id) === String(row.id)) continue;
+          // Never lose the interrupted candidate's identity before quiescing it.
+          if (docker) await stopContainer(docker, containerName(service.id, row.id));
+          else if (fresh.deployment_strategy === 'recreate') continue;
+          await updateDeployments(row.id, { status: 'failed', error: 'Interrupted by restart',
+            finished: ts, duration_ms: Math.max(0, ts - row.started) });
+        }
+        if (docker) await sweepService(fresh, { docker, ts });
+      });
 
       // Preserve-failures retention: successes age out fast, >= threshold slow.
       const successCutoff = ts - service.success_retention_hours * 3600_000;
@@ -683,12 +969,8 @@ export function createDeploymentEngine({
     const ts = ctx.ts ?? now();
 
     if (service.desired_state === 'stopped') {
-      if (service.current_deployment_id) {
-        await stopContainerQuiet(
-          docker,
-          containerName(service.id, service.current_deployment_id),
-        );
-      }
+      // Includes candidates whose current pointer was deliberately cleared.
+      await quiesceService(docker, service);
       if (service.status !== 'stopped') {
         await updateServices(service.id, { status: { v: 'stopped' }, updated: { v: ts } });
       }
@@ -722,7 +1004,7 @@ export function createDeploymentEngine({
       // Host rebooted / container pruned: recreate silently from the stored
       // image. Never rebuild during boot — autostart must be cheap.
       try {
-        const repo = await getRepoById(service.repo_id);
+        const repo = service.repo_id ? await getRepoById(service.repo_id) : null;
         const envRows = (
           await pool.query(
             `SELECT key, value_enc FROM service_env_vars WHERE service_id = $1 ORDER BY key`,
@@ -745,7 +1027,7 @@ export function createDeploymentEngine({
           `Boot autostart: container recreated from stored image (${String(dep.sha).slice(0, 7)}).`,
         );
         await updateServices(service.id, { status: { v: 'running' }, updated: { v: ts } });
-        targetCache.delete(service.id);
+        targetCache.delete(String(service.id));
       } catch (err) {
         console.error(`boot recreate failed for svc#${service.id}:`, err.message);
         await updateServices(service.id, { status: { v: 'failed' }, updated: { v: ts } });
@@ -765,7 +1047,9 @@ export function createDeploymentEngine({
       try {
         const approved = await getNetwork(docker);
         if (!info.NetworkSettings?.Networks?.[approved]) {
-          await docker.getNetwork(approved).connect({ Container: info.Id });
+          await docker.getNetwork(approved).connect({ Container: info.Id,
+            EndpointConfig: service.deployment_strategy === 'recreate'
+              ? { Aliases: [`nixre-svc-${service.id}`] } : {} });
           info = await docker.getContainer(name).inspect();
           if (!info.NetworkSettings?.Networks?.[approved]) throw new Error('Network attachment was not applied');
         }
@@ -774,7 +1058,7 @@ export function createDeploymentEngine({
           if (old !== approved) await docker.getNetwork(old).disconnect({ Container: info.Id });
         }
       } catch (err) {
-        targetCache.delete(service.id);
+        targetCache.delete(String(service.id));
         console.error(`network reconcile failed for svc#${service.id}:`, err.message);
         await updateServices(service.id, { status: { v: 'failed' }, updated: { v: ts } });
         return;
@@ -793,16 +1077,7 @@ export function createDeploymentEngine({
       status: { v: upNow ? 'running' : 'stopped' },
       updated: { v: ts },
     });
-    targetCache.delete(service.id);
-  }
-
-  async function stopContainerQuiet(docker, name) {
-    try {
-      await docker.getContainer(name).stop({ t: 10 });
-      await docker.getContainer(name).remove();
-    } catch {
-      /* already gone */
-    }
+    targetCache.delete(String(service.id));
   }
 
   async function safeRunning(docker, name) {
@@ -824,10 +1099,11 @@ export function createDeploymentEngine({
     );
     let kicked = 0;
     for (const svc of candidates) {
+      if (svc.source_type && svc.source_type !== 'repo') continue;
       if (!svc.auto_deploy) continue;
       if (svc.branch !== branch) continue;
       if (svc.desired_state !== 'running') continue;
-      if (activeRuns.has(svc.id)) continue;
+      if (isBusy(svc.id)) continue;
       try {
         await startDeployment(svc.id, { ref: after || branch, trigger: 'push' });
         kicked++;
@@ -841,8 +1117,9 @@ export function createDeploymentEngine({
   // --- probes & metrics ----------------------------------------------------------
 
   async function serviceTarget(service, docker) {
-    const cached = targetCache.get(service.id);
-    if (cached && now() - cached.ts < 2000) return cached.target;
+    if (service.desired_state === 'stopped' || service.status === 'stopped' || !service.current_deployment_id) return null;
+    const cached = targetCache.get(String(service.id));
+    if (cached && String(cached.target?.deploymentId) === String(service.current_deployment_id) && now() - cached.ts < 2000) return cached.target;
     let target = null;
     if (service.current_deployment_id && docker) {
       try {
@@ -866,7 +1143,7 @@ export function createDeploymentEngine({
         target = null;
       }
     }
-    targetCache.set(service.id, { ts: now(), target });
+    targetCache.set(String(service.id), { ts: now(), target });
     return target;
   }
 
@@ -880,15 +1157,9 @@ export function createDeploymentEngine({
       const target = await serviceTarget(service, docker);
       const t0 = Date.now();
       let outcome = { ok: false, status: null };
-      if (target) {
+      if (target || service.template === 'postgres' || getRuntimeOptions(service)?.health_type === 'docker') {
         try {
-          const prober = await drivers.probeHttp();
-          outcome = await prober({
-            host: target.ip,
-            port: target.port,
-            path: getRuntimeOptions(service)?.health_path || '/',
-            timeoutMs: 3000,
-          });
+          outcome = await probeService(service, docker, target || { deploymentId: service.current_deployment_id });
           if (outcome && typeof outcome === 'object' && !('ok' in outcome)) {
             outcome = { ok: Boolean(outcome.status), status: outcome.status };
           }
@@ -926,10 +1197,10 @@ export function createDeploymentEngine({
           cpuNanoCpus: service.cpu_nano_cpus,
           memoryBytes: service.memory_bytes,
         });
-        const ring = metricRings.get(service.id) || [];
+        const ring = metricRings.get(String(service.id)) || [];
         ring.push({ ts: Date.now(), ...usage });
         if (ring.length > MAX_METRIC_POINTS) ring.splice(0, ring.length - MAX_METRIC_POINTS);
-        metricRings.set(service.id, ring);
+        metricRings.set(String(service.id), ring);
         bus.publishMetrics(service.id, usage);
       } catch {
         /* container gone or stats unavailable this tick */
@@ -938,17 +1209,49 @@ export function createDeploymentEngine({
   }
 
   function getStatsSnapshot(serviceId) {
-    const ring = metricRings.get(serviceId) || [];
+    const ring = metricRings.get(String(serviceId)) || [];
     return { latest: ring.at(-1) || null, series: ring.slice(-120) };
   }
 
   // For the central proxy: route resolution target for one service.
   async function findServiceTarget(serviceId) {
     const service = await getService(serviceId);
-    if (!service) return null;
+    if (!service || service.exposure === 'internal' || service.desired_state === 'stopped' || service.status === 'stopped') return null;
     const docker = await drivers.getDocker().catch(() => null);
     if (!docker) return null;
     return serviceTarget(service, docker);
+  }
+
+  // Authorization belongs to the route: container output can contain secrets.
+  async function runtimeLogs(serviceId, { tail = 200 } = {}) {
+    const service = await getService(serviceId);
+    if (!service) throw Object.assign(new Error('No such service'), { status: 404 });
+    const deploymentId = service.current_deployment_id || activeRuns.get(String(serviceId))?.deploymentId;
+    if (!deploymentId) return '';
+    const docker = await requireDocker();
+    try {
+      const c = docker.getContainer(containerName(serviceId, deploymentId));
+      const info = await c.inspect();
+      const logs = await c.logs({ stdout: true, stderr: true, follow: false,
+        tail: Number.isFinite(Number(tail)) ? Math.min(1000, Math.max(1, Math.trunc(Number(tail)))) : 200 });
+      const stream = Buffer.isBuffer(logs) || typeof logs === 'string' ? Readable.from([logs]) : logs;
+      let output = Buffer.alloc(0);
+      const sink = new Writable({ write(chunk, _encoding, callback) {
+        output = Buffer.concat([output, Buffer.from(chunk)]).subarray(-256_000);
+        callback();
+      } });
+      await new Promise((resolve, reject) => {
+        stream.once('end', resolve);
+        stream.once('error', reject);
+        sink.once('error', reject);
+        if (info.Config?.Tty) stream.pipe(sink);
+        else docker.modem.demuxStream(stream, sink, sink);
+      });
+      return output.toString('utf8');
+    } catch (err) {
+      if (err.statusCode === 404) return '';
+      throw err;
+    }
   }
 
   return {
@@ -965,9 +1268,10 @@ export function createDeploymentEngine({
     metricsTick,
     getStatsSnapshot,
     findServiceTarget,
+    runtimeLogs,
     isBusy,
     waitIdle,
     waitAllIdle,
-    invalidateTarget: serviceId => targetCache.delete(serviceId),
+    invalidateTarget: serviceId => targetCache.delete(String(serviceId)),
   };
 }

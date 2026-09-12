@@ -1,226 +1,115 @@
-// SpaceDeployments — Railway-style organization deployments board: one card
-// per service (status icon, last deploy "X ago via <trigger>", domains) laid
-// out on a dotted canvas, plus a live Activity feed of recent deployments
-// across the space.
-
-import React, { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import {
-  Activity,
-  AlertTriangle,
-  Check,
-  CircleDot,
-  Loader2,
-  Rocket,
-  Square,
-  X,
-} from 'lucide-react';
-import { api, DeployActivityEntry, DeployService } from '../lib/api';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Activity, AlertTriangle, Box, Check, Cpu, Database, GitBranch, Loader2, Plus, Search, X } from 'lucide-react';
+import { api, DeployService, SpaceDeploymentsBoard } from '../lib/api';
 import { subscribeDeployEvents } from '../lib/deployEvents';
+import { GuidedServiceModal, ServicePreset } from './GuidedServiceModal';
+import { StandaloneServiceDetail } from './StandaloneServiceDetail';
 
 function timeAgo(ts: number): string {
-  const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  const seconds = Math.max(1, Math.floor((Date.now() - ts) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
 }
 
 function triggerLabel(trigger: string): string {
-  switch (trigger) {
-    case 'push': return 'via git push';
-    case 'manual': return 'via manual deploy';
-    case 'boot': return 'via boot reconcile';
-    case 'rollback': return 'via rollback';
-    case 'redeploy': return 'via redeploy';
-    default: return `via ${trigger}`;
-  }
+  return ({ push: 'via git push', manual: 'via manual deploy', boot: 'via boot reconcile', rollback: 'via rollback', redeploy: 'via redeploy' } as Record<string, string>)[trigger] || `via ${trigger}`;
 }
 
-const StatusIcon: React.FC<{ svc: DeployService }> = ({ svc }) => {
-  if (svc.alert) return <X className="w-4 h-4 text-red-400 shrink-0" />;
-  if (['queued', 'building', 'releasing'].includes(svc.status))
-    return <Loader2 className="w-4 h-4 text-amber-400 animate-spin shrink-0" />;
-  if (svc.status === 'running' && svc.current?.status === 'live')
-    return <Check className="w-4 h-4 text-green-500 shrink-0" />;
-  if (svc.status === 'stopped')
-    return <Square className="w-3.5 h-3.5 text-txt-tertiary shrink-0" />;
-  return <CircleDot className="w-4 h-4 text-txt-tertiary shrink-0" />;
-};
+function statusLine(service: DeployService): string {
+  if (['deploying', 'queued', 'building', 'releasing'].includes(service.status)) return 'Deployment in progress';
+  if (service.desired_state === 'stopped' || service.status === 'stopped') return 'Stopped';
+  if (service.alert) return service.current?.status === 'live' ? 'last release failed; previous release running' : 'last release failed';
+  if (service.status === 'failed') return 'Service failed; inspect deployment history';
+  if (service.current) return `Deployed ${timeAgo(service.current.finished || service.current.started)} ${triggerLabel(service.current.trigger)}`;
+  return 'Not deployed yet';
+}
 
-const statusLine = (svc: DeployService): { text: string; cls: string } => {
-  if (svc.alert) return { text: 'last release failed — serving previous', cls: 'text-red-400' };
-  if (['queued', 'building', 'releasing'].includes(svc.status))
-    return { text: `Deploying ${svc.current?.ref ? `(${svc.current.ref})` : ''}`.trim(), cls: 'text-amber-400' };
-  if (svc.current) {
-    return {
-      text: `Deployed ${timeAgo(svc.current.finished || svc.current.started)} ${triggerLabel(svc.current.trigger)}`,
-      cls: 'text-green-500',
-    };
-  }
-  if (svc.status === 'stopped') return { text: 'Stopped', cls: 'text-txt-tertiary' };
-  return { text: 'Not deployed yet', cls: 'text-txt-tertiary' };
-};
+function serviceSource(service: DeployService): string {
+  if (service.source_type === 'git') return `External Git / ${service.git_url || ''}`;
+  if (service.source_type === 'image') return `Container image / ${service.image_ref || ''}`;
+  return `Nixre Git / ${service.repo_uid || ''} / ${service.branch}`;
+}
 
-const activityIcon = (status: string): React.ReactNode => {
-  if (status === 'live') return <Check className="w-3.5 h-3.5 text-green-500" />;
-  if (status === 'failed') return <X className="w-3.5 h-3.5 text-red-400" />;
-  if (['queued', 'building', 'releasing'].includes(status))
-    return <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />;
-  return <CircleDot className="w-3.5 h-3.5 text-txt-tertiary" />;
-};
-
-const activityVerb = (status: string): string => {
-  switch (status) {
-    case 'live': return 'Deployed';
-    case 'failed': return 'Deploy failed';
-    case 'building': return 'Building';
-    case 'releasing': return 'Releasing';
-    case 'queued': return 'Queued';
-    case 'cancelled': return 'Cancelled';
-    default: return status;
-  }
-};
-
-export const SpaceDeployments: React.FC<{ spaceUid: string }> = ({ spaceUid }) => {
-  const [board, setBoard] = useState<{ services: DeployService[]; activity: DeployActivityEntry[] } | null>(null);
+export function SpaceDeployments({ spaceUid }: { spaceUid: string }) {
+  const [board, setBoard] = useState<SpaceDeploymentsBoard | null>(null);
   const [error, setError] = useState('');
-
+  const [query, setQuery] = useState('');
+  const [preset, setPreset] = useState<ServicePreset | null>(null);
+  const [params, setParams] = useSearchParams();
+  const request = useRef(0);
+  const selectedId = /^\d+$/.test(params.get('service') || '') ? Number(params.get('service')) : null;
   const load = useCallback(() => {
-    api
-      .spaceDeployments(spaceUid)
-      .then(setBoard)
-      .catch(e => setError(e.message || 'Failed to load deployments.'));
+    const id = ++request.current;
+    void api.spaceDeployments(spaceUid).then(next => {
+      if (request.current === id) { setBoard(next); setError(''); }
+    }).catch(e => { if (request.current === id) setError(e.message || 'Failed to load deployments.'); });
   }, [spaceUid]);
-  useEffect(load, [load]);
 
-  // Live refresh while the board is visible.
+  useEffect(() => { setBoard(null); load(); return () => { request.current++; }; }, [load]);
+  // Subscribe by identity, not the board object: status refreshes must not reopen every stream.
+  const subscriptions = JSON.stringify((board?.services || []).filter(s => s.id !== selectedId).map(s => [s.id, !s.source_type || s.source_type === 'repo' ? s.repo_uid : null]));
   useEffect(() => {
-    if (!board) return;
-    const offs = board.services.map(svc =>
-      subscribeDeployEvents(spaceUid, svc.repo_uid!, svc.id, () => load()),
-    );
+    const entries = JSON.parse(subscriptions) as Array<[number, string | null]>;
+    const offs = entries.map(([id, repo]) => subscribeDeployEvents(spaceUid, repo ?? null, id, event => { if (event.type === 'status') load(); }));
     return () => offs.forEach(off => off());
-  }, [spaceUid, board, load]);
+  }, [spaceUid, subscriptions, load]);
 
-  if (error) return <p className="text-sm text-feedback-error-text">{error}</p>;
-  if (!board)
-    return (
-      <div className="py-14 text-center text-txt-tertiary">
-        <Loader2 className="w-5 h-5 animate-spin inline-block mr-2" /> Loading deployments…
-      </div>
-    );
+  function select(id: number | null) {
+    setParams(previous => { const next = new URLSearchParams(previous); next.set('tab', 'deployments'); if (id === null) next.delete('service'); else next.set('service', String(id)); return next; });
+  }
 
-  return (
-    <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6" data-testid="space-deployments-board">
-      {/* Canvas: service cards */}
-      <div className="rounded-xl border border-border-subtle bg-surface-canvas p-5 min-h-[320px]">
-        {board.services.length === 0 ? (
-          <div className="h-full min-h-[240px] flex flex-col items-center justify-center gap-2 text-center">
-            <Rocket className="w-6 h-6 text-txt-tertiary" />
-            <p className="text-sm text-txt-secondary">No deployment services in this space yet.</p>
-            <p className="text-xs text-txt-tertiary">Open a repository and enable the Deployments panel to ship Docker apps.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {board.services.map(svc => {
-              const line = statusLine(svc);
-              const href = `/${spaceUid}/${svc.repo_uid}?deploys=1&svc=${svc.id}`;
-              return (
-                <Link
-                  key={svc.id}
-                  to={href}
-                  data-testid={`board-card-${svc.name}`}
-                  className={`border rounded-lg p-4 space-y-2.5 transition block ${
-                    svc.alert
-                      ? 'border-red-400/50 bg-red-400/[0.03] hover:bg-red-400/[0.06]'
-                      : 'border-border-subtle bg-surface-canvas hover:bg-surface-subtle/40'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <StatusPillDot svc={svc} />
-                    <span className="font-semibold text-sm text-txt-primary truncate">{svc.name}</span>
-                    <span className="ml-auto text-[10px] font-mono uppercase text-txt-tertiary border border-border-subtle rounded px-1.5 py-0.5 shrink-0">
-                      {svc.status}
-                    </span>
-                  </div>
-                  {svc.domains?.length ? (
-                    <p
-                      className="text-[11px] font-mono text-txt-brand truncate flex items-center gap-1"
-                      title={svc.tls_risk_domains?.includes(svc.domains[0]) ? 'TLS likely broken on free Cloudflare plans (multi-level subdomain)' : undefined}
-                    >
-                      {svc.tls_risk_domains?.includes(svc.domains[0]) && (
-                        <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
-                      )}
-                      {svc.domains[0]}
-                    </p>
-                  ) : null}
-                  {/* Attached but unproven domains are parked: say so rather than show a hostname that serves nothing. */}
-                  {svc.unverified_domains?.length ? (
-                    <p
-                      className="text-[10px] text-amber-400 truncate flex items-center gap-1"
-                      data-testid="space-unverified-domains"
-                      title={`Not routed until ownership is proven: ${svc.unverified_domains.join(', ')}`}
-                    >
-                      <AlertTriangle className="w-3 h-3 shrink-0" />
-                      {svc.unverified_domains.length} domain
-                      {svc.unverified_domains.length === 1 ? '' : 's'} awaiting verification
-                    </p>
-                  ) : null}
-                  {!svc.domains?.length ? (
-                    <p className="text-[11px] font-mono text-txt-tertiary truncate">
-                      {svc.repo_uid} · {svc.branch}
-                    </p>
-                  ) : null}
-                  <p className={`text-xs flex items-center gap-1.5 ${line.cls}`}>
-                    <StatusIcon svc={svc} />
-                    {line.text}
-                  </p>
-                </Link>
-              );
-            })}
-          </div>
-        )}
-      </div>
+  if (!board) return <div className="py-12 text-center text-sm text-txt-secondary">{error ? <><p role="alert" className="text-feedback-error-text">{error}</p><button onClick={load} className="mt-3 text-txt-brand hover:underline">Retry deployments</button></> : <p role="status"><Loader2 className="w-4 h-4 inline-block mr-2 animate-spin" />Loading deployments...</p>}</div>;
 
-      {/* Activity feed */}
-      <aside className="border border-border-subtle rounded-xl bg-surface-canvas overflow-hidden self-start" data-testid="board-activity">
-        <div className="px-4 py-3 border-b border-border-subtle flex items-center gap-2">
-          <Activity className="w-4 h-4 text-brand" />
-          <span className="text-sm font-semibold text-txt-primary">Activity</span>
-        </div>
-        <ul className="divide-y divide-border-subtle max-h-[560px] overflow-y-auto">
-          {board.activity.length === 0 && (
-            <li className="px-4 py-6 text-xs text-txt-tertiary text-center">No deployments yet.</li>
-          )}
-          {board.activity.map(a => (
-            <li key={a.id} className="px-4 py-3">
-              <p className="text-xs font-medium text-txt-primary truncate">{a.service_name}</p>
-              <p className="text-xs text-txt-secondary flex items-center gap-1.5 mt-0.5">
-                {activityIcon(a.status)}
-                <span>{activityVerb(a.status)}{a.ref ? ` · ${a.ref}` : ''}</span>
-              </p>
-              <p className="text-[11px] text-txt-tertiary mt-0.5">{timeAgo(a.started)} · {triggerLabel(a.trigger)}</p>
-            </li>
-          ))}
-        </ul>
-      </aside>
+  const visible = board.services.filter(s => `${s.name} ${serviceSource(s)}`.toLowerCase().includes(query.toLowerCase().trim()));
+  const selected = board.services.find(s => s.id === selectedId);
+  const legacySelected = selected && (!selected.source_type || selected.source_type === 'repo');
+  const buttonClass = 'inline-flex items-center justify-center gap-2 rounded-md border border-border-subtle px-3 py-2 text-xs font-medium text-txt-primary hover:bg-surface-subtle focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand';
+
+  return <div className="space-y-6 text-txt-primary" data-testid="space-deployments-board">
+    <header className="flex items-start justify-between gap-3">
+      <div><p className="text-[10px] uppercase tracking-widest font-mono text-txt-tertiary mb-2">{spaceUid} / Deployments</p><h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">A home for everything you run.</h2><p className="text-xs text-txt-secondary mt-2">Repositories, models and databases. One service at a time.</p></div>
+      {board.can_write && <button className={`${buttonClass} shrink-0 !bg-brand !text-white !border-brand hover:!bg-brand-hover`} onClick={() => setPreset('git')}><Plus className="w-4 h-4" />New service</button>}
+    </header>
+    {error && <p role="alert" className="text-xs text-feedback-error-text">Refresh failed: {error} <button onClick={load} className="underline">Retry</button></p>}
+    <div className="border-y border-border-subtle py-3 flex flex-wrap gap-x-6 gap-y-2 text-xs text-txt-secondary" aria-label="Service summary">
+      <span><strong className="text-txt-primary font-mono">{board.services.length}</strong> services</span>
+      <span><strong className="text-txt-primary font-mono">{board.services.filter(s => s.status === 'running' && s.desired_state !== 'stopped').length}</strong> running</span>
+      <span><strong className="text-txt-primary font-mono">{board.services.filter(s => s.exposure === 'internal').length}</strong> internal</span>
+      <span className="ml-auto">Shared apps network, not per-space isolation</span>
     </div>
-  );
-};
-
-const StatusPillDot: React.FC<{ svc: DeployService }> = ({ svc }) => (
-  <span
-    className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-      svc.alert
-        ? 'bg-red-400'
-        : svc.current?.status === 'live'
-        ? 'bg-green-500'
-        : ['queued', 'building', 'releasing'].includes(svc.status)
-        ? 'bg-amber-400 animate-pulse'
-        : 'bg-txt-tertiary/50'
-    }`}
-  />
-);
+    <div className={`grid grid-cols-1 gap-6 ${selectedId ? 'xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]' : ''}`}>
+      <div className="min-w-0 space-y-6">
+        <section aria-label="Services">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3"><h3 className="text-sm font-semibold">Services <span className="font-mono text-txt-tertiary ml-1">{visible.length}</span></h3><label className="flex items-center gap-2 min-w-0"><Search className="w-3.5 h-3.5 text-txt-tertiary" /><span className="sr-only">Search services</span><input type="search" className="w-40 sm:w-48 min-w-0 bg-transparent text-xs py-2 border-b border-border-subtle focus:outline-none focus:border-brand" placeholder="Find a service..." value={query} onChange={e => setQuery(e.target.value)} /></label></div>
+          <div className="grid grid-cols-[minmax(0,1fr)_80px_80px] gap-3 border-b border-border-subtle pb-2 px-2 text-[10px] text-txt-tertiary uppercase tracking-wider" aria-hidden="true"><span>Service / source</span><span>Status</span><span>Access</span></div>
+          <ul className="divide-y divide-border-subtle">
+            {visible.map(service => {
+              const repo = !service.source_type || service.source_type === 'repo';
+              const href = repo ? `/${spaceUid}/${service.repo_uid}?deploys=1&svc=${service.id}` : `/${encodeURIComponent(spaceUid)}?tab=deployments&service=${service.id}`;
+              const pending = ['deploying', 'queued', 'building', 'releasing'].includes(service.status);
+              const Icon = service.template === 'postgres' ? Database : service.source_type === 'git' || repo ? GitBranch : Box;
+              return <li key={service.id}><Link to={href} data-testid={`board-card-${service.name}`} aria-current={selectedId === service.id ? 'true' : undefined} className={`grid grid-cols-[minmax(0,1fr)_80px_80px] gap-3 py-4 px-2 rounded-sm hover:bg-surface-subtle/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand ${selectedId === service.id ? 'bg-brand/5' : ''}`}>
+                <span className="min-w-0"><span className="flex items-center gap-2"><Icon className="w-4 h-4 shrink-0 text-txt-tertiary" /><span className="text-sm font-medium truncate">{service.name}</span></span><span className="block mt-1 text-[10px] font-mono text-txt-tertiary truncate" title={serviceSource(service)}>{serviceSource(service)}</span><span className={`block mt-2 text-[11px] ${service.alert || service.status === 'failed' ? 'text-feedback-error-text' : 'text-txt-secondary'}`}>{statusLine(service)}</span>
+                  {service.domains?.map(domain => <span key={domain} className="block mt-1 text-[10px] font-mono text-txt-brand truncate">{service.tls_risk_domains?.includes(domain) && <AlertTriangle className="w-3 h-3 inline mr-1" />}{domain}</span>)}
+                  {!!service.unverified_domains?.length && <span data-testid="space-unverified-domains" className="block mt-1 text-[10px] text-txt-secondary">{service.unverified_domains.length} domains awaiting verification</span>}
+                </span>
+                <span className="text-[11px] flex items-start gap-1 pt-1 text-txt-secondary">{pending && <Loader2 className="w-3 h-3 mt-0.5 animate-spin shrink-0" />}{service.status}</span>
+                <span className="text-[11px] pt-1 text-txt-secondary">{service.exposure === 'internal' ? 'Internal' : 'HTTP'}</span>
+              </Link></li>;
+            })}
+          </ul>
+          {!board.services.length && <p className="py-10 text-center text-sm text-txt-secondary">No deployment services in this space yet.</p>}
+          {!!board.services.length && !visible.length && <p className="py-8 text-center text-xs text-txt-secondary">No matching services. Try a different name or source.</p>}
+        </section>
+        {board.can_write && <section className="border-t border-border-subtle pt-5 space-y-2"><h3 className="text-sm font-medium">Something new, without the guesswork.</h3><p className="text-xs text-txt-secondary">Pick a starting point. We will walk through the rest.</p><div className="flex flex-wrap gap-2 pt-1"><button className={buttonClass} onClick={() => setPreset('llama')}><Cpu className="w-4 h-4" />Try llama.cpp</button><button className={buttonClass} onClick={() => setPreset('postgres')}><Database className="w-4 h-4" />Try PostgreSQL</button></div></section>}
+        {!board.can_write && <p className="text-xs text-txt-tertiary">Read-only deployment access. Service creation requires space write permission.</p>}
+        <section data-testid="board-activity" className="border-t border-border-subtle pt-5"><h3 className="flex items-center gap-2 text-sm font-semibold mb-3"><Activity className="w-4 h-4 text-txt-tertiary" />Recent activity</h3><ul className="divide-y divide-border-subtle">{board.activity.map(a => <li key={a.id} className="py-3"><div className="flex flex-wrap justify-between gap-2"><span className="text-xs font-medium">{a.service_name}</span><span className="text-[10px] text-txt-tertiary">{timeAgo(a.started)} / {triggerLabel(a.trigger)}</span></div><p className="flex items-center gap-1.5 text-xs text-txt-secondary mt-1">{a.status === 'failed' ? <X className="w-3 h-3 text-feedback-error-text" /> : a.status === 'live' ? <Check className="w-3 h-3" /> : <Activity className="w-3 h-3" />}<span>{({ live: 'Deployed', failed: 'Deploy failed', building: 'Building', releasing: 'Releasing', queued: 'Queued', cancelled: 'Cancelled' } as Record<string, string>)[a.status] || a.status}{a.ref ? ` · ${a.ref}` : ''}</span></p></li>)}</ul>{!board.activity.length && <p className="text-xs text-txt-tertiary">No deployments yet.</p>}</section>
+      </div>
+      {selectedId && (legacySelected ? <aside className="border-t xl:border-l xl:border-t-0 border-border-subtle pt-5 xl:pl-6"><h3 className="text-sm font-medium">{selected.name}</h3><p className="text-xs text-txt-secondary mt-2">This service belongs to a Nixre repository.</p><Link className={`${buttonClass} mt-3`} to={`/${spaceUid}/${selected.repo_uid}?deploys=1&svc=${selected.id}`}>Open repository deployments</Link></aside> : <StandaloneServiceDetail key={`${spaceUid}/${selectedId}`} space={spaceUid} serviceId={selectedId} canWrite={Boolean(board.can_write)} capabilities={board.capabilities} onChanged={load} onDeleted={() => { select(null); load(); }} />)}
+    </div>
+    {preset && board.can_write && <GuidedServiceModal space={spaceUid} capabilities={board.capabilities} initialPreset={preset} onClose={() => setPreset(null)} onComplete={service => { setPreset(null); setQuery(''); select(service.id); load(); }} />}
+  </div>;
+}

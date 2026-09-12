@@ -21,7 +21,7 @@ export function normalizeRootDir(dir) {
   return segments.join('/') || '.';
 }
 
-const DOCKERFILE_RE = /(?:^|\/)dockerfile(?:\.[^/]+)?$/i;
+const DOCKERFILE_RE = /(?:^|\/)(?:dockerfile(?:\.[^/]+)?|[^/]+\.dockerfile)$/i;
 
 // From `git ls-tree -r --name-only` output: every Dockerfile inside rootDir.
 // Returns [{path: repoRelative, file: contextRelative}] sorted by path.
@@ -108,7 +108,7 @@ export function computeUsage(stats, limits) {
 }
 
 export function makeImageTag(serviceId, deploymentId) {
-  return `nixre-app-svc${Number(serviceId)}-dep${Number(deploymentId)}:nixre`;
+  return `nixre-app-svc${serviceId}-dep${deploymentId}:nixre`;
 }
 
 // Blue/green overlap means two containers per service can coexist briefly, so

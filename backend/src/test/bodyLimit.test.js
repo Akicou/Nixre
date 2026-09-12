@@ -167,6 +167,9 @@ test('registration, passkeys, tools and all deployment triggers enforce their ro
     ['/ai/tools', '/AI/TOOLS/', 120],
     ['/repos/acme/repo/+/deployments/services/1/deploy', '/repos/acme/repo/+/deployments/services/1/deploy/', 30],
     ['/repos/acme/repo/+/deployments/services/1/deployments/2/redeploy', '/repos/acme/repo/+/deployments/services/1/deployments/2/rollback/', 30],
+    ['/spaces/acme/deployments/services/1/deploy', '/spaces/acme/deployments/services/1/deploy/', 30],
+    ['/spaces/acme/deployments/services/1/deployments/2/redeploy', '/spaces/acme/deployments/services/1/deployments/2/rollback/', 30],
+    ['/spaces/acme/deployments/services/1/deploy', '/repos/acme/repo/+/deployments/services/1/deploy/', 30],
   ]) {
     const app = buildApp();
     for (let i = 0; i < max; i++) {

@@ -26,7 +26,9 @@ const ROUTE_CACHE_MS = 5000;
 export function buildRoutes(domainRows, serviceRows, baseDomain) {
   const routes = [];
   const reserved = reservedDomainSet();
+  const internalIds = new Set((serviceRows || []).filter(s => s.exposure === 'internal').map(s => String(s.id)));
   for (const row of domainRows || []) {
+    if (row.exposure === 'internal' || internalIds.has(String(row.service_id))) continue;
     // Ownership gate: an unverified domain is attached but parked. Routing it
     // anyway would let any space writer serve their container from a hostname
     // they do not control — including this instance's own.
@@ -39,9 +41,11 @@ export function buildRoutes(domainRows, serviceRows, baseDomain) {
   if (base) {
     const nameCounts = new Map();
     for (const svc of serviceRows || []) {
+      if (svc.exposure === 'internal') continue;
       nameCounts.set(svc.name, (nameCounts.get(svc.name) || 0) + 1);
     }
     for (const svc of serviceRows || []) {
+      if (svc.exposure === 'internal') continue;
       // Vanity form only when unambiguous among serving services…
       if (nameCounts.get(svc.name) === 1 && !/^svc-\d+$/i.test(svc.name)) {
         routes.push({ host: `${String(svc.name).toLowerCase()}.${base}`, serviceId: svc.id });
@@ -69,12 +73,12 @@ export function createDeployProxy({ pool, engine }) {
     try {
       const [{ rows: domains }, { rows: services }] = await Promise.all([
         pool.query(
-          `SELECT d.domain, d.service_id, d.verified FROM deploy_domains d
-           JOIN deploy_services s ON s.id = d.service_id`,
+          `SELECT d.domain, d.service_id, d.verified, s.exposure FROM deploy_domains d
+           JOIN deploy_services s ON s.id = d.service_id WHERE s.exposure = 'http'`,
         ),
         pool.query(
-          `SELECT id, name FROM deploy_services
-           WHERE desired_state = 'running' AND current_deployment_id IS NOT NULL`,
+          `SELECT id, name, exposure FROM deploy_services
+           WHERE exposure = 'http' AND desired_state = 'running' AND current_deployment_id IS NOT NULL`,
         ),
       ]);
       cachedRoutes = buildRoutes(domains, services, baseDomain);

@@ -53,12 +53,15 @@ const ADMIN_ONLY_HOST_KEYS = new Set([
   'shm_size',
   'tmpfs',
   'network_mode',
+  'gpus',
 ]);
 
 const KNOWN_TOP_KEYS = new Set([
   'version',
   'health_path',
   'health_timeout_ms',
+  'health_type',
+  'health_command',
   'command',
   'entrypoint',
   'host_config',
@@ -299,6 +302,26 @@ function normalizeStringListField(value, field) {
   return out.length === 0 ? null : out;
 }
 
+function normalizeHealth(src) {
+  const type = src.health_type ?? 'http';
+  if (!['http', 'tcp', 'docker'].includes(type)) {
+    throw new Error('runtime options: health_type must be http, tcp or docker');
+  }
+  let command = null;
+  if (src.health_command != null) {
+    if (type !== 'docker' || !Array.isArray(src.health_command)) {
+      throw new Error('runtime options: health_command requires docker health_type and an array');
+    }
+    command = asStringArray(src.health_command, 'health_command', { max: 32, maxLen: 2000 });
+    if (!['CMD', 'CMD-SHELL'].includes(command[0]) || command.length < 2 ||
+        (command[0] === 'CMD-SHELL' && command.length !== 2) ||
+        command.some(s => s.includes('\0')) || command.join('').length > 4096) {
+      throw new Error('runtime options: health_command must be a bounded Docker CMD or CMD-SHELL check');
+    }
+  }
+  return { health_type: type, health_command: command };
+}
+
 // Main entry: validate + normalize a runtime options object. Throws an Error
 // with an operator-friendly message on any violation. ctx may carry:
 //   admin            — is the caller an instance admin?
@@ -344,8 +367,9 @@ export function normalizeRuntimeOptions(input, ctx = {}) {
   }
 
   // --- health check ---------------------------------------------------------
+  const health = normalizeHealth(src);
   let healthPath = src.health_path == null ? '/' : String(src.health_path);
-  if (!healthPath.startsWith('/') || healthPath.length > 200 || /\s/.test(healthPath)) {
+  if (!healthPath.startsWith('/') || healthPath.length > 200 || /[\s\x00-\x1f\x7f]/.test(healthPath)) {
     throw new Error('runtime options: health_path must start with "/" and be <= 200 chars');
   }
   let healthTimeout = null;
@@ -396,9 +420,14 @@ export function normalizeRuntimeOptions(input, ctx = {}) {
   const shmSize = normalizeShmSize(hostRaw.shm_size);
   const tmpfs = normalizeTmpfs(hostRaw.tmpfs);
   const networkMode = normalizeNetworkMode(hostRaw.network_mode, flags);
+  const gpus = hostRaw.gpus ?? null;
+  if (gpus !== null && gpus !== 'all') {
+    throw new Error("runtime options: host_config.gpus must be 'all' or null");
+  }
 
   return {
     version: RUNTIME_OPTIONS_VERSION,
+    ...health,
     health_path: healthPath,
     health_timeout_ms: healthTimeout,
     command,
@@ -414,6 +443,7 @@ export function normalizeRuntimeOptions(input, ctx = {}) {
       shm_size: shmSize,
       tmpfs,
       network_mode: networkMode,
+      gpus,
     },
   };
 }
@@ -431,16 +461,23 @@ export function getRuntimeOptions(serviceRow) {
       return null;
     }
   }
-  if (typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  // Invalid native checks must fail closed in the engine, not become HTTP checks.
+  let health;
+  try { health = normalizeHealth(parsed); }
+  catch { health = { health_type: 'invalid', health_command: null }; }
   const host =
     parsed.host_config && typeof parsed.host_config === 'object' ? parsed.host_config : {};
   return {
     version: parsed.version ?? 1,
+    ...health,
     health_path:
-      typeof parsed.health_path === 'string' && parsed.health_path.startsWith('/')
+      typeof parsed.health_path === 'string' && parsed.health_path.startsWith('/') &&
+      parsed.health_path.length <= 200 && !/[\s\x00-\x1f\x7f]/.test(parsed.health_path)
         ? parsed.health_path
         : '/',
-    health_timeout_ms: Number.isInteger(parsed.health_timeout_ms) ? parsed.health_timeout_ms : null,
+    health_timeout_ms: Number.isInteger(parsed.health_timeout_ms) && parsed.health_timeout_ms >= 1000 &&
+      parsed.health_timeout_ms <= 600_000 ? parsed.health_timeout_ms : null,
     command: Array.isArray(parsed.command) ? parsed.command : null,
     entrypoint: Array.isArray(parsed.entrypoint) ? parsed.entrypoint : null,
     host_config: {
@@ -454,6 +491,7 @@ export function getRuntimeOptions(serviceRow) {
       shm_size: Number.isInteger(host.shm_size) ? host.shm_size : null,
       tmpfs: host.tmpfs && typeof host.tmpfs === 'object' && !Array.isArray(host.tmpfs) ? host.tmpfs : {},
       network_mode: typeof host.network_mode === 'string' ? host.network_mode : null,
+      gpus: host.gpus === 'all' ? 'all' : null,
     },
   };
 }
