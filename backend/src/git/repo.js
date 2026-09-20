@@ -39,6 +39,17 @@ async function git(repoPath, args, opts = {}) {
 
 // --- repository lifecycle ------------------------------------------------------
 
+// Tells core a branch moved, which fires webhooks and auto-deploy.
+//
+// The hook runs wherever the push was served, and those images do not agree on
+// what is installed: nixre-ssh has curl, nixre-core has only busybox wget. This
+// used to call curl unconditionally, discard its output and end in `|| true`,
+// so every HTTPS push failed with "curl: not found" in silence — auto_deploy
+// appeared broken to anyone not pushing over SSH.
+//
+// A failure now prints one line to stderr, which git relays to the pusher. The
+// push still succeeds: a missed notification must never reject code that is
+// already written.
 const POST_RECEIVE_HOOK = [
   '#!/bin/sh',
   '[ -f /srv/nixre-env.sh ] && . /srv/nixre-env.sh',
@@ -46,11 +57,22 @@ const POST_RECEIVE_HOOK = [
   'TOKEN="${INTERNAL_TOKEN:-}"',
   'SPACE=""; REPO=""',
   'case "$PWD" in */repos/*/*.git) SPACE=$(basename $(dirname "$PWD")); REPO=$(basename "$PWD" .git);; esac',
+  'notify() {',
+  '  if command -v curl >/dev/null 2>&1; then',
+  '    curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\',
+  '      -d "$1" "$CORE/api/v1/internal/push-event" >/dev/null 2>&1',
+  '  elif command -v wget >/dev/null 2>&1; then',
+  '    wget -q -O /dev/null --header "Authorization: Bearer $TOKEN" \\',
+  '      --header "Content-Type: application/json" --post-data "$1" \\',
+  '      "$CORE/api/v1/internal/push-event" 2>/dev/null',
+  '  else',
+  '    return 127',
+  '  fi',
+  '}',
   'while read old new ref; do',
   '  case "$ref" in refs/heads/*) BRANCH="${ref#refs/heads/}";',
-  '    curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\',
-  '      -d "{\\"space\\":\\"$SPACE\\",\\"repo\\":\\"$REPO\\",\\"branch\\":\\"$BRANCH\\",\\"before\\":\\"$old\\",\\"after\\":\\"$new\\",\\"pusher\\":\\"webhook\\"}" \\',
-  '      "$CORE/api/v1/internal/push-event" >/dev/null 2>&1 || true;;',
+  '    BODY="{\\"space\\":\\"$SPACE\\",\\"repo\\":\\"$REPO\\",\\"branch\\":\\"$BRANCH\\",\\"before\\":\\"$old\\",\\"after\\":\\"$new\\",\\"pusher\\":\\"webhook\\"}";',
+  '    notify "$BODY" || echo "nixre: could not notify core about $BRANCH - webhooks and auto-deploy did not run" >&2;;',
   '  esac',
   'done',
   'exit 0',

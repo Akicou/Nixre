@@ -75,6 +75,7 @@ const activityIcon = (status: string): React.ReactNode => {
 const activityVerb = (status: string): string => {
   switch (status) {
     case 'live': return 'Deployed';
+    case 'superseded': return 'Replaced';
     case 'failed': return 'Deploy failed';
     case 'building': return 'Building';
     case 'releasing': return 'Releasing';

@@ -1188,3 +1188,63 @@ test('tunnel metrics parse only unlabelled totals', async () => {
   assert.equal(parseTunnelMetrics('unrelated_metric 3'), null, 'a wrong endpoint is not health');
   assert.equal(parseTunnelMetrics(''), null);
 });
+
+// ---------------------------------------------------------------------------
+// Deployment history
+// ---------------------------------------------------------------------------
+
+// Before this, the swap promoted the new deployment and left the old row alone,
+// so every deployment a service ever released still claimed to be live. On the
+// live instance that was 25 of 26 rows.
+test('promoting a release supersedes the one it replaced', async () => {
+  const pool = new FakePool();
+  pool.addRepo('acme', 'mono');
+  const svc = pool.addService({});
+  const docker = new FakeDocker();
+  const { engine } = await makeEngine(pool, { docker });
+
+  await engine.startDeployment(svc.id, { trigger: 'manual' });
+  await settle(engine, svc.id);
+  const first = pool.services.get(svc.id).current_deployment_id;
+  assert.equal(pool.deployments.get(first).status, 'live');
+
+  await engine.startDeployment(svc.id, { trigger: 'manual' });
+  await settle(engine, svc.id);
+  const second = pool.services.get(svc.id).current_deployment_id;
+
+  assert.notEqual(second, first, 'a second release happened');
+  assert.equal(pool.deployments.get(second).status, 'live', 'the new one serves');
+  assert.equal(pool.deployments.get(first).status, 'superseded', 'the old one no longer claims to');
+  assert.equal(
+    [...pool.deployments.values()].filter(d => d.status === 'live').length,
+    1,
+    'exactly one deployment is live at a time',
+  );
+});
+
+test('a failed release leaves the serving deployment live', async () => {
+  const pool = new FakePool();
+  pool.addRepo('acme', 'mono');
+  const svc = pool.addService({});
+  const docker = new FakeDocker();
+  let healthy = true;
+  const { engine } = await makeEngine(pool, {
+    docker,
+    drivers: { probeHttp: () => async () => ({ ok: healthy, status: healthy ? 200 : 500 }) },
+  });
+
+  await engine.startDeployment(svc.id, { trigger: 'manual' });
+  await settle(engine, svc.id);
+  const serving = pool.services.get(svc.id).current_deployment_id;
+
+  healthy = false;
+  await engine.startDeployment(svc.id, { trigger: 'manual' }).catch(() => {});
+  await settle(engine, svc.id);
+
+  assert.equal(pool.services.get(svc.id).current_deployment_id, serving, 'no swap happened');
+  assert.equal(
+    pool.deployments.get(serving).status,
+    'live',
+    'a release that never took traffic must not demote the one still serving it',
+  );
+});

@@ -27,7 +27,7 @@ import { webhookRoutes } from './routes/webhooks.js';
 import { deploymentRoutes } from './routes/deployments.js';
 import { aiRoutes } from './routes/ai.js';
 import { smartHttp } from './git/smartHttp.js';
-import { REPOS_ROOT } from './git/repo.js';
+import { REPOS_ROOT, repairAllHooks } from './git/repo.js';
 import { initSandbox } from './lib/agentSandbox.js';
 import { sweepStaleRuns } from './lib/agentJobs.js';
 import { loadInstanceSettings } from './lib/instanceSettings.js';
@@ -262,6 +262,14 @@ async function boot() {
 // port for routed app traffic. Docker being absent degrades gracefully —
 // sweeps keep running and pick deployments up when it appears.
 async function bootDeployments() {
+  // The post-receive hook is written when a repo is created, so a change to it
+  // would otherwise reach new repositories only. This repair pass already
+  // existed but was never called, which is how every repo kept a hook that
+  // failed silently on HTTPS pushes. Writing it is idempotent.
+  await repairAllHooks()
+    .then(fixed => fixed && console.log(`post-receive hook refreshed on ${fixed} repositories`))
+    .catch(err => console.error('post-receive hook refresh failed:', err.message));
+
   await deployEngine.sweep().catch(err => console.error('deploy sweep failed:', err.message));
 
   const proxyPort = Number(process.env.DEPLOY_PROXY_PORT || 3003);
