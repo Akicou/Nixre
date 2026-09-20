@@ -92,6 +92,14 @@ services:
       DEPLOY_HEALTH_TIMEOUT_MS: ${DEPLOY_HEALTH_TIMEOUT_MS:-30000}
       # Idle timeout for proxied app traffic (streaming AI services need more).
       DEPLOY_PROXY_TIMEOUT_MS: ${DEPLOY_PROXY_TIMEOUT_MS:-120000}
+      # cloudflared's metrics endpoint, so core can record tunnel health beside
+      # service uptime. Blank disables the sampler entirely. cloudflared runs on
+      # the host, so this is the host's address on core's docker network, and
+      # cloudflared must bind there rather than to loopback (`--metrics`). Pin
+      # that port: unbound, cloudflared takes the first free one of 20241-20245
+      # and the address changes across restarts.
+      TUNNEL_METRICS_URL: ${TUNNEL_METRICS_URL:-}
+      TUNNEL_PROBE_MS: ${TUNNEL_PROBE_MS:-30000}
       # --- Runtime options policy (fail closed) -------------------------
       # Host bind mounts require BOTH an allowlist here AND instance admin.
       # Privileged mode and network_mode=host additionally need their flags.
