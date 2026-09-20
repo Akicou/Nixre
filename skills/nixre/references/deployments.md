@@ -62,7 +62,13 @@ Universal SSL free covers the apex plus **one** level of subdomain (`<your-domai
 
 - **HTTP logs**: method/path/status/duration; failures ≥ `preserve_status_min` (400) kept 7 days, others 24h — per-service tunable. Filter chips drive query params.
 - **Resources**: hard caps via container `NanoCpus`/`Memory`; live CPU % of limit + working-set memory bars sample `docker stats` every ~10s.
-- **Uptime**: internal prober hits each running service every ~30s, charts green/red buckets (24h/7d/30d). An **org board** shows every service in the space + a live activity feed; the dashboard shows the most active deployments with fleet uptime lanes.
+- **Uptime**: every running service is probed every ~30s on two paths, recorded with a `scope`:
+  - `origin` — the container on core's docker network. Proves the app is alive.
+  - `public` — the service's own hostname, through the tunnel. Only run when the service has a domain and its origin answered. Proves anyone can actually reach it.
+
+  The pair is the diagnosis: origin up + public down is an edge fault, both down is the app. An origin-only check reports a tunnel outage as 100% uptime.
+- **Tunnel health**: with `TUNNEL_METRICS_URL` set, core samples cloudflared's metrics into `tunnel_health`. `connections` is `cloudflared_tunnel_ha_connections` — 0 means nothing public reaches this host. `total_requests` is monotonic, so a flat series while public probes fail is a tunnel that registered but is not being routed traffic (a restart fixes that; a connection count alone misses it).
+- An **org board** shows every service in the space + a live activity feed; the dashboard shows the most active deployments with fleet uptime lanes.
 
 ## Config knobs
 
@@ -72,6 +78,8 @@ Universal SSL free covers the apex plus **one** level of subdomain (`<your-domai
 | `DEPLOY_PROXY_BIND` | `127.0.0.1` | publish binding |
 | `DEPLOY_HEALTH_TIMEOUT_MS` | `30000` | max wait for a release to answer |
 | `DEPLOY_PROBE_MS` / `DEPLOY_METRICS_MS` / `DEPLOY_SWEEP_MS` | `30s`/`10s`/`60s` | probe / stats / reconcile sweeps |
+| `TUNNEL_METRICS_URL` | — | cloudflared metrics endpoint; enables tunnel health sampling |
+| `TUNNEL_PROBE_MS` | `30s` | tunnel health sampling interval |
 
 ## Env var rules (UI + backend enforced)
 

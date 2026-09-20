@@ -4,6 +4,7 @@
 
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import https from 'node:https';
 import { repoDir } from '../git/repo.js';
 import { spawnedContainerNetwork } from './dockerNetwork.js';
 
@@ -165,6 +166,93 @@ export function probeHttp() {
       });
       req.on('error', reject);
     });
+}
+
+/**
+ * Fetch a service over its own public hostname, the way a visitor reaches it.
+ *
+ * The origin probe talks to the container on core's docker network, so it stays
+ * green during an edge outage. This one crosses the tunnel, so it goes red the
+ * moment the public path breaks — the difference between the two is the
+ * diagnosis: origin up + public down is an edge fault, both down is the app.
+ *
+ * Redirects are not followed: a 3xx proves the tunnel delivered the request,
+ * which is all this is asking.
+ */
+export function probePublicHttp() {
+  return ({ hostname, path, timeoutMs, signal } = {}) =>
+    new Promise((resolve, reject) => {
+      const req = https.get(
+        {
+          host: hostname,
+          path: path || '/',
+          timeout: timeoutMs || 5000,
+          signal,
+          headers: { 'user-agent': 'nixre-uptime/1' },
+        },
+        res => {
+          res.resume();
+          const status = res.statusCode ?? null;
+          // 530 is Cloudflare's "tunnel is down" — an origin that never answered.
+          const ok = status != null && status < 500;
+          resolve({ ok, status });
+        },
+      );
+      req.on('timeout', () => {
+        req.destroy(new Error(`public probe timed out after ${timeoutMs}ms`));
+      });
+      req.on('error', reject);
+    });
+}
+
+/**
+ * Scrape cloudflared's local metrics endpoint.
+ *
+ * `cloudflared_tunnel_ha_connections` is the number of registered edge
+ * connections. Zero means no request from the internet can reach this host,
+ * whatever the containers say about themselves. `cloudflared_tunnel_total_requests`
+ * is monotonic; a flat series while public probes fail means the tunnel
+ * registered but the edge is not routing to it, which a restart fixes and a
+ * connection count alone would miss.
+ */
+export function fetchTunnelMetrics() {
+  return ({ url, timeoutMs } = {}) =>
+    new Promise((resolve, reject) => {
+      const target = url || process.env.TUNNEL_METRICS_URL;
+      if (!target) return resolve(null);
+      const req = http.get(target, { timeout: timeoutMs || 3000 }, res => {
+        if ((res.statusCode ?? 0) >= 400) {
+          res.resume();
+          return reject(new Error(`tunnel metrics returned ${res.statusCode}`));
+        }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => {
+          body += chunk;
+          // The endpoint is small; a runaway response is a wrong URL.
+          if (body.length > 512_000) req.destroy(new Error('tunnel metrics too large'));
+        });
+        res.on('end', () => resolve(parseTunnelMetrics(body)));
+      });
+      req.on('timeout', () => {
+        req.destroy(new Error(`tunnel metrics timed out after ${timeoutMs}ms`));
+      });
+      req.on('error', reject);
+    });
+}
+
+/** Pull the two gauges we act on out of Prometheus text format. */
+export function parseTunnelMetrics(text) {
+  const read = name => {
+    // Only unlabelled samples; labelled series (per-location) are not totals.
+    const match = String(text).match(new RegExp(`^${name}\\s+([0-9.eE+-]+)\\s*$`, 'm'));
+    if (!match) return null;
+    const value = Number(match[1]);
+    return Number.isFinite(value) ? value : null;
+  };
+  const connections = read('cloudflared_tunnel_ha_connections');
+  if (connections === null) return null;
+  return { connections, totalRequests: read('cloudflared_tunnel_total_requests') };
 }
 
 // Network for deployed app containers. Must be a network core is on (core

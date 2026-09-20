@@ -293,6 +293,8 @@ The compose file also ships an optional token-based `nixre-tunnel` service (`--p
 | `DEPLOY_BASE_DOMAIN` | — | Enables `<name>` / `svc-<id>` automatic routing |
 | `DEPLOY_HEALTH_TIMEOUT_MS` | `30000` | Max wait for a new release to answer |
 | `DEPLOY_PROBE_MS` / `DEPLOY_METRICS_MS` / `DEPLOY_SWEEP_MS` | `30s` / `10s` / `60s` | Uptime probe, stats sampling, reconcile sweeps |
+| `TUNNEL_METRICS_URL` | — | cloudflared metrics endpoint; enables tunnel health sampling |
+| `TUNNEL_PROBE_MS` | `30s` | How often tunnel health is sampled |
 
 ## Plugins
 
