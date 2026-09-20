@@ -27,6 +27,8 @@ class FakePool {
     this.repos = new Map();
     this.httpLogs = [];
     this.uptime = [];
+    this.domains = [];
+    this.tunnelHealth = [];
     this.queries = [];
     this.nextServiceId = 10;
     this.nextDeploymentId = 100;
@@ -164,6 +166,22 @@ class FakePool {
         latency_ms: params[2],
         status_code: params[3],
         ts: params[4],
+        scope: params[5] ?? 'origin',
+      });
+      return { rowCount: 1 };
+    }
+    if (/^SELECT domain FROM deploy_domains /.test(q)) {
+      const rows = (this.domains || [])
+        .filter(d => d.service_id === params[0])
+        .map(d => ({ domain: d.domain }));
+      return { rows: rows.slice(0, 1) };
+    }
+    if (/^INSERT INTO tunnel_health /.test(q)) {
+      this.tunnelHealth.push({
+        connections: params[0],
+        total_requests: params[1],
+        reachable: params[2],
+        ts: params[3],
       });
       return { rowCount: 1 };
     }
@@ -1030,4 +1048,143 @@ test('http log retention preserves failures and prunes stale successes', async (
 
   const remaining = pool.httpLogs.map(l => String(l.status_code)).sort();
   assert.deepEqual(remaining, ['200', '404', 'null']);
+});
+
+// ---------------------------------------------------------------------------
+// Edge observability
+// ---------------------------------------------------------------------------
+
+// The outage this exists for: the container answered on every tick while all
+// three public hostnames were returning Cloudflare 530s. An origin-only probe
+// reports that as 100% uptime.
+test('a healthy container behind a dead tunnel is recorded as a public failure', async () => {
+  const pool = new FakePool();
+  pool.addRepo('acme', 'mono');
+  const svc = pool.addService({});
+  pool.domains.push({ service_id: svc.id, domain: 'app.example.com' });
+  const docker = new FakeDocker();
+  const publicCalls = [];
+  const { engine } = await makeEngine(pool, {
+    docker,
+    drivers: {
+      probeHttp: () => async () => ({ ok: true, status: 200 }),
+      probePublicHttp: () => async arg => {
+        publicCalls.push(arg);
+        return { ok: false, status: 530 };
+      },
+    },
+  });
+  await engine.startDeployment(svc.id, { trigger: 'manual' });
+  await settle(engine, svc.id);
+
+  pool.uptime.length = 0;
+  await engine.probeTick();
+
+  const origin = pool.uptime.filter(u => u.scope === 'origin');
+  const pub = pool.uptime.filter(u => u.scope === 'public');
+  assert.equal(origin.length, 1, 'the container check still runs');
+  assert.equal(origin[0].ok, true);
+  assert.equal(pub.length, 1, 'and the public path is checked too');
+  assert.equal(pub[0].ok, false, 'a 530 is a public outage, not uptime');
+  assert.equal(pub[0].status_code, 530);
+  assert.equal(publicCalls[0].hostname, 'app.example.com');
+});
+
+test('a service with no domain is only checked at the origin', async () => {
+  const pool = new FakePool();
+  pool.addRepo('acme', 'mono');
+  const svc = pool.addService({});
+  const docker = new FakeDocker();
+  let publicProbes = 0;
+  const { engine } = await makeEngine(pool, {
+    docker,
+    drivers: {
+      probeHttp: () => async () => ({ ok: true, status: 200 }),
+      probePublicHttp: () => async () => {
+        publicProbes++;
+        return { ok: true, status: 200 };
+      },
+    },
+  });
+  await engine.startDeployment(svc.id, { trigger: 'manual' });
+  await settle(engine, svc.id);
+
+  pool.uptime.length = 0;
+  await engine.probeTick();
+
+  assert.equal(publicProbes, 0, 'nothing public to check');
+  assert.deepEqual([...new Set(pool.uptime.map(u => u.scope))], ['origin']);
+});
+
+test('a down origin is not chased across the internet', async () => {
+  const pool = new FakePool();
+  pool.addRepo('acme', 'mono');
+  const svc = pool.addService({});
+  pool.domains.push({ service_id: svc.id, domain: 'app.example.com' });
+  const docker = new FakeDocker();
+  let publicProbes = 0;
+  // Healthy through release, then the app falls over.
+  let originOk = true;
+  const { engine } = await makeEngine(pool, {
+    docker,
+    drivers: {
+      probeHttp: () => async () => ({ ok: originOk, status: originOk ? 200 : 502 }),
+      probePublicHttp: () => async () => {
+        publicProbes++;
+        return { ok: false, status: 502 };
+      },
+    },
+  });
+  await engine.startDeployment(svc.id, { trigger: 'manual' });
+  await settle(engine, svc.id);
+  assert.ok(pool.services.get(svc.id).current_deployment_id, 'released, so probeTick considers it');
+
+  originOk = false;
+  pool.uptime.length = 0;
+  await engine.probeTick();
+
+  const origin = pool.uptime.filter(u => u.scope === 'origin');
+  assert.equal(origin.length, 1);
+  assert.equal(origin[0].ok, false, 'the origin failure is recorded');
+  assert.equal(publicProbes, 0, 'a broken app is an app fault; the edge is not implicated');
+});
+
+test('tunnel health records the connection count, and no answer means zero', async () => {
+  const pool = new FakePool();
+  const { engine } = await makeEngine(pool, {
+    drivers: { fetchTunnelMetrics: () => async () => ({ connections: 4, totalRequests: 81 }) },
+  });
+  const healthy = await engine.tunnelTick();
+  assert.deepEqual(healthy, { connections: 4, totalRequests: 81, reachable: true });
+  assert.equal(pool.tunnelHealth.at(-1).connections, 4);
+  assert.equal(pool.tunnelHealth.at(-1).reachable, true);
+
+  // cloudflared serves its own metrics, so an unreachable endpoint is a down
+  // tunnel rather than missing data.
+  const { engine: broken } = await makeEngine(pool, {
+    drivers: {
+      fetchTunnelMetrics: () => async () => {
+        throw new Error('ECONNREFUSED');
+      },
+    },
+  });
+  const down = await broken.tunnelTick();
+  assert.deepEqual(down, { connections: 0, totalRequests: null, reachable: false });
+  assert.equal(pool.tunnelHealth.at(-1).connections, 0);
+});
+
+test('tunnel metrics parse only unlabelled totals', async () => {
+  const { parseTunnelMetrics } = await import('./deployDrivers.js');
+  const text = [
+    'cloudflared_tunnel_ha_connections 4',
+    'cloudflared_tunnel_server_locations{connection_id="0",edge_location="fra18"} 1',
+    'cloudflared_tunnel_total_requests 81',
+  ].join('\n');
+  assert.deepEqual(parseTunnelMetrics(text), { connections: 4, totalRequests: 81 });
+  assert.deepEqual(parseTunnelMetrics('cloudflared_tunnel_ha_connections 0'), {
+    connections: 0,
+    totalRequests: null,
+  });
+  assert.equal(parseTunnelMetrics('unrelated_metric 3'), null, 'a wrong endpoint is not health');
+  assert.equal(parseTunnelMetrics(''), null);
 });

@@ -897,18 +897,93 @@ export function createDeploymentEngine({
         }
       }
       results.push({ serviceId: service.id, ...outcome });
-      await pool.query(
-        `INSERT INTO deploy_uptime_checks (service_id, ok, latency_ms, status_code, ts)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [service.id, Boolean(outcome.ok), Date.now() - t0, outcome.status ?? null, Date.now()],
-      );
+      await recordCheck(service.id, 'origin', outcome, Date.now() - t0);
       bus.publish(service.id, {
         type: 'uptime',
         ok: Boolean(outcome.ok),
         status: outcome.status ?? null,
       });
+      // An origin that answers proves the container is alive, not that anyone
+      // can reach it. Cross the tunnel too, so an edge outage is visible.
+      if (outcome.ok) await probePublic(service);
     }
     return results;
+  }
+
+  async function recordCheck(serviceId, scope, outcome, latencyMs) {
+    await pool.query(
+      `INSERT INTO deploy_uptime_checks (service_id, ok, latency_ms, status_code, ts, scope)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [serviceId, Boolean(outcome.ok), latencyMs, outcome.status ?? null, Date.now(), scope],
+    );
+  }
+
+  /**
+   * Fetch the service over one of its own public hostnames.
+   *
+   * Only one domain per service is probed per tick: this crosses the internet,
+   * and the question ("is the public path up?") is answered by any one of them.
+   */
+  async function probePublic(service) {
+    const prober = drivers.probePublicHttp?.();
+    if (!prober) return null;
+    const { rows } = await pool.query(
+      `SELECT domain FROM deploy_domains WHERE service_id = $1 ORDER BY id ASC LIMIT 1`,
+      [service.id],
+    );
+    const domain = rows?.[0]?.domain;
+    if (!domain) return null;
+    const t0 = Date.now();
+    let outcome = { ok: false, status: null };
+    try {
+      outcome = await prober({
+        hostname: domain,
+        path: getRuntimeOptions(service)?.health_path || '/',
+        timeoutMs: 5000,
+      });
+    } catch {
+      outcome = { ok: false, status: null };
+    }
+    await recordCheck(service.id, 'public', outcome, Date.now() - t0);
+    bus.publish(service.id, {
+      type: 'uptime',
+      scope: 'public',
+      ok: Boolean(outcome.ok),
+      status: outcome.status ?? null,
+    });
+    return outcome;
+  }
+
+  /**
+   * Record the tunnel's own health.
+   *
+   * Every public hostname on this host shares one cloudflared process, so this
+   * is a single row for the whole instance rather than per service. Zero
+   * connections means nothing is reachable from the internet no matter how
+   * healthy the containers look.
+   */
+  async function tunnelTick() {
+    const fetchMetrics = drivers.fetchTunnelMetrics?.();
+    if (!fetchMetrics) return null;
+    let metrics = null;
+    try {
+      metrics = await fetchMetrics({ url: process.env.TUNNEL_METRICS_URL });
+    } catch {
+      metrics = null;
+    }
+    // An unreachable metrics endpoint is itself a down tunnel: cloudflared
+    // serves it in-process, so nothing answering means nothing is running.
+    const sample = {
+      connections: metrics?.connections ?? 0,
+      totalRequests: metrics?.totalRequests ?? null,
+      reachable: metrics !== null,
+    };
+    await pool.query(
+      `INSERT INTO tunnel_health (connections, total_requests, reachable, ts)
+       VALUES ($1, $2, $3, $4)`,
+      [sample.connections, sample.totalRequests, sample.reachable, Date.now()],
+    );
+    return sample;
   }
 
   const MAX_METRIC_POINTS = Number(process.env.DEPLOY_METRIC_POINTS || 720);
@@ -962,6 +1037,7 @@ export function createDeploymentEngine({
     maybeAutoDeploy,
     sweep,
     probeTick,
+    tunnelTick,
     metricsTick,
     getStatsSnapshot,
     findServiceTarget,

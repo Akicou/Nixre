@@ -284,6 +284,14 @@ async function bootDeployments() {
 
   const metricsMs = Number(process.env.DEPLOY_METRICS_MS || 10_000);
   setInterval(() => void deployEngine.metricsTick().catch(() => {}), metricsMs).unref();
+
+  // Tunnel health is instance-wide, not per service: every public hostname on
+  // this host rides one cloudflared. Skipped entirely when no metrics URL is
+  // configured, so a host that does not use a tunnel writes no rows.
+  if (process.env.TUNNEL_METRICS_URL) {
+    const tunnelMs = Number(process.env.TUNNEL_PROBE_MS || 30_000);
+    setInterval(() => void deployEngine.tunnelTick().catch(() => {}), tunnelMs).unref();
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
