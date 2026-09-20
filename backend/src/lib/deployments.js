@@ -334,6 +334,9 @@ export function createDeploymentEngine({
       );
 
       if (previousId && previousId !== deploymentId) {
+        // The row it replaced is no longer live. Without this every deployment
+        // a service ever released stays 'live' and the history is unreadable.
+        await updateDeployments(previousId, { status: { v: 'superseded' } });
         void retireOldContainer(serviceFresh.id, previousId)
           .catch(() => {})
           .finally(() => {});

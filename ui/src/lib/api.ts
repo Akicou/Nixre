@@ -1174,7 +1174,7 @@ export interface DeploymentRecord {
   short_sha: string;
   message: string;
   trigger: string;
-  status: 'queued' | 'building' | 'releasing' | 'live' | 'failed' | 'cancelled';
+  status: 'queued' | 'building' | 'releasing' | 'live' | 'superseded' | 'failed' | 'cancelled';
   error: string | null;
   started: number;
   finished: number | null;

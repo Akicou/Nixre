@@ -993,7 +993,7 @@ const DeploysPanel: React.FC<{ service: DeployService; onChanged: () => void }> 
                   >
                     <ScrollText className="w-3.5 h-3.5" /> Logs
                   </button>
-                  {!d.serving && d.status === 'live' && (
+                  {!d.serving && (d.status === 'live' || d.status === 'superseded') && (
                     <>
                       <button onClick={() => act(() => api.rollbackDeployment(space!, repoUid!, service.id, d.id))} className="mr-2 text-txt-secondary hover:text-brand inline-flex items-center gap-1" title="Roll back to this release">
                         <RotateCcw className="w-3.5 h-3.5" /> Rollback
