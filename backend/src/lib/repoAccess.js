@@ -13,18 +13,20 @@
  * Can `user` read the repo described by a repos row?
  *
  * Rules, in order:
+ *   - anonymous visitors (user null) read public repos only
+ *   - blocked users read nothing
  *   - instance admins read everything
  *   - public repos are world-readable
  *   - otherwise the caller must be a member of the owning space
- *   - blocked users read nothing
  *
  * @param {import('pg').Pool} pool
  * @param {{space_uid: string, is_public: boolean}} repo  a row from `repos`
- * @param {{uid: string, admin: boolean, blocked?: boolean}} user
+ * @param {{uid: string, admin: boolean, blocked?: boolean} | null} user
  * @returns {Promise<boolean>}
  */
 export async function canReadRepo(pool, repo, user) {
-  if (!repo || !user) return false;
+  if (!repo) return false;
+  if (!user) return Boolean(repo.is_public);
   if (user.blocked) return false;
   if (user.admin) return true;
   if (repo.is_public) return true;

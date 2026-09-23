@@ -189,6 +189,24 @@ describe('RepoView — workspace layouts', () => {
     expect(getAllPrefs).not.toHaveBeenCalled();
   });
 
+  it('gives guests a read-only repo: no Settings tab and no New Pull Request button', async () => {
+    api.getRepo.mockResolvedValue({ ...repo, can_write: false });
+    mountAt('/acme/website?tab=pulls', false);
+    await screen.findByText('No pull requests found.');
+    expect(screen.queryByRole('button', { name: /Settings/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /New Pull Request/ })).toBeNull();
+  });
+
+  it('hides Merge and Assistant on a PR for guests', async () => {
+    api.getRepo.mockResolvedValue({ ...repo, can_write: false });
+    api.getPullRequest.mockResolvedValue({ ...pullRequest, state: 'open' });
+    api.getPullRequestDiff.mockResolvedValue([]);
+    mountAt(`/acme/website?tab=pulls&pr=${pullRequest.number}`, false);
+    expect(await screen.findByText(`#${pullRequest.number}`)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Merge Pull Request/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Assistant/ })).toBeNull();
+  });
+
   it('reports deployment failures with retry rather than an empty creation state', async () => {
     api.listDeployServices.mockRejectedValueOnce(new Error('Unavailable'));
     mountAt('/acme/website');

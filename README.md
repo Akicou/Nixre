@@ -13,6 +13,7 @@ Nixre runs its own backend (nixre-core, Node + PostgreSQL), its own git storage 
 - **Pull requests**: create PRs between branches, view unified diffs per file, merge (`--no-ff`) or squash.
 - **Signed webhooks**: subscribe `push` and `pull_request` events to external URLs. Deliveries are HMAC-SHA256 signed (`X-Nixre-Signature`) with retries and a delivery log.
 - **Spaces**: multi-tenant workspaces with membership-based access control.
+- **Public browsing**: public repos, orgs and user profiles (files, commits, branches, pull requests) are readable without an account, and public repos clone anonymously. Private content stays members-only.
 - **Personal access tokens and SSH keys**: mint PATs (returned once, stored hashed) and manage SSH public keys with fingerprints.
 - **Plugin system**: bundled plugins stay inert until enabled. The Nixre Assistant is an AI engineering copilot. Plugin state is account-scoped and server-persisted.
 - **Deployments**: ship any root-directory of a repo as a Docker service (you bring the Dockerfile — Nixre never invents the build). Push-to-branch auto-deploys with automatic fallback to the last healthy release, live build/deploy logs over SSE, Railway-style encrypted env vars, per-service CPU/RAM limits with live usage bars, HTTP request logs that preserve failures by status code by default, uptime/downtime charts, and custom domains routed through a central proxy port (`:3003`) with copy-paste DNS guidance for host Caddy/Nginx or Cloudflare Tunnel.

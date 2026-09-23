@@ -90,8 +90,11 @@ try {
   for (const suffix of ['', '/compare?base=main~1&head=main', '/pullreq', '/pullreq/1', '/pullreq/1/diff', '/commits', '/raw/large0.txt']) {
     assert.equal((await request(repoPath + suffix, { token: tokens.outsider })).status, 404, `private protection ${suffix}`);
   }
-  assert.equal((await request(`${repoPath}/compare?base=main~1&head=main`)).status, 401);
-  assert.equal((await request(`${repoPath}/pullreq/1/diff`)).status, 401);
+  // Guests can browse public repos, but a private one is indistinguishable
+  // from a missing one: 404, never 401 (which would confirm it exists).
+  for (const suffix of ['', '/compare?base=main~1&head=main', '/pullreq', '/pullreq/1', '/pullreq/1/diff', '/commits', '/raw/large0.txt']) {
+    assert.equal((await request(repoPath + suffix)).status, 404, `private protection for guests ${suffix}`);
+  }
   assert.equal((await request('/api/v1/repos', { token: tokens.owner,
     body: { parent_ref: 'owner', uid: 'other', is_public: false } })).status, 201);
   pass('private repo/compare/PR diff/commits/raw authorization and real >1 MiB git commit');

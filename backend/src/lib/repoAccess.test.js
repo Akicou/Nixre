@@ -60,9 +60,18 @@ test('blocked users read nothing, even public repos', async () => {
   assert.equal(await canWriteRepo(pool, { space_uid: 'acme', is_public: true }, blockedMember), false);
 });
 
-test('missing repo or user is denied', async () => {
+test('missing repo is denied', async () => {
   assert.equal(await canReadRepo(stubPool(), null, member), false);
-  assert.equal(await canReadRepo(stubPool(), { space_uid: 'acme' }, null), false);
+});
+
+test('anonymous visitors read public repos only and never write', async () => {
+  const pool = stubPool({ isPublic: true, members: [] });
+  assert.equal(await canReadRepo(pool, { space_uid: 'acme', is_public: true }, null), true);
+  assert.equal(await canReadRepo(pool, { space_uid: 'acme', is_public: false }, null), false);
+  assert.equal(await canReadRepo(pool, { space_uid: 'acme' }, null), false);
+  assert.equal(await canWriteRepo(pool, { space_uid: 'acme', is_public: true }, null), false);
+  const out = await loadReadableRepo(stubPool({ isPublic: false, members: [] }), 'acme', 'secret', null);
+  assert.equal(out.error?.status, 404);
 });
 
 test('loadReadableRepo returns 404 (not 403) for a private repo', async () => {

@@ -25,6 +25,7 @@ import {
   SpaceMember,
   Contributions,
   ProfileReadme,
+  User,
 } from '../lib/api';
 import { Avatar } from '../components/Avatar';
 import { ProfileGoals } from '../components/ProfileGoals';
@@ -406,7 +407,9 @@ const OrgSettingsPanel: React.FC<{
   );
 };
 
-export const SpaceView: React.FC = () => {
+// Public spaces and profiles are browsable without an account; `user` is null
+// for guests, who get read-only views.
+export const SpaceView: React.FC<{ user?: User | null }> = ({ user = null }) => {
   const { space: spaceUid } = useParams<{ space: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -491,10 +494,16 @@ export const SpaceView: React.FC = () => {
       <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-4">
         <h2 className="text-lg font-bold text-txt-primary">Space not found</h2>
         <p className="text-sm text-txt-secondary">{error || 'The requested space does not exist.'}</p>
-        <Link to="/" className="inline-flex items-center gap-1.5 text-xs text-txt-brand hover:underline">
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back to Dashboard</span>
-        </Link>
+        {user ? (
+          <Link to="/" className="inline-flex items-center gap-1.5 text-xs text-txt-brand hover:underline">
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Dashboard</span>
+          </Link>
+        ) : (
+          <Link to="/login" className="inline-flex items-center gap-1.5 text-xs text-txt-brand hover:underline">
+            <span>Sign in to see private content</span>
+          </Link>
+        )}
       </div>
     );
   }
@@ -831,7 +840,13 @@ export const SpaceView: React.FC = () => {
             </div>
           )}
 
-          {activeTab === 'deployments' && <SpaceDeployments spaceUid={space.uid} />}
+          {activeTab === 'deployments' && (user ? (
+            <SpaceDeployments spaceUid={space.uid} />
+          ) : (
+            <p className="py-6 text-sm text-txt-secondary">
+              <Link to="/login" className="text-brand underline">Sign in</Link> to view deployments.
+            </p>
+          ))}
 
           {activeTab === 'people' && (
             <OrgPeoplePanel

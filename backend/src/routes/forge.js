@@ -73,7 +73,13 @@ function rowToRepo(row, { openPulls = 0 } = {}) {
 
 const ORG_ROLES = new Set(['owner', 'admin', 'member']);
 
+// The signed-in user, or null for an anonymous visitor on a public-read route.
+function viewer(req) {
+  return req.auth?.user ?? null;
+}
+
 async function spaceRole(pool, spaceUid, user) {
+  if (!user) return null;
   const { rows } = await pool.query(
     'SELECT role FROM space_members WHERE space_uid = $1 AND user_uid = $2',
     [spaceUid, user.uid],
@@ -83,7 +89,7 @@ async function spaceRole(pool, spaceUid, user) {
 
 async function viewerFlags(pool, spaceUid, user) {
   const role = await spaceRole(pool, spaceUid, user);
-  const instAdmin = Boolean(user.admin);
+  const instAdmin = Boolean(user?.admin);
   return {
     is_member: Boolean(role) || instAdmin,
     role: role || null,
@@ -94,6 +100,7 @@ async function viewerFlags(pool, spaceUid, user) {
 
 // membership: owner, member of the space, or instance admin
 async function canAccessSpace(pool, spaceUid, user) {
+  if (!user) return false;
   if (user.admin) return true;
   return Boolean(await spaceRole(pool, spaceUid, user));
 }
@@ -161,10 +168,12 @@ function avatarFor(name) {
 }
 
 // Profile README status: a repo named `{uid}/{uid}` that has a README file.
-async function profileReadmeStatus(pool, uid) {
+// A profile repo the viewer cannot read is reported as absent, so a private
+// one is never revealed to guests or outsiders.
+async function profileReadmeStatus(pool, uid, user) {
   const { rows } = await pool.query('SELECT * FROM repos WHERE space_uid = $1 AND uid = $2', [uid, uid]);
-  if (rows.length === 0) return { exists: false, hasReadme: false, repo: null };
   const repo = rows[0];
+  if (!repo || !(await canReadRepo(pool, repo, user))) return { exists: false, hasReadme: false, repo: null };
   let hasReadme = false;
   let readmeName = '';
   try {
@@ -298,6 +307,8 @@ async function enrichCommits(pool, commits) {
 export function forgeRoutes(pool, authenticate) {
   const api = express.Router();
   const auth = authenticate(true);
+  // Public reads: a guest gets req.auth unset and is treated as anonymous.
+  const optionalAuth = authenticate(false);
 
   // --- spaces ----------------------------------------------------------------
 
@@ -315,12 +326,17 @@ export function forgeRoutes(pool, authenticate) {
     res.json(rows.map(r => ({ space: rowToSpace(r), role: r.role })));
   });
 
-  api.get('/spaces', auth, async (req, res) => {
-    const visibility = req.auth.user.admin
-      ? ''
-      : `WHERE s.is_public OR EXISTS (
+  api.get('/spaces', optionalAuth, async (req, res) => {
+    const user = viewer(req);
+    let visibility = 'WHERE s.is_public';
+    let params = [];
+    if (user?.admin) {
+      visibility = '';
+    } else if (user) {
+      visibility = `WHERE s.is_public OR EXISTS (
            SELECT 1 FROM space_members m WHERE m.space_uid = s.uid AND m.user_uid = $1)`;
-    const params = req.auth.user.admin ? [] : [req.auth.user.uid];
+      params = [user.uid];
+    }
     const { rows } = await pool.query(
       `SELECT s.*, u.avatar_data AS user_avatar_data
          FROM spaces s
@@ -331,14 +347,14 @@ export function forgeRoutes(pool, authenticate) {
     res.json(rows.map(rowToSpace));
   });
 
-  api.get('/spaces/:spaceUid', auth, async (req, res) => {
+  api.get('/spaces/:spaceUid', optionalAuth, async (req, res) => {
     const { rows } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [req.params.spaceUid]);
     if (rows.length === 0) {
       res.status(404).json({ message: 'Space not found' });
       return;
     }
     const space = rows[0];
-    const flags = await viewerFlags(pool, space.uid, req.auth.user);
+    const flags = await viewerFlags(pool, space.uid, viewer(req));
     if (!space.is_public && !flags.is_member) {
       res.status(403).json({ message: 'No access to this space' });
       return;
@@ -346,7 +362,7 @@ export function forgeRoutes(pool, authenticate) {
     res.json({
       ...rowToSpace(space),
       ...flags,
-      profile_readme: await profileReadmeStatus(pool, space.uid),
+      profile_readme: await profileReadmeStatus(pool, space.uid, viewer(req)),
     });
   });
 
@@ -372,7 +388,7 @@ export function forgeRoutes(pool, authenticate) {
       'UPDATE spaces SET description = $1, is_public = $2, updated = $3 WHERE uid = $4 RETURNING *',
       [description, isPublic, now(), space.uid],
     );
-    res.json({ ...rowToSpace(updated[0]), ...flags, profile_readme: await profileReadmeStatus(pool, space.uid) });
+    res.json({ ...rowToSpace(updated[0]), ...flags, profile_readme: await profileReadmeStatus(pool, space.uid, req.auth.user) });
   });
 
   api.post('/spaces', auth, async (req, res) => {
@@ -420,10 +436,10 @@ export function forgeRoutes(pool, authenticate) {
 
   // --- repos -------------------------------------------------------------------
 
-  api.get('/spaces/:spaceUid/repos', auth, async (req, res) => {
+  api.get('/spaces/:spaceUid/repos', optionalAuth, async (req, res) => {
     // Members & admins see all repos; anyone else on a public space only
     // sees public ones (a private repo must not leak on a public profile).
-    const member = await canAccessSpace(pool, req.params.spaceUid, req.auth.user);
+    const member = await canAccessSpace(pool, req.params.spaceUid, viewer(req));
     const { rows } = await pool.query(
       `SELECT * FROM repos WHERE space_uid = $1 ${member ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
       [req.params.spaceUid],
@@ -432,14 +448,14 @@ export function forgeRoutes(pool, authenticate) {
     res.json(rows.map(r => rowToRepo(r, { openPulls: counts.get(Number(r.id)) ?? 0 })));
   });
 
-  api.get('/spaces/:spaceUid/members', auth, async (req, res) => {
+  api.get('/spaces/:spaceUid/members', optionalAuth, async (req, res) => {
     const { rows: spaces } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [req.params.spaceUid]);
     if (spaces.length === 0) {
       res.status(404).json({ message: 'Space not found' });
       return;
     }
     const space = spaces[0];
-    const flags = await viewerFlags(pool, space.uid, req.auth.user);
+    const flags = await viewerFlags(pool, space.uid, viewer(req));
     if (!space.is_public && !flags.is_member) {
       res.status(403).json({ message: 'No access to this space' });
       return;
@@ -633,19 +649,19 @@ export function forgeRoutes(pool, authenticate) {
     res.json({
       ...rowToSpace(updated[0]),
       ...next,
-      profile_readme: await profileReadmeStatus(pool, space.uid),
+      profile_readme: await profileReadmeStatus(pool, space.uid, req.auth.user),
       members: await listMembers(pool, space.uid),
     });
   });
 
-  api.get('/spaces/:spaceUid/contributions', auth, async (req, res) => {
+  api.get('/spaces/:spaceUid/contributions', optionalAuth, async (req, res) => {
     const { rows: spaces } = await pool.query('SELECT * FROM spaces WHERE uid = $1', [req.params.spaceUid]);
     if (spaces.length === 0) {
       res.status(404).json({ message: 'Space not found' });
       return;
     }
     const space = spaces[0];
-    const member = await canAccessSpace(pool, space.uid, req.auth.user);
+    const member = await canAccessSpace(pool, space.uid, viewer(req));
     if (!space.is_public && !member) {
       res.status(403).json({ message: 'No access to this space' });
       return;
@@ -739,17 +755,17 @@ export function forgeRoutes(pool, authenticate) {
   });
 
   // /repos/{space}/{repo}/+ — the UI's canonical repo resource path.
-  api.get('/repos/:space/:repo/\\+', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+', optionalAuth, async (req, res) => {
     const repo = await findRepo(pool, `${req.params.space}/${req.params.repo}`);
     if (!repo) {
       res.status(404).json({ message: 'Repository not found' });
       return;
     }
-    if (!(await assertReadable(pool, res, repo, req.auth.user))) return;
+    if (!(await assertReadable(pool, res, repo, viewer(req)))) return;
     const counts = await openPrCounts(pool, [Number(repo.id)]);
     res.json({
       ...rowToRepo(repo, { openPulls: counts.get(Number(repo.id)) ?? 0 }),
-      can_write: await canWriteRepo(pool, repo.space_uid, req.auth.user),
+      can_write: await canWriteRepo(pool, repo.space_uid, viewer(req)),
     });
   });
 
@@ -880,7 +896,7 @@ export function forgeRoutes(pool, authenticate) {
       pool,
       req.params.space,
       req.params.repo,
-      req.auth.user,
+      viewer(req),
     );
     if (error) {
       res.status(error.status).json({ message: error.message });
@@ -906,8 +922,8 @@ export function forgeRoutes(pool, authenticate) {
       res.status(404).json({ message: 'Path or ref not found' });
     }
   };
-  api.get('/repos/:space/:repo/\\+/content', auth, contentHandler);
-  api.get('/repos/:space/:repo/\\+/content/*splat', auth, contentHandler);
+  api.get('/repos/:space/:repo/\\+/content', optionalAuth, contentHandler);
+  api.get('/repos/:space/:repo/\\+/content/*splat', optionalAuth, contentHandler);
 
   // Web UI commit: POST /repos/{space}/{repo}/+/commits
   api.post('/repos/:space/:repo/\\+/commits', auth, async (req, res) => {
@@ -937,12 +953,12 @@ export function forgeRoutes(pool, authenticate) {
   });
 
   // Raw blob: GET /repos/{space}/{repo}/+/raw/{path}?git_ref=
-  api.get('/repos/:space/:repo/\\+/raw/*splat', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+/raw/*splat', optionalAuth, async (req, res) => {
     const { repo, error } = await loadReadableRepo(
       pool,
       req.params.space,
       req.params.repo,
-      req.auth.user,
+      viewer(req),
     );
     if (error) {
       res.status(error.status).json({ message: error.message });
@@ -965,12 +981,12 @@ export function forgeRoutes(pool, authenticate) {
   });
 
   // Commits: GET /repos/{space}/{repo}/+/commits?git_ref=&path=&page=&limit=
-  api.get('/repos/:space/:repo/\\+/commits', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+/commits', optionalAuth, async (req, res) => {
     const { repo, error } = await loadReadableRepo(
       pool,
       req.params.space,
       req.params.repo,
-      req.auth.user,
+      viewer(req),
     );
     if (error) {
       res.status(error.status).json({ message: error.message });
@@ -990,12 +1006,12 @@ export function forgeRoutes(pool, authenticate) {
   });
 
   // Commit detail: GET /repos/{space}/{repo}/+/commits/{sha}
-  api.get('/repos/:space/:repo/\\+/commits/:sha', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+/commits/:sha', optionalAuth, async (req, res) => {
     const { repo, error } = await loadReadableRepo(
       pool,
       req.params.space,
       req.params.repo,
-      req.auth.user,
+      viewer(req),
     );
     if (error) {
       res.status(error.status).json({ message: error.message });
@@ -1011,12 +1027,12 @@ export function forgeRoutes(pool, authenticate) {
   });
 
   // Branches: GET /repos/{space}/{repo}/+/branches
-  api.get('/repos/:space/:repo/\\+/branches', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+/branches', optionalAuth, async (req, res) => {
     const { repo, error } = await loadReadableRepo(
       pool,
       req.params.space,
       req.params.repo,
-      req.auth.user,
+      viewer(req),
     );
     if (error) {
       res.status(error.status).json({ message: error.message });
@@ -1045,15 +1061,15 @@ export function forgeRoutes(pool, authenticate) {
 
   // User profile: GET /users/{uid} — the GitHub-style profile. Reads the
   // user's personal namespace and lists its (public) repositories.
-  api.get('/users/:uid', auth, async (req, res) => {
+  api.get('/users/:uid', optionalAuth, async (req, res) => {
     const { rows } = await pool.query('SELECT * FROM users WHERE uid = $1', [req.params.uid]);
     if (rows.length === 0) {
       res.status(404).json({ message: 'User not found' });
       return;
     }
     const u = rows[0];
-    const isSelf = req.auth.user.uid === u.uid;
-    const canSeeAll = req.auth.user.admin || isSelf;
+    const isSelf = Boolean(viewer(req)) && viewer(req).uid === u.uid;
+    const canSeeAll = Boolean(viewer(req)?.admin) || isSelf;
     const spaceRes = await pool.query('SELECT * FROM spaces WHERE uid = $1 AND is_personal = TRUE', [u.uid]);
     const personal = spaceRes.rows[0] || null;
     const reposRes = await pool.query(
@@ -1061,7 +1077,7 @@ export function forgeRoutes(pool, authenticate) {
       [u.uid],
     );
     const counts = await openPrCounts(pool, reposRes.rows.map(r => Number(r.id)));
-    const profileReadme = await profileReadmeStatus(pool, u.uid);
+    const profileReadme = await profileReadmeStatus(pool, u.uid, viewer(req));
     const orgsRes = await pool.query(
       `SELECT s.* FROM spaces s
        JOIN space_members sm ON sm.space_uid = s.uid
@@ -1108,7 +1124,7 @@ export function forgeRoutes(pool, authenticate) {
     const socials = Array.isArray(u.socials) ? u.socials.filter(s => s && s.url) : [];
     const socialCount = socials.length;
 
-    const readmeStatus = await profileReadmeStatus(pool, uid);
+    const readmeStatus = await profileReadmeStatus(pool, uid, req.auth.user);
 
     // Personal repos: anything in the user's own namespace.
     const personalRes = await pool.query('SELECT * FROM repos WHERE space_uid = $1', [uid]);
@@ -1164,14 +1180,14 @@ export function forgeRoutes(pool, authenticate) {
     });
   });
 
-  api.get('/users/:uid/contributions', auth, async (req, res) => {
+  api.get('/users/:uid/contributions', optionalAuth, async (req, res) => {
     const { rows } = await pool.query('SELECT * FROM users WHERE uid = $1', [req.params.uid]);
     if (rows.length === 0) {
       res.status(404).json({ message: 'User not found' });
       return;
     }
     const u = rows[0];
-    const canSeeAll = req.auth.user.admin || req.auth.user.uid === u.uid;
+    const canSeeAll = Boolean(viewer(req)?.admin) || (Boolean(viewer(req)) && viewer(req).uid === u.uid);
     const year = contribYear(req.query.year);
     const { since, until, startMs, endMs } = yearWindow(year);
 

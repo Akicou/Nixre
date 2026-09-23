@@ -8,6 +8,10 @@ interface PullRequestDetailProps {
   repoPath: string;
   prNumber: number;
   onBack: () => void;
+  /** Viewer may merge (member of the owning space). Guests on public repos cannot. */
+  canWrite?: boolean;
+  /** Viewer is signed in; the assistant needs an account. */
+  signedIn?: boolean;
 }
 
 const lineClass: Record<string, string> = {
@@ -18,7 +22,7 @@ const lineClass: Record<string, string> = {
   context: 'text-txt-secondary',
 };
 
-export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, prNumber, onBack }) => {
+export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, prNumber, onBack, canWrite = true, signedIn = true }) => {
   const [pr, setPr] = useState<PullRequest | null>(null);
   const [diff, setDiff] = useState<FileDiff[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,6 +93,7 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          {signedIn && (
           <button
             onClick={() => setCopilotOpen(true)}
             className="flex items-center gap-1.5 px-2.5 py-2.5 rounded-md text-xs font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm min-h-11"
@@ -97,6 +102,7 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
             <Sparkles className="w-3.5 h-3.5" />
             Assistant
           </button>
+          )}
           <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold ${
             pr.state === 'open' ? 'bg-surface-open text-txt-open' : pr.state === 'merged' ? 'bg-surface-merged text-txt-merged' : 'bg-surface-closed text-txt-closed'
           }`}>
@@ -113,7 +119,7 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
           </div>
         )}
 
-        {pr.state === 'open' && (
+        {pr.state === 'open' && canWrite && (
           <button
             onClick={handleMerge}
             disabled={merging}
