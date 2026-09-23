@@ -139,6 +139,7 @@ describe('SpaceView', () => {
       role: 'owner',
       can_manage: true,
       can_transfer: true,
+      socials: [{ platform: 'github', url: 'https://github.com/acme' }],
     });
     api.transferSpace.mockResolvedValue({
       space: { ...space, role: 'admin', can_manage: true, can_transfer: false },
@@ -168,9 +169,18 @@ describe('SpaceView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     const desc = await screen.findByDisplayValue('Acme Corporation');
     fireEvent.change(desc, { target: { value: 'Updated corp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add social link' }));
+    fireEvent.change(screen.getByPlaceholderText('github.com/you'), { target: { value: 'github.com/acme' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('Organization saved.')).toBeInTheDocument();
-    expect(api.updateSpace).toHaveBeenCalledWith('acme', { description: 'Updated corp', is_public: true });
+    expect(api.updateSpace).toHaveBeenCalledWith('acme', {
+      description: 'Updated corp',
+      is_public: true,
+      socials: [{ platform: '', url: 'github.com/acme' }],
+    });
+    // The saved link reaches the org sidebar, which before this could only
+    // ever render socials for a personal profile.
+    expect(await screen.findByText('github.com')).toBeInTheDocument();
     vi.restoreAllMocks();
   });
 

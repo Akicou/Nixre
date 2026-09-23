@@ -18,19 +18,9 @@ import {
   originFromRequest,
 } from '../lib/webauthn.js';
 import { isRegistrationClosed, setRegistrationClosed } from '../lib/instanceSettings.js';
+import { sanitizeSocials } from '../lib/socials.js';
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-
-// Keep only well-formed { platform, url } social links (a URL, http(s) only).
-function sanitizeSocials(input, fallback = []) {
-  const list = Array.isArray(input) ? input : fallback;
-  return list
-    .map(s => ({
-      platform: String(s?.platform || '').trim().slice(0, 40),
-      url: String(s?.url || '').trim().slice(0, 500),
-    }))
-    .filter(s => s.platform && /^https?:\/\//i.test(s.url));
-}
 
 function publicUser(user) {
   // Exactly the fields the UI reads from GET /user (Gitness-compatible).

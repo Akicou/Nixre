@@ -29,6 +29,7 @@ import {
 } from '../lib/api';
 import { Avatar } from '../components/Avatar';
 import { ProfileGoals } from '../components/ProfileGoals';
+import { SocialLinksEditor, savedSocialsMessage } from '../components/SocialLinksEditor';
 import { ContributionGraph, contributionYears } from '../components/ContributionGraph';
 import { SpaceDeployments } from '../components/SpaceDeployments';
 
@@ -341,6 +342,7 @@ const OrgSettingsPanel: React.FC<{
 }> = ({ space, onSpace }) => {
   const [description, setDescription] = useState(space.description || '');
   const [isPublic, setIsPublic] = useState(Boolean(space.is_public));
+  const [socials, setSocials] = useState<SocialLink[]>(space.socials ?? []);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -348,7 +350,8 @@ const OrgSettingsPanel: React.FC<{
   useEffect(() => {
     setDescription(space.description || '');
     setIsPublic(Boolean(space.is_public));
-  }, [space.uid, space.description, space.is_public]);
+    setSocials(space.socials ?? []);
+  }, [space.uid, space.description, space.is_public, space.socials]);
 
   return (
     <form
@@ -359,9 +362,10 @@ const OrgSettingsPanel: React.FC<{
         setMsg('');
         setSaving(true);
         try {
-          const next = await api.updateSpace(space.uid, { description, is_public: isPublic });
+          const sent = socials.filter(s => s.url.trim());
+          const next = await api.updateSpace(space.uid, { description, is_public: isPublic, socials: sent });
           onSpace(next);
-          setMsg('Organization saved.');
+          setMsg(savedSocialsMessage(sent, next.socials, 'Organization'));
         } catch (e: any) {
           setErr(e.message || 'Failed to save organization.');
         } finally {
@@ -391,6 +395,11 @@ const OrgSettingsPanel: React.FC<{
           className="w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-sm focus:border-brand transition"
         />
       </div>
+      <SocialLinksEditor
+        links={socials}
+        onChange={setSocials}
+        hint="Add links to show on the organization page — e.g. GitHub, X/Twitter, LinkedIn, or your site."
+      />
       <label className="flex items-center gap-2 text-sm text-txt-primary">
         <input type="checkbox" checked={isPublic} onChange={e => setIsPublic(e.target.checked)} />
         Public organization
@@ -460,6 +469,9 @@ export const SpaceView: React.FC<{ user?: User | null }> = ({ user = null }) => 
   }, [load]);
 
   const isPersonal = Boolean(space?.is_personal);
+  // A personal space carries its links on the user profile; an organization
+  // carries them on the space itself, and never fetches a profile.
+  const socialLinks: SocialLink[] = (isPersonal ? profile?.socials : space?.socials) ?? [];
   const readmeMeta: ProfileReadme | undefined = profile?.profile_readme || space?.profile_readme;
 
   useEffect(() => {
@@ -717,9 +729,9 @@ export const SpaceView: React.FC<{ user?: User | null }> = ({ user = null }) => 
             </button>
           )}
 
-          {(profile?.socials?.length ?? 0) > 0 && (
+          {socialLinks.length > 0 && (
             <div className="space-y-1.5 pt-1">
-              {profile!.socials!.map(s => (
+              {socialLinks.map(s => (
                 <SocialRow key={`${s.platform}-${s.url}`} link={s} />
               ))}
             </div>
