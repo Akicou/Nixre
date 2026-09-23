@@ -20,6 +20,7 @@ import {
 } from '../git/repo.js';
 import { openPrCounts } from './pullreq.js';
 import { canReadRepo, loadReadableRepo } from '../lib/repoAccess.js';
+import { sanitizeSocials } from '../lib/socials.js';
 
 function now() {
   return Date.now();
@@ -42,6 +43,7 @@ function rowToSpace(row) {
     is_public: Boolean(row.is_public),
     is_personal: personal,
     avatar_url,
+    socials: Array.isArray(row.socials) ? row.socials : [],
     created: Number(row.created),
     created_by: row.created_by,
     updated: Number(row.updated),
@@ -384,9 +386,10 @@ export function forgeRoutes(pool, authenticate) {
     }
     const description = req.body?.description !== undefined ? String(req.body.description) : space.description;
     const isPublic = req.body?.is_public !== undefined ? Boolean(req.body.is_public) : space.is_public;
+    const socials = sanitizeSocials(req.body?.socials, space.socials || []);
     const { rows: updated } = await pool.query(
-      'UPDATE spaces SET description = $1, is_public = $2, updated = $3 WHERE uid = $4 RETURNING *',
-      [description, isPublic, now(), space.uid],
+      'UPDATE spaces SET description = $1, is_public = $2, socials = $3, updated = $4 WHERE uid = $5 RETURNING *',
+      [description, isPublic, JSON.stringify(socials), now(), space.uid],
     );
     res.json({ ...rowToSpace(updated[0]), ...flags, profile_readme: await profileReadmeStatus(pool, space.uid, req.auth.user) });
   });

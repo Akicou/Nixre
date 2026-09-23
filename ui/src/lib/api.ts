@@ -50,6 +50,7 @@ export interface Space {
   is_public: boolean;
   is_personal?: boolean;
   avatar_url?: string;
+  socials?: SocialLink[];
   is_member?: boolean;
   role?: string | null;
   can_manage?: boolean;
@@ -386,7 +387,10 @@ class ApiClient {
     return this.normalizeSpace(res);
   }
 
-  async updateSpace(spaceUid: string, update: { description?: string; is_public?: boolean }): Promise<Space> {
+  async updateSpace(
+    spaceUid: string,
+    update: { description?: string; is_public?: boolean; socials?: SocialLink[] },
+  ): Promise<Space> {
     const res = await this.request<any>(`/spaces/${spaceUid}`, {
       method: 'PATCH',
       body: JSON.stringify(update),
@@ -407,6 +411,7 @@ class ApiClient {
       can_manage: res.can_manage ?? false,
       can_transfer: res.can_transfer ?? false,
       avatar_url: res.avatar_url || '',
+      socials: Array.isArray(res.socials) ? res.socials : [],
       profile_readme: res.profile_readme,
       created: res.created || 0,
       created_by: res.created_by || 0,

@@ -9,7 +9,6 @@ import {
   Fingerprint,
   ImagePlus,
   Plus,
-  Link2,
   Save,
   Loader2,
   GitBranch,
@@ -19,6 +18,7 @@ import { api, User, PublicKey, Token, SocialLink, UserSecret, UserStt } from '..
 import { WebAuthnService, StoredPasskey } from '../lib/webauthn';
 import { daysToNanoseconds } from '../lib/duration';
 import { Avatar } from '../components/Avatar';
+import { SocialLinksEditor, savedSocialsMessage } from '../components/SocialLinksEditor';
 
 interface SettingsProps {
   user: User | null;
@@ -287,12 +287,13 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
     setProfileMsg('');
     setSavingProfile(true);
     try {
+      const sent = socials.filter(s => s.url.trim());
       const updated = await api.updateUserProfile({
         display_name: displayName,
-        socials: socials.filter(s => s.platform.trim() && s.url.trim()),
+        socials: sent,
       });
       onUserChange?.(updated);
-      setProfileMsg('Saved.');
+      setProfileMsg(savedSocialsMessage(sent, updated.socials, 'Profile'));
     } catch (err: any) {
       setProfileMsg(err.message || 'Failed to save profile.');
     } finally {
@@ -443,56 +444,11 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
                   />
                 </div>
 
-                <div>
-                  <span className="block text-xs font-semibold text-txt-secondary uppercase tracking-wider mb-1.5">
-                    Social Links
-                  </span>
-                  <p className="text-[11px] text-txt-tertiary mb-2">
-                    Add links to show on your public profile — e.g. GitHub, X/Twitter, LinkedIn, or your site.
-                  </p>
-                  <div className="space-y-2">
-                    {socials.map((s, i) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <div className="relative flex-1">
-                          <Link2 className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-txt-tertiary" />
-                          <input
-                            type="text"
-                            placeholder="platform (e.g. github)"
-                            value={s.platform}
-                            onChange={e => setSocials(prev => prev.map((s2, idx) => (idx === i ? { ...s2, platform: e.target.value } : s2)))}
-                            className="w-full pl-8 pr-2 py-1.5 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
-                          />
-                        </div>
-                        <input
-                          type="text"
-                          placeholder="https://…"
-                          value={s.url}
-                          onChange={e => setSocials(prev => prev.map((s2, idx) => (idx === i ? { ...s2, url: e.target.value } : s2)))}
-                          className="flex-1 px-2 py-1.5 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs font-mono focus:border-brand transition"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setSocials(prev => prev.filter((_, idx) => idx !== i))}
-                          className="p-1.5 rounded hover:bg-feedback-error-bg text-txt-tertiary hover:text-feedback-error-text transition"
-                          title="Remove link"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                    {socials.length === 0 && (
-                      <p className="text-[11px] text-txt-tertiary">No social links yet.</p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSocials(prev => [...prev, { platform: '', url: '' }])}
-                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-surface-base border border-border-subtle text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add social link</span>
-                  </button>
-                </div>
+                <SocialLinksEditor
+                  links={socials}
+                  onChange={setSocials}
+                  hint="Add links to show on your public profile — e.g. GitHub, X/Twitter, LinkedIn, or your site."
+                />
 
                 <div className="flex items-center justify-end gap-3">
                   {profileMsg && (
