@@ -1,8 +1,9 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
-vi.mock('../lib/deployEvents', () => ({ subscribeDeployEvents: () => () => {} }));
+const { subscribeDeployEvents } = vi.hoisted(() => ({ subscribeDeployEvents: vi.fn(() => () => {}) }));
+vi.mock('../lib/deployEvents', () => ({ subscribeDeployEvents }));
 
 const { api } = vi.hoisted(() => ({
   api: {
@@ -142,5 +143,36 @@ describe('SpaceDeployments board', () => {
     api.spaceDeployments.mockResolvedValue({ services: [], activity: [] });
     mount();
     expect(await screen.findByText(/No deployment services in this space yet/i)).toBeInTheDocument();
+  });
+
+  it('loads the board once and refreshes by polling, not per-service streams', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mount();
+      await screen.findByTestId('board-card-web');
+      // Regression: each board update used to re-open an SSE stream per
+      // service, whose hello frame reloaded the board — an endless loop.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(api.spaceDeployments).toHaveBeenCalledTimes(1);
+      expect(subscribeDeployEvents).not.toHaveBeenCalled();
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(api.spaceDeployments).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the last good board when a background refresh fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mount();
+      await screen.findByTestId('board-card-web');
+      api.spaceDeployments.mockRejectedValue(new Error('boom'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(screen.getByTestId('board-card-web')).toBeInTheDocument();
+      expect(screen.queryByText('boom')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

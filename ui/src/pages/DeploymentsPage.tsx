@@ -1280,11 +1280,11 @@ const OverviewTab: React.FC<{ service: DeployService }> = ({ service }) => {
     };
     load();
     return subscribeDeployEvents(space!, repoUid!, service.id, evt => {
-      if (evt.type === 'metrics' && evt.metrics && stats) {
-        setStats({
-          ...stats,
-          latest: { ts: Date.now(), ...evt.metrics },
-        });
+      // Functional update: the closure's `stats` is the mount-time null, so
+      // reading it here dropped every live metrics frame.
+      if (evt.type === 'metrics' && evt.metrics) {
+        const metrics = evt.metrics;
+        setStats(prev => (prev ? { ...prev, latest: { ts: Date.now(), ...metrics } } : prev));
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
