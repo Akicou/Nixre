@@ -3,7 +3,7 @@
 // out on a dotted canvas, plus a live Activity feed of recent deployments
 // across the space.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
@@ -16,7 +16,6 @@ import {
   X,
 } from 'lucide-react';
 import { api, DeployActivityEntry, DeployService } from '../lib/api';
-import { subscribeDeployEvents } from '../lib/deployEvents';
 
 function timeAgo(ts: number): string {
   const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
@@ -39,9 +38,14 @@ function triggerLabel(trigger: string): string {
   }
 }
 
+// Poll cadence: quick while something is mid-deploy, relaxed otherwise.
+const BUSY_POLL_MS = 3_000;
+const IDLE_POLL_MS = 15_000;
+const isBusy = (svc: DeployService) => ['queued', 'building', 'releasing'].includes(svc.status);
+
 const StatusIcon: React.FC<{ svc: DeployService }> = ({ svc }) => {
   if (svc.alert) return <X className="w-4 h-4 text-red-400 shrink-0" />;
-  if (['queued', 'building', 'releasing'].includes(svc.status))
+  if (isBusy(svc))
     return <Loader2 className="w-4 h-4 text-amber-400 animate-spin shrink-0" />;
   if (svc.status === 'running' && svc.current?.status === 'live')
     return <Check className="w-4 h-4 text-green-500 shrink-0" />;
@@ -52,7 +56,7 @@ const StatusIcon: React.FC<{ svc: DeployService }> = ({ svc }) => {
 
 const statusLine = (svc: DeployService): { text: string; cls: string } => {
   if (svc.alert) return { text: 'last release failed — serving previous', cls: 'text-red-400' };
-  if (['queued', 'building', 'releasing'].includes(svc.status))
+  if (isBusy(svc))
     return { text: `Deploying ${svc.current?.ref ? `(${svc.current.ref})` : ''}`.trim(), cls: 'text-amber-400' };
   if (svc.current) {
     return {
@@ -88,23 +92,38 @@ const activityVerb = (status: string): string => {
 export const SpaceDeployments: React.FC<{ spaceUid: string }> = ({ spaceUid }) => {
   const [board, setBoard] = useState<{ services: DeployService[]; activity: DeployActivityEntry[] } | null>(null);
   const [error, setError] = useState('');
+  const hasBoard = useRef(false);
 
   const load = useCallback(() => {
     api
       .spaceDeployments(spaceUid)
-      .then(setBoard)
-      .catch(e => setError(e.message || 'Failed to load deployments.'));
+      .then(b => {
+        hasBoard.current = true;
+        setBoard(b);
+        setError('');
+      })
+      .catch(e => {
+        // A failed background refresh keeps the last good board on screen.
+        if (!hasBoard.current) setError(e.message || 'Failed to load deployments.');
+      });
   }, [spaceUid]);
   useEffect(load, [load]);
 
-  // Live refresh while the board is visible.
+  // Live refresh while the board is visible: one polled request for the
+  // whole space. This used to open an SSE stream per service and re-open all
+  // of them on every board update — the stream's hello frame triggered a
+  // reload, which replaced the board, which re-subscribed, forever. Per-service
+  // streams also exhaust the browser's ~6 HTTP/1.1 connections per host once a
+  // space has a handful of services, stalling the board fetch itself.
+  const loaded = board !== null;
+  const busy = !!board?.services.some(isBusy);
   useEffect(() => {
-    if (!board) return;
-    const offs = board.services.map(svc =>
-      subscribeDeployEvents(spaceUid, svc.repo_uid!, svc.id, () => load()),
-    );
-    return () => offs.forEach(off => off());
-  }, [spaceUid, board, load]);
+    if (!loaded) return;
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'hidden') load();
+    }, busy ? BUSY_POLL_MS : IDLE_POLL_MS);
+    return () => clearInterval(t);
+  }, [loaded, busy, load]);
 
   if (error) return <p className="text-sm text-feedback-error-text">{error}</p>;
   if (!board)
