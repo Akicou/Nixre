@@ -282,6 +282,7 @@ class ApiClient {
   }
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const hadToken = Boolean(localStorage.getItem('nixre_token'));
     const res = await fetch(`/api/v1${path}`, {
       ...options,
       headers: {
@@ -292,13 +293,22 @@ class ApiClient {
     });
 
     if (res.status === 401) {
-      // Unauthorized
       localStorage.removeItem('nixre_token');
       localStorage.removeItem('nixre_user');
-      if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+      // Guests browse public repos and profiles without an account, so a 401
+      // only sends someone to /login when their session expired mid-use. The
+      // startup `/user` probe never redirects: a stale token just means guest.
+      if (
+        hadToken &&
+        path !== '/user' &&
+        window.location.pathname !== '/login' &&
+        window.location.pathname !== '/register'
+      ) {
         window.location.href = '/login';
       }
-      throw new Error('Unauthorized');
+      const err = new Error('Unauthorized') as Error & { status?: number };
+      err.status = 401;
+      throw err;
     }
 
     if (!res.ok) {

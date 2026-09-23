@@ -8,7 +8,13 @@ import { pullRequestRoutes } from '../routes/pullreq.js';
 async function serve(t, pool, user = { uid: 'owner', admin: false }) {
   const app = express();
   app.use(express.json());
-  const auth = () => (req, _res, next) => { req.auth = { user }; next(); };
+  // Mirrors server.js authenticate(required): a null user is a guest, which
+  // required routes reject and optional (public-read) routes let through.
+  const auth = (required = true) => (req, res, next) => {
+    if (user) req.auth = { user };
+    else if (required) return res.status(401).json({ message: 'Missing or invalid bearer token' });
+    next();
+  };
   app.use('/api/v1', authRoutes(pool, auth));
   app.use('/api/v1', forgeRoutes(pool, auth));
   app.use('/api/v1', pullRequestRoutes(pool, auth));
@@ -50,6 +56,45 @@ test('canonical repo and all PR read routes enforce visibility; Express compare 
     }
     if (!allowed) assert.ok(queries.every(sql => !sql.includes('FROM pull_requests')));
   }
+});
+
+test('guests read public repos, spaces and PRs without logging in, but nothing private', async t => {
+  for (const isPublic of [true, false]) {
+    const pool = { async query(sql) {
+      if (sql.includes('FROM repos')) return { rows: [{ id: 1, space_uid: 'org', uid: 'repo', is_public: isPublic, default_branch: 'main' }] };
+      if (sql.includes('FROM space_members')) throw new Error('guest must not trigger a membership lookup');
+      if (sql.includes('SELECT * FROM pull_requests')) return { rows: [{ number: 1, title: 'fixture', author_uid: 'author' }] };
+      if (sql.includes('FROM users WHERE uid = ANY')) return { rows: [{ uid: 'author', display_name: 'Author', email: 'author@example.test' }] };
+      return { rows: [] };
+    } };
+    const request = await serve(t, pool, null);
+    for (const suffix of ['', '/pullreq', '/pullreq/1']) {
+      const result = await request('/repos/org/repo/+' + suffix);
+      assert.equal(result.status, isPublic ? 200 : 404, `public=${isPublic}: ${suffix}`);
+    }
+    if (isPublic) {
+      const repo = await request('/repos/org/repo/+');
+      assert.equal(repo.json.can_write, false);
+      const pr = await request('/repos/org/repo/+/pullreq/1');
+      assert.equal(pr.json.author.uid, 'author');
+      assert.equal(pr.json.author.email, '', 'guests never see author emails');
+    }
+    // Writes still demand a login.
+    assert.equal((await request('/repos/org/repo/+/pullreq', { title: 'x', source_branch: 'a' })).status, 401);
+    assert.equal((await request('/user/memberships')).status, 401);
+  }
+});
+
+test('guests only see public spaces in the space listing', async t => {
+  const seen = [];
+  const pool = { async query(sql, params = []) {
+    seen.push({ sql, params });
+    return { rows: [] };
+  } };
+  const request = await serve(t, pool, null);
+  assert.equal((await request('/spaces')).status, 200);
+  assert.match(seen[0].sql, /WHERE s\.is_public ORDER BY/);
+  assert.deepEqual(seen[0].params, []);
 });
 
 // Transactional fixture models the shared allocation lock, not PostgreSQL SQL

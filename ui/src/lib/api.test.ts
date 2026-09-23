@@ -350,3 +350,27 @@ describe('api.listSpaces', () => {
     expect(spaces[1].is_personal).toBe(true);
   });
 });
+
+describe('api 401 handling', () => {
+  const unauthorized = { ok: false, status: 401, headers: new Headers(), json: () => Promise.resolve({}) };
+
+  beforeEach(() => {
+    localStorage.clear();
+    window.history.replaceState(null, '', '/acme/widgets');
+  });
+
+  it('lets guests browse public pages: a 401 without a session never redirects to /login', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(unauthorized));
+    await expect(api.getRepo("acme/widgets")).rejects.toThrow(/Unauthorized/);
+    await expect(api.currentUser()).rejects.toThrow(/Unauthorized/);
+    expect(window.location.pathname).toBe('/acme/widgets');
+  });
+
+  it('treats a stale token on the startup /user probe as a guest, clearing it without redirecting', async () => {
+    localStorage.setItem('nixre_token', 'nxs_expired');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(unauthorized));
+    await expect(api.currentUser()).rejects.toThrow(/Unauthorized/);
+    expect(localStorage.getItem('nixre_token')).toBeNull();
+    expect(window.location.pathname).toBe('/acme/widgets');
+  });
+});

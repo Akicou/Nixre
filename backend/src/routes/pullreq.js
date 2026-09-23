@@ -9,7 +9,9 @@ function now() {
   return Date.now();
 }
 
-async function rowToPr(pool, row) {
+// Author emails are only shown to signed-in viewers; guests on a public repo
+// get the uid and display name.
+async function rowToPr(pool, row, { showEmail = true } = {}) {
   let author = { uid: row.author_uid, display_name: row.author_uid, email: '' };
   let mergedBy;
   const uids = [row.author_uid, row.merged_by_uid].filter(Boolean);
@@ -20,7 +22,7 @@ async function rowToPr(pool, row) {
     );
     const byUid = Object.fromEntries(rows.map(u => [u.uid, u]));
     const a = byUid[row.author_uid];
-    if (a) author = { uid: a.uid, display_name: a.display_name, email: a.email };
+    if (a) author = { uid: a.uid, display_name: a.display_name, email: showEmail ? a.email : '' };
     const m = byUid[row.merged_by_uid];
     if (m) mergedBy = { uid: m.uid, display_name: m.display_name };
   }
@@ -43,11 +45,13 @@ async function rowToPr(pool, row) {
 export function pullRequestRoutes(pool, authenticate) {
   const api = express.Router();
   const auth = authenticate(true);
+  // Public reads: guests may list and view PRs on public repos.
+  const optionalAuth = authenticate(false);
 
   // All PR operations require visibility; mutations additionally check write access.
   async function loadRepo(req, res) {
     const { repo, error } = await loadReadableRepo(
-      pool, req.params.space, req.params.repo, req.auth.user,
+      pool, req.params.space, req.params.repo, req.auth?.user ?? null,
     );
     if (error) {
       res.status(error.status).json({ message: error.message });
@@ -57,6 +61,7 @@ export function pullRequestRoutes(pool, authenticate) {
   }
 
   async function canWrite(pool, spaceUid, user) {
+    if (!user) return false;
     if (user.admin) return true;
     const { rows } = await pool.query(
       'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
@@ -66,7 +71,7 @@ export function pullRequestRoutes(pool, authenticate) {
   }
 
   // GET /repos/{space}/{repo}/+/pullreq?state=
-  api.get('/repos/:space/:repo/\\+/pullreq', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+/pullreq', optionalAuth, async (req, res) => {
     const repo = await loadRepo(req, res);
     if (!repo) return;
     const state = ['open', 'merged', 'closed'].includes(String(req.query.state))
@@ -76,7 +81,7 @@ export function pullRequestRoutes(pool, authenticate) {
       'SELECT * FROM pull_requests WHERE repo_id = $1 AND state = $2 ORDER BY created DESC',
       [repo.id, state],
     );
-    const prs = await Promise.all(rows.map(r => rowToPr(pool, r)));
+    const prs = await Promise.all(rows.map(r => rowToPr(pool, r, { showEmail: Boolean(req.auth?.user) })));
     res.json(prs);
   });
 
@@ -148,7 +153,7 @@ export function pullRequestRoutes(pool, authenticate) {
   });
 
   // GET /repos/{space}/{repo}/+/pullreq/{n}
-  api.get('/repos/:space/:repo/\\+/pullreq/:number', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+/pullreq/:number', optionalAuth, async (req, res) => {
     const repo = await loadRepo(req, res);
     if (!repo) return;
     const { rows } = await pool.query(
@@ -159,11 +164,11 @@ export function pullRequestRoutes(pool, authenticate) {
       res.status(404).json({ message: 'Pull request not found' });
       return;
     }
-    res.json(await rowToPr(pool, rows[0]));
+    res.json(await rowToPr(pool, rows[0], { showEmail: Boolean(req.auth?.user) }));
   });
 
   // GET /repos/{space}/{repo}/+/pullreq/{n}/diff?include_patch=true
-  api.get('/repos/:space/:repo/\\+/pullreq/:number/diff', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+/pullreq/:number/diff', optionalAuth, async (req, res) => {
     const repo = await loadRepo(req, res);
     if (!repo) return;
     const { rows } = await pool.query(
@@ -192,7 +197,7 @@ export function pullRequestRoutes(pool, authenticate) {
 
   // GET /repos/{space}/{repo}/+/compare?base=&head= — branch diff without a
   // PR (used by the assistant description generator).
-  api.get('/repos/:space/:repo/\\+/compare', auth, async (req, res) => {
+  api.get('/repos/:space/:repo/\\+/compare', optionalAuth, async (req, res) => {
     const repo = await loadRepo(req, res);
     if (!repo) return;
     const base = String(req.query.base || '');

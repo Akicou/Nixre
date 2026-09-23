@@ -94,7 +94,7 @@ const AppShell: React.FC<{
           <Route path="/login" element={currentUser ? <Navigate to="/" /> : <Login onLoginSuccess={setCurrentUser} />} />
           <Route path="/register" element={currentUser ? <Navigate to="/" /> : <Register onRegisterSuccess={setCurrentUser} />} />
 
-          <Route path="/:space" element={<SpaceView />} />
+          <Route path="/:space" element={<SpaceView user={currentUser} />} />
           <Route path="/:space/:repo" element={<RepoView user={currentUser} />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>

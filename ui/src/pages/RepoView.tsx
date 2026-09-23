@@ -195,10 +195,16 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
       <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-4">
         <h2 className="text-lg font-bold text-txt-primary">Repository not found</h2>
         <p className="text-sm text-txt-secondary">{error || 'Could not find repository.'}</p>
-        <Link to="/" className="inline-flex items-center gap-1.5 text-xs text-txt-brand hover:underline">
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back to Dashboard</span>
-        </Link>
+        {user ? (
+          <Link to="/" className="inline-flex items-center gap-1.5 text-xs text-txt-brand hover:underline">
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Dashboard</span>
+          </Link>
+        ) : (
+          <Link to="/login" className="inline-flex items-center gap-1.5 text-xs text-txt-brand hover:underline">
+            <span>Sign in to see private content</span>
+          </Link>
+        )}
       </div>
     );
   }
@@ -258,6 +264,7 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
           </span>
         </button>
 
+        {repo.can_write && (
         <button
           onClick={() => { setSearchParams({ tab: 'settings' }); }}
           className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
@@ -267,6 +274,7 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
           <Settings className="w-4 h-4" />
           <span>Settings</span>
         </button>
+        )}
       </nav>
 
       <div className="py-6 min-w-0 space-y-6">
@@ -537,7 +545,7 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
       {/* TAB CONTENT: PULL REQUESTS */}
       {activeTab === 'pulls' && (
         <>
-          {selectedPrNumber === 'new' ? (
+          {selectedPrNumber === 'new' && repo.can_write ? (
             <PullRequestForm
               repoPath={repoPath}
               branches={branches}
@@ -550,11 +558,14 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
               repoPath={repoPath}
               prNumber={selectedPrNumber}
               onBack={() => setSearchParams({ tab: 'pulls' })}
+              canWrite={repo.can_write === true}
+              signedIn={!!user}
             />
           ) : (
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <h3 className="text-xs font-semibold text-txt-tertiary uppercase tracking-wider">Pull Requests</h3>
+                {repo.can_write && (
                 <button
                   onClick={() => setSearchParams({ tab: 'pulls', pr: 'new' })}
                   className="px-3 py-1.5 rounded text-xs font-medium bg-brand text-white hover:bg-brand-hover transition shadow-sm flex items-center gap-1.5"
@@ -562,6 +573,7 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
                   <Plus className="w-3.5 h-3.5" />
                   <span>New Pull Request</span>
                 </button>
+                )}
               </div>
               <div className="border border-border-subtle rounded-lg bg-surface-canvas divide-y divide-border-subtle overflow-hidden">
                 {pullRequests.length === 0 ? (
@@ -622,7 +634,7 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
       )}
 
       {/* TAB CONTENT: SETTINGS */}
-      {activeTab === 'settings' && space && (
+      {activeTab === 'settings' && space && repo.can_write && (
         <RepoSettingsPanel
           repo={repo}
           repoPath={repoPath}
