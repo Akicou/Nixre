@@ -407,25 +407,38 @@ export async function commitDates(space, repo, { since, until, authorEmail } = {
 // Parse one commit record for `show <ref>` (used by getCommit).
 async function readSingleCommit(space, repo, ref) {
   const dir = repoDir(space, repo);
-  const fmt = ['%H', '%h', '%s', '%b', '%an', '%ae', '%aI', '%cI'].join(US);
+  const fmt = ['%H', '%h', '%s', '%b', '%an', '%ae', '%aI', '%cI', '%P'].join(US);
   const out = await git(dir, ['show', '-s', `--format=${fmt}%n${US}${US}`, ref]);
   const record = out.split(`${US}${US}\n`)[0];
   if (!record || !record.trim()) throw new Error('no commit');
-  const [sha, shortSha, subject, body, name, email, authored, committed] = record.trim().split(US);
+  const [sha, shortSha, subject, body, name, email, authored, committed, parents] = record.trim().split(US);
   return {
     sha,
     short_sha: shortSha,
     title: subject,
     message: body ? `${subject}\n\n${body}` : subject,
+    parents: (parents || '').trim().split(/\s+/).filter(Boolean),
     author: { identity: { name, email }, name, email, when: authored },
     committer: { identity: { name, email }, name, email, when: committed },
   };
 }
 
-// Single commit + per-file stats. Used by the commit-detail view
-// (files changed, additions/deletions totals). `ref` may be a full/short sha.
+// Single commit + per-file stats and patches. Used by the commit-detail view
+// (files changed, additions/deletions totals, the actual diff). `ref` may be a
+// full/short sha.
+//
+// For any commit with a parent the per-file work is delegated to diffRefs so the
+// view gets the same unified patches the PR diff shows. A root commit has no
+// parent to diff against, so it falls back to `show --numstat` (names + counts
+// only, no patch).
 export async function getCommit(space, repo, ref) {
   const commit = await readSingleCommit(space, repo, ref);
+  if (commit.parents.length > 0) {
+    const files = await diffRefs(space, repo, `${commit.sha}^`, commit.sha);
+    const additions = files.reduce((n, f) => n + f.additions, 0);
+    const deletions = files.reduce((n, f) => n + f.deletions, 0);
+    return { commit, stats: { additions, deletions, changes: additions + deletions }, files };
+  }
   const dir = repoDir(space, repo);
   const numstat = await git(dir, ['show', '--numstat', '--format=', ref]);
   const files = [];
@@ -439,9 +452,37 @@ export async function getCommit(space, repo, ref) {
     const del = m[2] === '-' ? 0 : Number(m[2]);
     additions += add;
     deletions += del;
-    files.push({ path: m[3], additions: add, deletions: del, status: 'MODIFIED' });
+    files.push({
+      path: m[3],
+      old_path: m[3],
+      additions: add,
+      deletions: del,
+      changes: add + del,
+      status: 'MODIFIED',
+      patch: '',
+      is_binary: false,
+      is_submodule: false,
+    });
   }
   return { commit, stats: { additions, deletions, changes: additions + deletions }, files };
+}
+
+// How far `ref` has diverged from `base`.
+//   ahead  = commits on `ref` that `base` does not have
+//   behind = commits on `base` that `ref` does not have
+// `rev-list --left-right --count A...B` prints "<left> <right>" where left is
+// the count reachable from A only — so A must be `ref` and B must be `base`.
+// Swapping them reverses the meaning, hence the explicit argument order here.
+export async function aheadBehind(space, repo, ref, base) {
+  if (!ref || !base || ref === base) return { ahead: 0, behind: 0 };
+  try {
+    const out = await git(repoDir(space, repo), ['rev-list', '--left-right', '--count', `${ref}...${base}`]);
+    const [ahead, behind] = out.trim().split(/\s+/).map(Number);
+    return { ahead: ahead || 0, behind: behind || 0 };
+  } catch {
+    // either ref may not exist yet (empty repo, deleted branch)
+    return { ahead: 0, behind: 0 };
+  }
 }
 
 // Branch list with ahead/behind vs the default branch.
@@ -452,18 +493,7 @@ export async function listBranches(space, repo, defaultBranch) {
   const branches = [];
   for (const record of out.split('\n').filter(Boolean)) {
     const [name, sha, date, authorName, subject] = record.split(US);
-    let ahead = 0;
-    let behind = 0;
-    if (name !== defaultBranch) {
-      try {
-        const counts = await git(dir, ['rev-list', '--left-right', '--count', `${name}...${defaultBranch}`]);
-        const [a, b] = counts.trim().split(/\s+/).map(Number);
-        ahead = a || 0;
-        behind = b || 0;
-      } catch {
-        // default branch may not exist yet (empty repo)
-      }
-    }
+    const { ahead, behind } = await aheadBehind(space, repo, name, defaultBranch);
     branches.push({ name, sha, date, authorName, subject, ahead, behind });
   }
   return branches;

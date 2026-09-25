@@ -28,6 +28,8 @@ import { RepoSettingsPanel } from '../components/RepoSettingsPanel';
 import { FileEditor } from '../components/FileEditor';
 import { Markdown, isMarkdownFile } from '../components/Markdown';
 import { Avatar } from '../components/Avatar';
+import { Divergence } from '../components/Divergence';
+import { decodeBase64Patch, parsePatchLines } from '../lib/diff';
 import { DeploymentsSection } from '../pages/DeploymentsPage';
 import { RepositoryHeader } from '../components/RepositoryHeader';
 import { ActionsPanel } from '../components/ActionsPanel';
@@ -533,6 +535,7 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
           <CommitDetailView
             detail={commitDetail}
             onBack={() => setSearchParams({ tab: 'commits', branch: currentBranch })}
+            onSelectCommit={goToCommit}
           />
         ) : (
           <div className="space-y-4">
@@ -676,7 +679,10 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
                   </span>
                 )}
               </div>
-              <span className="text-txt-tertiary">{b.sha.slice(0, 7)}</span>
+              <div className="flex items-center gap-3 shrink-0">
+                <Divergence ahead={b.ahead} behind={b.behind} />
+                <span className="text-txt-tertiary">{b.sha.slice(0, 7)}</span>
+              </div>
             </div>
           ))}
         </div>
@@ -708,12 +714,23 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
   );
 };
 
-// Single-commit detail view: author, stats, and the files it touched.
+const diffLineClass: Record<string, string> = {
+  hunk: 'bg-surface-subtle text-txt-brand',
+  add: 'bg-feedback-success-bg text-feedback-success-text',
+  del: 'bg-feedback-error-bg text-feedback-error-text',
+  context: 'text-txt-secondary',
+  meta: 'text-txt-tertiary',
+};
+
+// Single-commit detail view: message, author, date, parents, and the per-file
+// diff of the commit (same base64 patch wire format as the PR diff).
 const CommitDetailView: React.FC<{
   detail: CommitDetail;
   onBack: () => void;
-}> = ({ detail, onBack }) => {
+  onSelectCommit?: (sha: string) => void;
+}> = ({ detail, onBack, onSelectCommit }) => {
   const c = detail.commit;
+  const body = c.message && c.message !== c.title ? c.message.slice(c.title.length).trim() : '';
   return (
     <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden">
       <div className="p-4 border-b border-border-subtle space-y-3">
@@ -734,6 +751,25 @@ const CommitDetailView: React.FC<{
             <p className="text-xs text-txt-tertiary font-mono">
               {c.author.display_name || c.author.identity.name} · {new Date(c.author.when).toLocaleString()}
             </p>
+            {body && (
+              <pre className="whitespace-pre-wrap text-xs font-mono text-txt-secondary pt-1">{body}</pre>
+            )}
+            {c.parents && c.parents.length > 0 && (
+              <p className="text-[11px] font-mono text-txt-tertiary pt-1">
+                <span>{c.parents.length > 1 ? 'parents' : 'parent'} </span>
+                {c.parents.map((p, i) => (
+                  <span key={p}>
+                    {i > 0 && <span> · </span>}
+                    <button
+                      onClick={() => onSelectCommit?.(p)}
+                      className="text-txt-brand hover:underline"
+                    >
+                      {p.slice(0, 7)}
+                    </button>
+                  </span>
+                ))}
+              </p>
+            )}
           </div>
           <div className="ml-auto text-xs font-mono text-txt-secondary shrink-0">
             <span className="text-txt-open">+{detail.stats.additions}</span>
@@ -746,16 +782,30 @@ const CommitDetailView: React.FC<{
         <div className="p-8 text-center text-xs text-txt-tertiary font-mono">No file changes in this commit.</div>
       ) : (
         <div className="divide-y divide-border-subtle">
-          {detail.files.map(f => (
-            <div key={f.path} className="flex items-center justify-between px-4 py-2 text-xs font-mono gap-3">
-              <span className="text-txt-primary truncate min-w-0">{f.path}</span>
-              <span className="text-txt-tertiary shrink-0">
-                <span className="text-txt-open">+{f.additions}</span>
-                <span className="mx-1">·</span>
-                <span className="text-txt-merged">-{f.deletions}</span>
-              </span>
-            </div>
-          ))}
+          {detail.files.map(f => {
+            const lines = parsePatchLines(decodeBase64Patch(f.patch));
+            return (
+              <div key={f.path}>
+                <div className="flex items-center justify-between px-4 py-2 text-xs font-mono gap-3 bg-surface-base">
+                  <span className="text-txt-primary truncate min-w-0">{f.path}</span>
+                  <span className="text-txt-tertiary shrink-0">
+                    <span className="text-txt-open">+{f.additions}</span>
+                    <span className="mx-1">·</span>
+                    <span className="text-txt-merged">-{f.deletions}</span>
+                  </span>
+                </div>
+                {f.is_binary ? (
+                  <div className="px-4 py-2 text-xs text-txt-tertiary font-mono">Binary file not shown.</div>
+                ) : lines.length > 0 ? (
+                  <pre className="overflow-x-auto text-[11px] font-mono leading-relaxed">
+                    {lines.map((line, i) => (
+                      <div key={i} className={`px-3 whitespace-pre ${diffLineClass[line.type]}`}>{line.content}</div>
+                    ))}
+                  </pre>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

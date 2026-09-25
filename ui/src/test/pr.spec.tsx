@@ -97,6 +97,18 @@ describe('PullRequestDetail', () => {
     expect(await screen.findByText(/\+new line/)).toBeInTheDocument();
   });
 
+  it('shows how far the PR is ahead of and behind its target', async () => {
+    // ahead = commits on the source branch the target lacks; behind = the
+    // reverse. Deliberately different numbers so a swapped pair fails.
+    api.getPullRequest.mockResolvedValue({ ...pullRequest, ahead: 2, behind: 3 });
+    api.getPullRequestDiff.mockResolvedValue([]);
+
+    mount();
+
+    expect(await screen.findByText('2 ahead')).toBeInTheDocument();
+    expect(await screen.findByText('3 behind')).toBeInTheDocument();
+  });
+
   it('merges an open PR and refreshes its state', async () => {
     api.getPullRequest.mockResolvedValue(pullRequest);
     api.getPullRequestDiff.mockResolvedValue([]);

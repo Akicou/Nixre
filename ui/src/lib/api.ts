@@ -105,12 +105,13 @@ export interface Commit {
   message: string;
   author: CommitActor;
   committer: CommitActor;
+  parents?: string[];
 }
 
 export interface CommitDetail {
   commit: Commit;
   stats: { additions: number; deletions: number; changes: number };
-  files: { path: string; additions: number; deletions: number; status: string }[];
+  files: FileDiff[];
 }
 
 export interface SocialLink {
@@ -172,6 +173,10 @@ export interface Branch {
   name: string;
   sha: string;
   commit?: Commit;
+  /** Commits on this branch the default branch lacks. */
+  ahead?: number;
+  /** Commits on the default branch this branch lacks. */
+  behind?: number;
 }
 
 export interface TreeEntry {
@@ -203,6 +208,10 @@ export interface PullRequest {
     uid: string;
     display_name: string;
   };
+  /** Commits on the source branch the target lacks (detail route only). */
+  ahead?: number;
+  /** Commits on the target branch the source lacks — how stale the branch is. */
+  behind?: number;
 }
 
 export interface FileDiff {

@@ -4,6 +4,7 @@ import { api, PullRequest, FileDiff, PullRequestChecks } from '../lib/api';
 import { RunStatusIcon } from './ActionsPanel';
 import { decodeBase64Patch, parsePatchLines } from '../lib/diff';
 import { PRReviewPanel } from './assistant/PRReviewPanel';
+import { Divergence } from './Divergence';
 
 interface PullRequestDetailProps {
   repoPath: string;
@@ -113,6 +114,7 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
             <p className="text-xs text-txt-tertiary font-mono mt-1">
               {pr.source_branch} → {pr.target_branch} &bull; by {pr.author?.display_name || pr.author?.uid}
             </p>
+            <Divergence ahead={pr.ahead} behind={pr.behind} className="mt-1" />
           </div>
           <div className="flex items-center gap-2 shrink-0 flex-wrap">
           {signedIn && (
