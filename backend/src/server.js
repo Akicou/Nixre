@@ -25,6 +25,7 @@ import { avatarRoutes } from './routes/avatar.js';
 import { internalRoutes } from './routes/internal.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { deploymentRoutes } from './routes/deployments.js';
+import { actionsRoutes } from './routes/actions.js';
 import { aiRoutes } from './routes/ai.js';
 import { smartHttp } from './git/smartHttp.js';
 import { REPOS_ROOT, repairAllHooks } from './git/repo.js';
@@ -104,6 +105,7 @@ export function createApp({ pool = sharedPool, authenticate: authenticateOverrid
   app.use('/api/v1', webhookRoutes(pool, authenticate));
   app.use('/api/v1', aiRoutes(pool, authenticate));
   app.use('/api/v1', deploymentRoutes(pool, authenticate));
+  app.use('/api/v1', actionsRoutes(pool, authenticate));
 
   // Git streams never enter the API body parser.
   app.use('/git', smartHttp(pool, authenticate));
@@ -252,6 +254,7 @@ async function boot() {
   await sweepStaleRuns(pool);
   await initSandbox();
   await bootDeployments();
+  await bootActions();
   createApp().listen(PORT, () => {
     console.log(`nixre-core listening on :${PORT} — sovereign, no forge dependency`);
   });
@@ -261,6 +264,19 @@ async function boot() {
 // services whose containers died with the host, then open the central proxy
 // port for routed app traffic. Docker being absent degrades gracefully —
 // sweeps keep running and pick deployments up when it appears.
+// Actions: close runs a previous process left unfinished (and their job
+// containers), then tick the cron scheduler. The engine dedupes per minute, so
+// ticking more often than once a minute only reduces the lag.
+async function bootActions() {
+  const { actionsEngine } = await import('./lib/actionsRuntime.js');
+  await actionsEngine
+    .sweep()
+    .then(n => n && console.log(`Actions: closed ${n} job(s) interrupted by the restart`))
+    .catch(err => console.error('actions sweep failed:', err.message));
+  const tickMs = Number(process.env.NIXRE_ACTIONS_SCHEDULE_TICK_MS || 20_000);
+  setInterval(() => void actionsEngine.scheduleTick().catch(err => console.error('actions schedule tick failed:', err.message)), tickMs).unref();
+}
+
 async function bootDeployments() {
   // The post-receive hook is written when a repo is created, so a change to it
   // would otherwise reach new repositories only. This repair pass already

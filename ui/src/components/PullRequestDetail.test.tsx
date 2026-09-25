@@ -9,6 +9,7 @@ vi.mock('../lib/api', () => ({
     getPullRequest: vi.fn(),
     getPullRequestDiff: vi.fn(),
     mergePullRequest: vi.fn(),
+    getPullRequestChecks: vi.fn().mockResolvedValue({ sha: null, state: 'none', required: false, statuses: [] }),
   },
 }));
 

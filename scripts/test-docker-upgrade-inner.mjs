@@ -106,6 +106,74 @@ try {
   assert.equal((await request('/api/v1/ai/chat', { body: { data: 'x'.repeat(2 * 1024 * 1024) } })).status, 401);
   pass('large conversation bodies on both API aliases; ordinary 413 and unauthenticated large-body 401');
 
+  // --- Actions: a real push runs real job containers ------------------------
+  // The core image is already in this daemon, so it doubles as the job image
+  // (alpine: sh without bash, git present) and nothing has to be pulled.
+  const ci = '/api/v1/repos/owner/ci/+';
+  assert.equal((await request('/api/v1/repos', { token: tokens.owner,
+    body: { parent_ref: 'owner', uid: 'ci', is_public: true, readme: true } })).status, 201);
+  const secretValue = `smoke-${randomBytes(8).toString('hex')}`;
+  assert.equal((await request(`${ci}/actions/secrets/SMOKE_SECRET`, { token: tokens.owner, method: 'PUT', body: { value: secretValue } })).status, 200);
+  assert.equal((await request(`${ci}/actions/secrets`, { token: tokens.outsider })).status, 403);
+  const workflow = (exitCode = 0) => [
+    'name: Smoke',
+    'on: push',
+    'jobs:',
+    '  build:',
+    '    runs-on: nixre-upgrade-core:test',
+    '    outputs:',
+    '      word: ${{ steps.w.outputs.word }}',
+    '    steps:',
+    '      - id: w',
+    '        run: echo "word=nixre" >> "$GITHUB_OUTPUT"',
+    '      - run: test -f README.md && git rev-parse HEAD && echo "secret=${{ secrets.SMOKE_SECRET }}"',
+    `      - run: exit ${exitCode}`,
+    '  check:',
+    '    needs: build',
+    '    runs-on: nixre-upgrade-core:test',
+    '    steps:',
+    '      - run: test "${{ needs.build.outputs.word }}" = nixre',
+  ].join('\n');
+  async function commitWorkflow(body) {
+    const r = await request(`${ci}/commits`, { token: tokens.owner, body });
+    assert.equal(r.status, 200, `workflow commit: ${r.json?.message || ''}`);
+    return r.json.sha;
+  }
+  async function runFor(sha) {
+    for (let i = 0; i < 240; i++) {
+      const runs = (await request(`${ci}/actions/runs`)).json.runs.filter(r => r.sha === sha && r.event === 'push');
+      if (runs.length && runs.every(r => r.status === 'completed')) return runs[0];
+      await sleep(500);
+    }
+    throw new Error(`Timed out waiting for the Actions run on ${sha}`);
+  }
+  const goodSha = await commitWorkflow({ message: 'Add CI', files: [{ path: '.nixre/workflows/ci.yml', action: 'create', content: workflow(0) }] });
+  const good = await runFor(goodSha);
+  const detail = (await request(`${ci}/actions/runs/${good.number}`)).json;
+  assert.equal(good.conclusion, 'success', `run ${good.number}: ${good.error || JSON.stringify(detail.jobs)}`);
+  assert.deepEqual(detail.jobs.map(j => [j.name, j.conclusion]), [['build', 'success'], ['check', 'success']]);
+  const log = (await request(`${ci}/actions/runs/${good.number}/jobs/${detail.jobs[0].id}/log`)).text;
+  assert.match(log, new RegExp(goodSha), 'a real git checkout of the pushed commit');
+  assert.match(log, /secret=\*\*\*/);
+  assert.ok(!log.includes(secretValue), 'secret values never reach the log');
+  assert.match((await request(`${ci}/actions/badge.svg?workflow=ci.yml`)).text, /Smoke: passing/);
+  assert.equal((await request(`${ci}/commits/${goodSha}/status`)).json.state, 'success');
+  const leftovers = await docker.listContainers({ all: true, filters: { label: ['nixre.actions=true'] } });
+  assert.equal(leftovers.length, 0, 'job containers are removed');
+  pass('Actions: push -> real job containers with checkout, outputs, masked secrets, statuses, badge, cleanup');
+
+  // Required checks: a PR whose head fails CI cannot merge.
+  assert.equal((await request(ci, { token: tokens.owner, method: 'PATCH', body: { require_checks: true } })).json.require_checks, true);
+  const badSha = await commitWorkflow({ new_branch: 'broken', message: 'Break CI', files: [{ path: '.nixre/workflows/ci.yml', action: 'update', content: workflow(3) }] });
+  const bad = await runFor(badSha);
+  assert.equal(bad.conclusion, 'failure');
+  const badPr = await request(`${ci}/pullreq`, { token: tokens.owner, body: { title: 'Broken', source_branch: 'broken', target_branch: 'main' } });
+  assert.equal(badPr.status, 201);
+  const blocked = await request(`${ci}/pullreq/${badPr.json.number}/merge`, { token: tokens.owner, body: {} });
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.json.message, /Required checks failed/);
+  pass('Actions: required checks block merging a pull request whose head fails CI');
+
   const repoRow = (await pool.query("SELECT * FROM repos WHERE space_uid='owner' AND uid='private'")).rows[0];
   async function service(name, image, policy = 1, runtime = {}) {
     const row = (await pool.query(`INSERT INTO deploy_services

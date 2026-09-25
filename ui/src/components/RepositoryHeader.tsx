@@ -1,12 +1,36 @@
 import React, { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, ChevronDown, Copy, Download, GitBranch, GitPullRequest } from 'lucide-react';
-import type { Repository } from '../lib/api';
+import { Check, ChevronDown, Copy, Download, FileArchive, GitBranch, GitPullRequest, Star } from 'lucide-react';
+import { api, type Repository } from '../lib/api';
 import { useOutsideClick } from '../lib/useOutsideClick';
 import { Avatar } from './Avatar';
 
-export function RepositoryHeader({ repo, space, branchCount }: { repo: Repository; space: string; branchCount: number }) {
+export function RepositoryHeader({ repo, space, branchCount, signedIn = false, gitRef }: {
+  repo: Repository;
+  space: string;
+  branchCount: number;
+  signedIn?: boolean;
+  /** Branch or ref the download buttons package; defaults to the default branch. */
+  gitRef?: string;
+}) {
   const [open, setOpen] = useState(false);
+  const [star, setStar] = useState({ starred: Boolean(repo.starred), stars: repo.stars ?? 0 });
+  const [starBusy, setStarBusy] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
+  const ref = gitRef || repo.default_branch;
+  const repoRef = `${space}/${repo.uid}`;
+  const toggleStar = () => {
+    setStarBusy(true);
+    api
+      .starRepo(repoRef, !star.starred)
+      .then(setStar)
+      .catch(() => {})
+      .finally(() => setStarBusy(false));
+  };
+  const download = (format: 'zip' | 'tar.gz') => {
+    setDownloadError('');
+    api.downloadArchive(repoRef, ref, format).catch(err => setDownloadError(err.message || 'Download failed'));
+  };
   const [protocol, setProtocol] = useState<'http' | 'ssh'>('http');
   const [copied, setCopied] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
@@ -30,6 +54,31 @@ export function RepositoryHeader({ repo, space, branchCount }: { repo: Repositor
           </div>
         </div>
       </div>
+      <div className="flex items-center gap-2 shrink-0">
+      {signedIn ? (
+        <button
+          type="button"
+          aria-pressed={star.starred}
+          disabled={starBusy}
+          onClick={toggleStar}
+          title={star.starred ? 'Unstar this repository' : 'Star this repository'}
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-border-subtle bg-surface-canvas text-xs font-medium text-txt-primary hover:bg-surface-subtle disabled:opacity-60"
+        >
+          <Star className={`w-3.5 h-3.5 ${star.starred ? 'fill-current text-feedback-warning-text' : ''}`} />
+          {star.starred ? 'Starred' : 'Star'}
+          <span className="font-mono text-txt-tertiary">{star.stars}</span>
+        </button>
+      ) : (
+        <Link
+          to="/login"
+          title="Sign in to star"
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-border-subtle bg-surface-canvas text-xs font-medium text-txt-primary hover:bg-surface-subtle"
+        >
+          <Star className="w-3.5 h-3.5" />
+          Star
+          <span className="font-mono text-txt-tertiary">{star.stars}</span>
+        </Link>
+      )}
       <div ref={menu} className="relative shrink-0">
         <button type="button" aria-expanded={open} onClick={() => { setOpen(!open); setCopied(false); }} className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-border-subtle bg-surface-canvas text-xs font-medium text-txt-primary hover:bg-surface-subtle">
           <Download className="w-3.5 h-3.5" />Clone Repo<ChevronDown className="w-3 h-3" />
@@ -43,8 +92,16 @@ export function RepositoryHeader({ repo, space, branchCount }: { repo: Repositor
             <input aria-label="Clone URL" value={url} readOnly className="w-full min-w-0 bg-transparent text-xs font-mono text-txt-primary" />
             <button type="button" title="Copy clone URL" onClick={() => { void navigator.clipboard.writeText(url).then(() => setCopied(true)); }} className="text-txt-secondary hover:text-brand">{copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}</button>
           </div>
+          <div className="flex items-center gap-2 border-t border-border-subtle pt-3">
+            <FileArchive className="w-3.5 h-3.5 text-txt-tertiary" />
+            <span className="text-xs text-txt-secondary truncate">Download <span className="font-mono">{ref}</span></span>
+            <button type="button" onClick={() => download('zip')} className="ml-auto text-xs font-medium text-brand hover:underline">ZIP</button>
+            <button type="button" onClick={() => download('tar.gz')} className="text-xs font-medium text-brand hover:underline">tar.gz</button>
+          </div>
+          {downloadError && <p role="alert" className="text-[11px] text-feedback-error-text">{downloadError}</p>}
           <p className="text-[11px] text-txt-secondary">{protocol === 'ssh' ? <>Register your SSH key in <Link to="/settings" className="text-brand underline">Settings</Link>. Port 3022 must be reachable.</> : repo.is_public ? 'Anyone can clone this public repository.' : <>Use your username and an access token as the password. Create one in <Link to="/settings" className="text-brand underline">Settings → Access Tokens</Link>.</>}</p>
         </div>}
+      </div>
       </div>
     </div>
     {repo.description && <p className="text-sm text-txt-secondary leading-relaxed whitespace-pre-wrap max-w-4xl">{repo.description}</p>}

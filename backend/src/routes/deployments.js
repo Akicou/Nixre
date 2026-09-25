@@ -6,6 +6,7 @@
 
 import express from 'express';
 import { encryptSecret } from '../lib/ai.js';
+import { canReadRepo } from '../lib/repoAccess.js';
 import { deployEngine, getDeployProxy } from '../lib/deployRuntime.js';
 import { listTree as gitListTree } from '../lib/deployDrivers.js';
 import {
@@ -54,7 +55,10 @@ export function deploymentRoutes(pool, authenticate) {
       space,
       repo,
     ]);
-    if (!rows[0]) {
+    // Every deployments route goes through here, so this is the read gate:
+    // services, build logs, HTTP logs and live events of a private repository
+    // are for its members only. 404, not 403, so private names do not leak.
+    if (!rows[0] || !(await canReadRepo(pool, rows[0], req.auth?.user ?? null))) {
       res.status(404).json({ message: 'Repository not found' });
       return null;
     }
@@ -1242,22 +1246,25 @@ export function deploymentRoutes(pool, authenticate) {
       res.status(404).json({ message: 'Space not found' });
       return;
     }
-    if (!user.admin && !space.is_public) {
+    let isMember = Boolean(user.admin);
+    if (!isMember) {
       const { rows: member } = await pool.query(
         'SELECT 1 FROM space_members WHERE space_uid = $1 AND user_uid = $2',
         [space.uid, user.uid],
       );
-      if (!member.length && space.owner_uid !== user.uid) {
-        res.status(403).json({ message: 'No access to this space' });
-        return;
-      }
+      isMember = member.length > 0 || space.owner_uid === user.uid;
+    }
+    if (!isMember && !space.is_public) {
+      res.status(403).json({ message: 'No access to this space' });
+      return;
     }
 
+    // Outsiders on a public space only see services of its public repos.
     const { rows: services } = await pool.query(
       `SELECT s.*, r.uid AS repo_uid, r.default_branch
        FROM deploy_services s
        JOIN repos r ON r.id = s.repo_id
-       WHERE r.space_uid = $1
+       WHERE r.space_uid = $1 ${isMember ? '' : 'AND r.is_public = TRUE'}
        ORDER BY s.created ASC`,
       [space.uid],
     );
@@ -1348,7 +1355,7 @@ export function deploymentRoutes(pool, authenticate) {
            SELECT 1 FROM repos r
            JOIN spaces sp ON sp.uid = r.space_uid
            LEFT JOIN space_members m ON m.space_uid = r.space_uid AND m.user_uid = $1
-           WHERE r.id = s.repo_id AND (sp.is_public OR m.user_uid IS NOT NULL OR sp.uid = $1)
+           WHERE r.id = s.repo_id AND ((sp.is_public AND r.is_public) OR m.user_uid IS NOT NULL OR sp.uid = $1)
          )`;
     const { rows: services } = await pool.query(
       `SELECT s.*, r.space_uid AS space, r.uid AS repo_uid, r.default_branch

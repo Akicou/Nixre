@@ -5,7 +5,7 @@ import { RepoSettingsPanel } from '../components/RepoSettingsPanel';
 import { repo } from './fixtures';
 
 const { api } = vi.hoisted(() => ({
-  api: { updateRepo: vi.fn(), deleteRepo: vi.fn(), transferRepo: vi.fn(), listSpaces: vi.fn() },
+  api: { updateRepo: vi.fn(), deleteRepo: vi.fn(), transferRepo: vi.fn(), listSpaces: vi.fn(), listRepoSecrets: vi.fn(), setRepoSecret: vi.fn(), deleteRepoSecret: vi.fn() },
 }));
 vi.mock('../lib/api', () => ({ api }));
 
@@ -25,6 +25,7 @@ function mount(onUpdated = vi.fn()) {
 describe('RepoSettingsPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.listRepoSecrets.mockResolvedValue([]);
     api.listSpaces.mockResolvedValue([
       { id: 10, uid: 'acme', path: 'acme', description: '', is_public: true, created: 0, created_by: 1, updated: 0 },
       { id: 11, uid: 'jane', path: 'jane', description: '', is_public: true, is_personal: true, created: 0, created_by: 1, updated: 0 },

@@ -60,6 +60,8 @@ function rowToRepo(row, { openPulls = 0 } = {}) {
     description: row.description || '',
     is_public: Boolean(row.is_public),
     default_branch: row.default_branch,
+    stars: Number(row.stars ?? 0),
+    require_checks: Boolean(row.require_checks),
     git_url: path,
     git_ssh_url: path,
     size: 0,
@@ -158,7 +160,7 @@ async function findRepo(pool, repoRef) {
   const uid = rest.join('/').replace(/\.git$/, '');
   if (!validRefSegment(space) || !validRefSegment(uid)) return null;
   const { rows } = await pool.query(
-    'SELECT * FROM repos WHERE space_uid = $1 AND uid = $2',
+    'SELECT *, (SELECT count(*) FROM repo_stars st WHERE st.repo_id = repos.id)::int AS stars FROM repos WHERE space_uid = $1 AND uid = $2',
     [space, uid],
   );
   return rows[0] ?? null;
@@ -444,7 +446,7 @@ export function forgeRoutes(pool, authenticate) {
     // sees public ones (a private repo must not leak on a public profile).
     const member = await canAccessSpace(pool, req.params.spaceUid, viewer(req));
     const { rows } = await pool.query(
-      `SELECT * FROM repos WHERE space_uid = $1 ${member ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
+      `SELECT *, (SELECT count(*) FROM repo_stars st WHERE st.repo_id = repos.id)::int AS stars FROM repos WHERE space_uid = $1 ${member ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
       [req.params.spaceUid],
     );
     const counts = await openPrCounts(pool, rows.map(r => Number(r.id)));
@@ -766,9 +768,14 @@ export function forgeRoutes(pool, authenticate) {
     }
     if (!(await assertReadable(pool, res, repo, viewer(req)))) return;
     const counts = await openPrCounts(pool, [Number(repo.id)]);
+    const me = viewer(req);
+    const starred = me
+      ? (await pool.query('SELECT 1 FROM repo_stars WHERE repo_id = $1 AND user_uid = $2', [repo.id, me.uid])).rows.length > 0
+      : false;
     res.json({
       ...rowToRepo(repo, { openPulls: counts.get(Number(repo.id)) ?? 0 }),
-      can_write: await canWriteRepo(pool, repo.space_uid, viewer(req)),
+      starred,
+      can_write: await canWriteRepo(pool, repo.space_uid, me),
     });
   });
 
@@ -784,9 +791,12 @@ export function forgeRoutes(pool, authenticate) {
     }
     const description = req.body?.description !== undefined ? String(req.body.description) : repo.description;
     const isPublic = req.body?.is_public !== undefined ? Boolean(req.body.is_public) : repo.is_public;
+    const requireChecks =
+      req.body?.require_checks !== undefined ? Boolean(req.body.require_checks) : Boolean(repo.require_checks);
     const { rows } = await pool.query(
-      'UPDATE repos SET description = $1, is_public = $2, updated = $3 WHERE id = $4 RETURNING *',
-      [description, isPublic, now(), repo.id],
+      `UPDATE repos SET description = $1, is_public = $2, require_checks = $3, updated = $4 WHERE id = $5
+       RETURNING *, (SELECT count(*) FROM repo_stars st WHERE st.repo_id = repos.id)::int AS stars`,
+      [description, isPublic, requireChecks, now(), repo.id],
     );
     res.json(rowToRepo(rows[0]));
   });
@@ -1076,7 +1086,7 @@ export function forgeRoutes(pool, authenticate) {
     const spaceRes = await pool.query('SELECT * FROM spaces WHERE uid = $1 AND is_personal = TRUE', [u.uid]);
     const personal = spaceRes.rows[0] || null;
     const reposRes = await pool.query(
-      `SELECT * FROM repos WHERE space_uid = $1 ${canSeeAll ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
+      `SELECT *, (SELECT count(*) FROM repo_stars st WHERE st.repo_id = repos.id)::int AS stars FROM repos WHERE space_uid = $1 ${canSeeAll ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
       [u.uid],
     );
     const counts = await openPrCounts(pool, reposRes.rows.map(r => Number(r.id)));

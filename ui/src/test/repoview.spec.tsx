@@ -17,6 +17,13 @@ const { api } = vi.hoisted(() => ({
     getPullRequestDiff: vi.fn(),
     createPullRequest: vi.fn(),
     mergePullRequest: vi.fn(),
+    getPullRequestChecks: vi.fn(),
+    listWorkflows: vi.fn(),
+    listRuns: vi.fn(),
+    getRun: vi.fn(),
+    getJobLog: vi.fn(),
+    listFiles: vi.fn(),
+    starRepo: vi.fn(),
     commitFiles: vi.fn(),
     listDeployServices: vi.fn(),
     serviceUptime: vi.fn(),
@@ -34,6 +41,10 @@ const service = { id: 12, name: 'web', branch: 'main', root_dir: '.', dockerfile
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.getPullRequestChecks.mockResolvedValue({ sha: null, state: 'none', required: false, statuses: [] });
+  api.listWorkflows.mockResolvedValue({ ref: 'main', workflows: [] });
+  api.listRuns.mockResolvedValue({ runs: [] });
+  api.listFiles.mockResolvedValue({ ref: 'main', truncated: false, files: [] });
   api.getRepo.mockResolvedValue(repo);
   api.getBranches.mockResolvedValue([branch]);
   api.getTree.mockImplementation(async (_repoRef, _branch, path: string) => {

@@ -5,6 +5,7 @@ import { api, Repository, Space } from '../lib/api';
 import { getPlugin } from '../lib/plugins';
 import { isPluginLive } from '../lib/pluginPreferences';
 import { AssistantProfileForm } from './assistant/AssistantProfileForm';
+import { ActionsSettings } from './ActionsSettings';
 
 interface RepoSettingsPanelProps {
   repo: Repository;
@@ -69,7 +70,9 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
     setSaving(true);
     try {
       const updated = await api.updateRepo(repoPath, { description, is_public: isPublic });
-      onUpdated(updated);
+      // The PATCH response carries no viewer fields; keep them so the Settings
+      // tab (gated on can_write) does not vanish after saving.
+      onUpdated({ ...repo, ...updated, can_write: repo.can_write, starred: repo.starred });
       setSuccess('Repository settings saved.');
     } catch (err: any) {
       setError(err.message || 'Failed to save repository settings.');
@@ -228,6 +231,8 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
           )}
         </div>
       )}
+
+      <ActionsSettings repo={repo} repoPath={repoPath} onUpdated={onUpdated} />
 
       <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
         <div>

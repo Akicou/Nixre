@@ -18,6 +18,7 @@ async function reencryptSecrets(client) {
     ['user_stt', ['user_uid'], 'api_key_enc'],
     ['service_env_vars', ['service_id', 'key'], 'value_enc'],
     ['repo_webhooks', ['id'], 'secret_enc'],
+    ['repo_secrets', ['repo_id', 'key'], 'value_enc'],
   ];
   let verified = 0;
   let rewritten = 0;
