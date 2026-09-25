@@ -2,7 +2,7 @@
 // Wire shapes match the UI (PullRequest interface, base64 patches).
 
 import express from 'express';
-import { diffRefs, mergeBranches, branchExists } from '../git/repo.js';
+import { aheadBehind, diffRefs, mergeBranches, branchExists } from '../git/repo.js';
 import { loadReadableRepo } from '../lib/repoAccess.js';
 import { mergeBlockReason } from '../lib/commitStatus.js';
 import { resolveRef } from '../lib/deployDrivers.js';
@@ -174,7 +174,14 @@ export function pullRequestRoutes(pool, authenticate) {
       res.status(404).json({ message: 'Pull request not found' });
       return;
     }
-    res.json(await rowToPr(pool, rows[0], { showEmail: Boolean(req.auth?.user) }));
+    const pr = await rowToPr(pool, rows[0], { showEmail: Boolean(req.auth?.user) });
+    // Divergence of the PR. ahead = commits on the source branch the target
+    // lacks; behind = commits on the target the source lacks (i.e. how stale
+    // the branch is). Only meaningful while the branches still exist.
+    const { ahead, behind } = await aheadBehind(
+      repo.space_uid, repo.uid, pr.source_branch, pr.target_branch,
+    );
+    res.json({ ...pr, ahead, behind });
   });
 
   // GET /repos/{space}/{repo}/+/pullreq/{n}/diff?include_patch=true

@@ -12,6 +12,7 @@ const { api } = vi.hoisted(() => ({
     getTree: vi.fn(),
     getRawBlob: vi.fn(),
     getCommits: vi.fn(),
+    getCommit: vi.fn(),
     listPullRequests: vi.fn(),
     getPullRequest: vi.fn(),
     getPullRequestDiff: vi.fn(),
@@ -285,6 +286,41 @@ describe('RepoView — tabs', () => {
   it('lists branches in the Branches tab', async () => {
     mountAt('/acme/website?tab=branches&branch=main');
     expect(await screen.findByText('main')).toBeInTheDocument();
+  });
+
+  it('shows how far each branch is ahead of and behind the default branch', async () => {
+    // Deliberately lopsided so a swapped ahead/behind pair fails.
+    api.getBranches.mockResolvedValue([
+      { ...branch, ahead: 0, behind: 0 },
+      { name: 'feature', sha: '6666666666666666666666666666666666666666', ahead: 2, behind: 3 },
+    ]);
+    mountAt('/acme/website?tab=branches&branch=main');
+    expect(await screen.findByText('2 ahead')).toBeInTheDocument();
+    expect(await screen.findByText('3 behind')).toBeInTheDocument();
+  });
+
+  it('opens a single commit with its parent and its diff', async () => {
+    api.getCommit.mockResolvedValue({
+      commit: {
+        ...commit,
+        title: 'Add landing page',
+        message: ['Add landing page', '', 'Why it matters'].join('\n'),
+        parents: ['7777777777777777777777777777777777777777'],
+      },
+      stats: { additions: 1, deletions: 1, changes: 2 },
+      files: [{
+        sha: 'x', path: 'index.html', status: 'MODIFIED', additions: 1, deletions: 1, changes: 2,
+        patch: btoa(['@@ -1,1 +1,1 @@', '-old line', '+new line', ''].join('\n')),
+        is_binary: false, is_submodule: false,
+      }],
+    });
+    mountAt('/acme/website?tab=commits&branch=main&commit=5555555555555555555555555555555555555555');
+
+    expect(await screen.findByText('Add landing page')).toBeInTheDocument();
+    expect(await screen.findByText('Why it matters')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '7777777' })).toBeInTheDocument();
+    expect(await screen.findByText(/index\.html/)).toBeInTheDocument();
+    expect(await screen.findByText(/\+new line/)).toBeInTheDocument();
   });
 
   it('lists pull requests in the Pulls tab', async () => {

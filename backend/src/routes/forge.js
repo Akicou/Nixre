@@ -1033,7 +1033,12 @@ export function forgeRoutes(pool, authenticate) {
     try {
       const { commit, stats, files } = await getCommit(repo.space_uid, repo.uid, req.params.sha);
       const [enriched] = await enrichCommits(pool, [commit]);
-      res.json({ commit: enriched, stats, files });
+      res.json({
+        commit: enriched,
+        stats,
+        // Same wire format as the PR diff: the UI decodes base64 (ui/src/lib/diff.ts).
+        files: files.map(f => ({ ...f, patch: Buffer.from(f.patch || '', 'utf8').toString('base64') })),
+      });
     } catch {
       res.status(404).json({ message: 'Commit not found' });
     }
@@ -1058,6 +1063,10 @@ export function forgeRoutes(pool, authenticate) {
         branches: branches.map(b => ({
           name: b.name,
           sha: b.sha,
+          // Divergence from the default branch. listBranches has always computed
+          // these, but this mapping dropped them, so the UI never saw them.
+          ahead: b.ahead,
+          behind: b.behind,
           commit: {
             sha: b.sha,
             title: b.subject,
