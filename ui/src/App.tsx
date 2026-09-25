@@ -82,7 +82,8 @@ const AppShell: React.FC<{
             stuck on the error card. */}
         <ErrorBoundary key={location.pathname}>
         <Routes>
-          <Route path="/" element={currentUser ? <Dashboard user={currentUser} /> : <Navigate to="/login" />} />
+          {/* Guests get the same page as a public explore view: public namespaces and repos only. */}
+          <Route path="/" element={<Dashboard user={currentUser} />} />
           <Route path="/new-repo" element={currentUser ? <NewRepo /> : <Navigate to="/login" />} />
           <Route path="/new-space" element={currentUser ? <NewSpace /> : <Navigate to="/login" />} />
           <Route path="/settings" element={currentUser ? <Settings user={currentUser} onUserChange={setCurrentUser} /> : <Navigate to="/login" />} />
