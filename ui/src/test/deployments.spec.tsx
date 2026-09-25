@@ -42,7 +42,7 @@ vi.mock('../lib/deployEvents', () => ({
   subscribeDeployEvents: () => () => {},
 }));
 
-import { DeploymentsSection } from '../pages/DeploymentsPage';
+import { DeploymentsSection, logViewerText } from '../pages/DeploymentsPage';
 import { DeploymentsOverview } from '../components/DeploymentsOverview';
 
 function mountPage(initialEntry = '/acme/webshop') {
@@ -432,5 +432,29 @@ describe('Dashboard deployments overview', () => {
       </MemoryRouter>,
     );
     await waitFor(() => expect(container.querySelector('[data-testid="deployments-overview"]')).toBeNull());
+  });
+});
+
+// A release failure leaves a build log that SUCCEEDED, so the old viewer (build
+// output only) showed nothing useful. The container's own output is what says
+// why the app never answered its health probe.
+describe('deployment log viewer text', () => {
+  it('shows the error, the build log and the container output', () => {
+    const text = logViewerText({
+      error: 'Health check failed: app did not answer on port 8080 / within 30s',
+      build_log: 'Successfully tagged nixre-app\n',
+      runtime_log: 'KeyError: DATABASE_URL\n',
+    });
+    expect(text).toContain('ERROR: Health check failed');
+    expect(text).toContain('--- build log ---');
+    expect(text).toContain('Successfully tagged');
+    expect(text).toContain('--- container output ---');
+    expect(text).toContain('KeyError: DATABASE_URL');
+  });
+
+  it('says so when there is no build output, and omits an absent container log', () => {
+    const text = logViewerText({ error: null, build_log: '', runtime_log: '' });
+    expect(text).toBe('(no build output recorded)');
+    expect(text).not.toContain('container output');
   });
 });

@@ -16,6 +16,7 @@ import {
   makeImageTag,
   containerName,
   computeUsage,
+  demuxDockerLog,
 } from './deployPure.js';
 import { decryptSecret } from './ai.js';
 import { getRuntimeOptions } from './deployRuntimeOptions.js';
@@ -23,6 +24,12 @@ import * as bus from './deployBus.js';
 
 const SERVICE_TABLE = 'deploy_services';
 const DEP_TABLE = 'deployments';
+
+// How much of a container's own output to keep/serve. The failure reason is
+// always at the end, so these are tails.
+const RUNTIME_LOG_TAIL_LINES = 400;
+const RUNTIME_LOG_MAX_CHARS = 200_000;
+const MAX_LIVE_LOG_LINES = 2000;
 
 class Cancelled extends Error {
   constructor() {
@@ -373,11 +380,64 @@ export function createDeploymentEngine({
         servingPrevious: wasServing,
       });
       targetCache.delete(service.id);
+      // Capture the container's own stdout/stderr BEFORE it is removed. For a
+      // release failure (health probe never answered) this is the only place
+      // the real reason exists — the build log succeeded.
+      if (!cancelled) await captureRuntimeLog(service.id, entry.deploymentId);
       if (!err.preserveContainer) {
         await removeContainerIfExists(service.id, containerName(service.id, entry.deploymentId));
       }
     } catch (err2) {
       console.error('failure handling error:', err2.message);
+    }
+  }
+
+  // Best effort: tail a (possibly dead) container's log into the deployment
+  // row. Never throws — a missing container or a down docker must not turn a
+  // deploy failure into an unhandled rejection.
+  async function captureRuntimeLog(serviceId, deploymentId) {
+    try {
+      const docker = await drivers.getDocker();
+      if (!docker) return null;
+      const raw = await docker.getContainer(containerName(serviceId, deploymentId)).logs({
+        stdout: true,
+        stderr: true,
+        follow: false,
+        tail: RUNTIME_LOG_TAIL_LINES,
+      });
+      const text = demuxDockerLog(raw);
+      if (!text.trim()) return null;
+      await updateDeployments(deploymentId, {
+        runtime_log: { v: text.slice(-RUNTIME_LOG_MAX_CHARS) },
+      });
+      return text;
+    } catch {
+      return null; // container never started / already gone / docker down
+    }
+  }
+
+  /**
+   * Tail the container output of a service's current release (or an explicit
+   * deployment). Returns null when there is nothing running to read.
+   */
+  async function containerLogs(serviceId, { tail = 200, deploymentId = null } = {}) {
+    const service = await getService(serviceId);
+    if (!service) return null;
+    const depId = deploymentId ?? service.current_deployment_id;
+    if (!depId) return null;
+    const lines = Math.min(MAX_LIVE_LOG_LINES, Math.max(1, Number(tail) || 200));
+    const docker = await requireDocker();
+    try {
+      const raw = await docker.getContainer(containerName(serviceId, depId)).logs({
+        stdout: true,
+        stderr: true,
+        follow: false,
+        tail: lines,
+      });
+      return { deployment_id: Number(depId), tail: lines, text: demuxDockerLog(raw) };
+    } catch (err) {
+      if (err?.statusCode === 404) return null;
+      throw err;
     }
   }
 
@@ -1043,6 +1103,7 @@ export function createDeploymentEngine({
     tunnelTick,
     metricsTick,
     getStatsSnapshot,
+    containerLogs,
     findServiceTarget,
     isBusy,
     waitIdle,

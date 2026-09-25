@@ -14,6 +14,7 @@ import {
   normalizeRootDir,
   sanitizeServiceName,
   shortSha,
+  tailLines,
 } from '../lib/deployPure.js';
 import {
   normalizeRuntimeOptions,
@@ -113,6 +114,37 @@ export function deploymentRoutes(pool, authenticate) {
       return null;
     }
     return ctx;
+  }
+
+  // `depId` in a URL may be a numeric id or one of two aliases an agent can use
+  // without a prior list call: `latest` (most recent deployment) and `failed`
+  // (most recent failed one — what "deployment #42 failed, inspect the build"
+  // points at). Answers 404 itself and returns null when nothing matches; a
+  // non-numeric, non-alias value is a 404 rather than a NaN query.
+  async function resolveDeployment(req, res, service) {
+    const raw = String(req.params.depId || '');
+    let sql;
+    let params;
+    if (raw === 'latest') {
+      sql = 'SELECT * FROM deployments WHERE service_id = $1 ORDER BY started DESC LIMIT 1';
+      params = [service.id];
+    } else if (raw === 'failed') {
+      sql =
+        "SELECT * FROM deployments WHERE service_id = $1 AND status = 'failed' ORDER BY started DESC LIMIT 1";
+      params = [service.id];
+    } else if (/^[0-9]{1,18}$/.test(raw)) {
+      sql = 'SELECT * FROM deployments WHERE id = $1 AND service_id = $2';
+      params = [Number(raw), service.id];
+    } else {
+      res.status(404).json({ message: 'Deployment not found' });
+      return null;
+    }
+    const { rows } = await pool.query(sql, params);
+    if (!rows[0]) {
+      res.status(404).json({ message: 'Deployment not found' });
+      return null;
+    }
+    return rows[0];
   }
 
   // An in-flight error shaped {status} maps onto the response cleanly.
@@ -652,15 +684,13 @@ export function deploymentRoutes(pool, authenticate) {
   api.get('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId', auth, guard(async (req, res) => {
     const ctx = await loadService(req, res);
     if (!ctx) return;
-    const { rows } = await pool.query(
-      'SELECT * FROM deployments WHERE id = $1 AND service_id = $2',
-      [Number(req.params.depId), ctx.service.id],
-    );
-    const d = rows[0];
-    if (!d) {
-      res.status(404).json({ message: 'Deployment not found' });
-      return;
-    }
+    const d = await resolveDeployment(req, res, ctx.service);
+    if (!d) return;
+    // Build output and container output routinely echo secrets (env dumps,
+    // `npm config`, connection strings). A reader of a public repo gets the
+    // status and the one-line error; the log bodies need write access, same as
+    // the dedicated /log endpoint.
+    const writer = await canWrite(ctx.repo.space_uid, req.auth.user);
     res.json({
       id: Number(d.id),
       ref: d.ref,
@@ -671,13 +701,134 @@ export function deploymentRoutes(pool, authenticate) {
       status: d.status,
       error: d.error || null,
       image_tag: d.image_tag,
-      build_log: d.build_log || '',
+      build_log: writer ? d.build_log || '' : '',
+      runtime_log: writer ? d.runtime_log || '' : '',
+      logs_readable: writer,
+      has_build_log: Boolean(d.build_log),
+      has_runtime_log: Boolean(d.runtime_log),
       started: Number(d.started),
       finished: d.finished == null ? null : Number(d.finished),
       duration_ms: d.duration_ms == null ? null : Number(d.duration_ms),
       serving: Number(d.id) === Number(ctx.service.current_deployment_id),
     });
   }));
+
+  // The one an agent reaches for after "deployment #42 failed". Plain text by
+  // default so it can be read/grepped without JSON unwrapping; `?format=json`
+  // returns the same body plus the failure metadata. `:depId` accepts `latest`
+  // and `failed` so no list call is needed first.
+  //
+  //   GET .../deployments/42/log                   -> build output, text
+  //   GET .../deployments/failed/log?stream=all    -> build + container output
+  //   GET .../deployments/failed/log?tail=100      -> last 100 lines
+  //
+  // Write access required: build logs echo secrets often enough that repo-read
+  // is the wrong gate for them.
+  api.get(
+    '/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/log',
+    auth,
+    guard(async (req, res) => {
+      const ctx = await requireServiceWriter(req, res);
+      if (!ctx) return;
+      const d = await resolveDeployment(req, res, ctx.service);
+      if (!d) return;
+
+      const stream = ['build', 'runtime', 'all'].includes(String(req.query.stream))
+        ? String(req.query.stream)
+        : 'build';
+      const tail = req.query.tail == null ? 0 : Number(req.query.tail);
+      if (req.query.tail != null && (!Number.isInteger(tail) || tail < 1 || tail > 20000)) {
+        res.status(400).json({ message: 'tail must be an integer between 1 and 20000' });
+        return;
+      }
+
+      const build = String(d.build_log || '');
+      const runtime = String(d.runtime_log || '');
+      const sections = [];
+      if (stream === 'build' || stream === 'all') {
+        sections.push({ stream: 'build', text: tailLines(build, tail) });
+      }
+      if (stream === 'runtime' || stream === 'all') {
+        sections.push({ stream: 'runtime', text: tailLines(runtime, tail) });
+      }
+
+      if (String(req.query.format) === 'json') {
+        res.json({
+          deployment_id: Number(d.id),
+          status: d.status,
+          error: d.error || null,
+          short_sha: shortSha(d.sha),
+          started: Number(d.started),
+          finished: d.finished == null ? null : Number(d.finished),
+          // Empty build output on a failed deployment usually means it never
+          // got to the build — read `error` and the runtime stream instead.
+          build_log: stream === 'runtime' ? undefined : tailLines(build, tail),
+          runtime_log: stream === 'build' ? undefined : tailLines(runtime, tail),
+        });
+        return;
+      }
+
+      const header =
+        `# deployment ${d.id} — ${d.status}` +
+        (d.error ? `\n# error: ${d.error}` : '') +
+        '\n';
+      const body = sections
+        .map(s => {
+          if (!s.text.trim()) {
+            return `--- ${s.stream} log: empty ---`;
+          }
+          return `--- ${s.stream} log ---\n${s.text.replace(/\n*$/, '')}`;
+        })
+        .join('\n\n');
+      res.type('text/plain; charset=utf-8').send(`${header}${body}\n`);
+    }),
+  );
+
+  // Live container output for the release that is serving right now (or an
+  // explicit `?deployment_id=`). Separate from the build log: this is the
+  // running app's stdout/stderr. Write access — same reasoning.
+  api.get(
+    '/repos/:space/:repo/\\+/deployments/services/:id/logs',
+    auth,
+    guard(async (req, res) => {
+      const ctx = await requireServiceWriter(req, res);
+      if (!ctx) return;
+      const tail = req.query.tail == null ? 200 : Number(req.query.tail);
+      if (!Number.isInteger(tail) || tail < 1 || tail > 2000) {
+        res.status(400).json({ message: 'tail must be an integer between 1 and 2000' });
+        return;
+      }
+      let deploymentId = null;
+      if (req.query.deployment_id != null) {
+        if (!/^[0-9]{1,18}$/.test(String(req.query.deployment_id))) {
+          res.status(400).json({ message: 'deployment_id must be a positive integer' });
+          return;
+        }
+        const { rows } = await pool.query(
+          'SELECT id FROM deployments WHERE id = $1 AND service_id = $2',
+          [Number(req.query.deployment_id), ctx.service.id],
+        );
+        if (!rows[0]) {
+          res.status(404).json({ message: 'Deployment not found' });
+          return;
+        }
+        deploymentId = Number(rows[0].id);
+      }
+      const out = await deployEngine.containerLogs(ctx.service.id, { tail, deploymentId });
+      if (!out) {
+        res.status(409).json({
+          message:
+            'No container to read — the service has no running release. Check its deployments and their build logs instead.',
+        });
+        return;
+      }
+      if (String(req.query.format) === 'json') {
+        res.json(out);
+        return;
+      }
+      res.type('text/plain; charset=utf-8').send(out.text);
+    }),
+  );
 
   api.post('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/cancel', auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
@@ -688,20 +839,28 @@ export function deploymentRoutes(pool, authenticate) {
   api.post('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/redeploy', auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
-    res.status(202).json(await deployEngine.redeploy(ctx.service.id, Number(req.params.depId)));
+    // Resolve first so `latest`/`failed` work and a junk id is a 404 rather
+    // than a NaN reaching Postgres as a 500.
+    const d = await resolveDeployment(req, res, ctx.service);
+    if (!d) return;
+    res.status(202).json(await deployEngine.redeploy(ctx.service.id, Number(d.id)));
   }));
 
   api.post('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId/rollback', auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
-    const dep = await deployEngine.rollback(ctx.service.id, Number(req.params.depId));
+    const d = await resolveDeployment(req, res, ctx.service);
+    if (!d) return;
+    const dep = await deployEngine.rollback(ctx.service.id, Number(d.id));
     res.status(202).json(dep);
   }));
 
   api.delete('/repos/:space/:repo/\\+/deployments/services/:id/deployments/:depId', auth, guard(async (req, res) => {
     const ctx = await requireServiceWriter(req, res);
     if (!ctx) return;
-    await deployEngine.deleteDeployment(ctx.service.id, Number(req.params.depId));
+    const d = await resolveDeployment(req, res, ctx.service);
+    if (!d) return;
+    await deployEngine.deleteDeployment(ctx.service.id, Number(d.id));
     res.json({ ok: true });
   }));
 
