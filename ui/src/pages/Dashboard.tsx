@@ -69,6 +69,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
               </span>
             </Link>
           )}
+          {user && (
           <Link
             to="/new-space"
             className="px-3 py-1.5 rounded text-sm text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle border border-border-subtle transition font-medium flex items-center gap-1.5"
@@ -76,6 +77,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
             <Layers className="w-4 h-4 text-txt-tertiary" />
             <span>New Space</span>
           </Link>
+          )}
         </div>
       </div>
 
@@ -94,7 +96,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
             />
           </div>
 
-          <DeploymentsOverview />
+          {user && <DeploymentsOverview />}
 
           {loading ? (
             <div className="py-16 text-center text-sm text-txt-tertiary">Loading repositories...</div>
@@ -103,8 +105,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
               <FolderGit2 className="w-10 h-10 text-txt-tertiary mx-auto mb-3 opacity-60" />
               <h3 className="text-base font-semibold text-txt-primary">No repositories found</h3>
               <p className="text-sm text-txt-secondary mt-1 max-w-sm mx-auto">
-                Get started by creating your first repository or importing existing Git projects.
+                {user
+                  ? 'Get started by creating your first repository or importing existing Git projects.'
+                  : 'There are no public repositories on this instance yet.'}
               </p>
+              {user && (
               <div className="mt-4 flex justify-center gap-3">
                 <Link
                   to="/new-repo"
@@ -113,6 +118,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
                   Create Repository
                 </Link>
               </div>
+              )}
             </div>
           ) : (
             <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden divide-y divide-border-subtle">
@@ -170,9 +176,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
                 <Layers className="w-3.5 h-3.5" />
                 <span>Namespaces</span>
               </h2>
-              <Link to="/new-space" className="text-xs text-txt-brand hover:underline font-medium">
-                + New
-              </Link>
+              {user && (
+                <Link to="/new-space" className="text-xs text-txt-brand hover:underline font-medium">
+                  + New
+                </Link>
+              )}
             </div>
 
             {spaces.length === 0 ? (
@@ -208,9 +216,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
             <div className="bg-surface-base border border-border-subtle rounded p-2.5 font-mono text-[11px] text-txt-secondary space-y-2 overflow-x-auto">
               <p className="text-txt-tertiary font-sans text-xs"># Clone existing repo:</p>
               <p className="text-txt-primary">git clone {window.location.origin}/git/{quickStartRepoPath}.git</p>
-              <p className="text-txt-tertiary font-sans text-xs pt-1"># Push existing local repo:</p>
-              <p>git remote add origin {window.location.origin}/git/{quickStartRepoPath}.git</p>
-              <p>git push -u origin main</p>
+              {user && (
+                <>
+                  <p className="text-txt-tertiary font-sans text-xs pt-1"># Push existing local repo:</p>
+                  <p>git remote add origin {window.location.origin}/git/{quickStartRepoPath}.git</p>
+                  <p>git push -u origin main</p>
+                </>
+              )}
             </div>
           </div>
         </div>

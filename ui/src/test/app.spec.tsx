@@ -37,10 +37,23 @@ beforeEach(() => {
 });
 
 describe('App routing & auth guards', () => {
-  it('redirects guests to /login', async () => {
+  it('shows guests the public home page at / instead of redirecting to /login', async () => {
     api.currentUser.mockRejectedValue(new Error('Unauthorized'));
+    api.listSpaces.mockResolvedValue([space]);
+    window.history.pushState(null, '', '/');
+    render(<App />);
+    await screen.findByText(/Repositories & Spaces/i);
+    expect(window.location.pathname).toBe('/');
+    expect(screen.queryByText('New Space')).toBeNull();
+    expect(screen.queryByText(/Sign in to Nixre/i)).toBeNull();
+  });
+
+  it('still redirects guests to /login from account-only pages', async () => {
+    api.currentUser.mockRejectedValue(new Error('Unauthorized'));
+    window.history.pushState(null, '', '/settings');
     render(<App />);
     await screen.findByText(/Sign in to Nixre/i);
+    window.history.pushState(null, '', '/');
   });
 
   it('lets guests open a public repository without logging in', async () => {
