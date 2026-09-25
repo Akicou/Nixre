@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, GitMerge, Plus, Minus, FileDiff as FileDiffIcon, Sparkles } from 'lucide-react';
-import { api, PullRequest, FileDiff } from '../lib/api';
+import { api, PullRequest, FileDiff, PullRequestChecks } from '../lib/api';
+import { RunStatusIcon } from './ActionsPanel';
 import { decodeBase64Patch, parsePatchLines } from '../lib/diff';
 import { PRReviewPanel } from './assistant/PRReviewPanel';
 
@@ -29,6 +30,27 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
   const [merging, setMerging] = useState(false);
   const [error, setError] = useState('');
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [checks, setChecks] = useState<PullRequestChecks | null>(null);
+
+  // Commit statuses on the PR head; refreshed while any check is pending.
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = () =>
+      api
+        .getPullRequestChecks(repoPath, prNumber)
+        .then(c => {
+          if (!alive) return;
+          setChecks(c);
+          if (c.state === 'pending') timer = setTimeout(load, 5000);
+        })
+        .catch(() => {});
+    void load();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [repoPath, prNumber]);
 
   useEffect(() => {
     setLoading(true);
@@ -119,10 +141,51 @@ export const PullRequestDetail: React.FC<PullRequestDetailProps> = ({ repoPath, 
           </div>
         )}
 
+        {checks && checks.statuses.length > 0 && (
+          <div className="border border-border-subtle rounded-md divide-y divide-border-subtle" aria-label="Checks">
+            <div className="px-3 py-2 flex items-center gap-2 text-xs font-semibold text-txt-primary">
+              <RunStatusIcon
+                status={checks.state === 'pending' ? 'running' : 'completed'}
+                conclusion={checks.state === 'success' ? 'success' : checks.state === 'failure' ? 'failure' : null}
+                className="w-3.5 h-3.5"
+              />
+              <span>
+                {checks.state === 'success' ? 'All checks have passed' : checks.state === 'pending' ? 'Checks are running' : 'Some checks failed'}
+              </span>
+              {checks.required && <span className="ml-auto text-[10px] uppercase tracking-wide text-txt-tertiary">Required</span>}
+            </div>
+            {checks.statuses.map(st => (
+              <div key={st.context} className="px-3 py-1.5 flex items-center gap-2 text-xs min-w-0">
+                <RunStatusIcon
+                  status={st.state === 'pending' ? 'running' : 'completed'}
+                  conclusion={st.state === 'success' ? 'success' : st.state === 'pending' ? null : st.state === 'error' ? 'cancelled' : 'failure'}
+                  className="w-3.5 h-3.5 shrink-0"
+                />
+                <span className="font-medium text-txt-primary truncate">{st.context}</span>
+                <span className="text-txt-tertiary truncate">{st.description}</span>
+                {st.target_url && (
+                  <a href={st.target_url} className="ml-auto shrink-0 text-brand hover:underline">
+                    Details
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {checks?.required && checks.state !== 'success' && pr.state === 'open' && (
+          <p className="text-xs text-feedback-warning-text">
+            {checks.state === 'none'
+              ? 'This repository requires passing checks, and none have reported on the latest commit yet.'
+              : checks.state === 'pending'
+                ? 'Merging is available once the required checks pass.'
+                : 'Required checks failed. Push a fix to re-run them.'}
+          </p>
+        )}
+
         {pr.state === 'open' && canWrite && (
           <button
             onClick={handleMerge}
-            disabled={merging}
+            disabled={merging || Boolean(checks?.required && checks.state !== 'success')}
             className="px-4 py-2 rounded bg-brand text-white text-xs font-medium hover:bg-brand-hover disabled:opacity-50 transition shadow-sm flex items-center gap-2"
           >
             <GitMerge className="w-4 h-4" />

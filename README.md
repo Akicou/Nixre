@@ -10,7 +10,9 @@ Nixre runs its own backend (nixre-core, Node + PostgreSQL), its own git storage 
 - **Sovereign**: nixre-core owns auth, spaces, repos, git transport, pull requests, and account data. Core forge features run independently; optional GitHub integration uses GitHub APIs.
 - **Passkeys**: WebAuthn credentials stored server-side in your account. A passkey can open a new session.
 - **Git Smart HTTP + SSH**: clone and push over HTTPS (`/git/<space>/<repo>.git`) with session/PAT basic auth, or over SSH (`ssh://git@host:3022/<space>/<repo>.git`) with your registered keys.
-- **Pull requests**: create PRs between branches, view unified diffs per file, merge (`--no-ff`) or squash.
+- **Pull requests**: create PRs between branches, view unified diffs per file, merge (`--no-ff`) or squash. Each PR shows the checks on its latest commit, and **Require passing checks before merging** blocks the merge until they are green.
+- **Actions (CI/CD)**: workflows in `.nixre/workflows/*.yml` (`.gitea/workflows` and `.github/workflows` also work) run on push, pull request, cron schedule or a manual **Run workflow** button. Jobs run in throwaway containers with a real git checkout, with `needs`, matrices, `if:` expressions, job outputs, encrypted secrets masked in logs, live logs, cancel and re-run, commit statuses and README badges. `uses: nixre/deploy@v1` releases a deploy service once tests pass. See [docs/actions.md](docs/actions.md).
+- **Stars, downloads and a file finder**: star repos (the public home page sorts by stars), download any branch as ZIP or tar.gz, and press `t` in a repo to fuzzy-find a file.
 - **Signed webhooks**: subscribe `push` and `pull_request` events to external URLs. Deliveries are HMAC-SHA256 signed (`X-Nixre-Signature`) with retries and a delivery log.
 - **Spaces**: multi-tenant workspaces with membership-based access control.
 - **Public browsing**: public repos, orgs and user profiles (files, commits, branches, pull requests) are readable without an account, and public repos clone anonymously. Private content stays members-only.
@@ -297,6 +299,33 @@ The compose file also ships an optional token-based `nixre-tunnel` service (`--p
 | `TUNNEL_METRICS_URL` | — | cloudflared metrics endpoint; enables tunnel health sampling |
 | `TUNNEL_PROBE_MS` | `30s` | How often tunnel health is sampled |
 
+## Actions (CI/CD)
+
+Put a workflow in `.nixre/workflows/ci.yml` and push:
+
+```yaml
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest   # node:22-bookworm; any image works: `container: python:3.12`
+    steps:
+      - run: npm ci
+      - run: npm test
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: nixre/deploy@v1
+        with:
+          service: web
+```
+
+Runs appear in the repo's **Actions** tab with live logs. The runner is built into `nixre-core` and uses the same Docker socket as deployments, so there is nothing else to install. Syntax, security model, limits and the API: [docs/actions.md](docs/actions.md).
+
 ## Plugins
 
 Plugins ship inside the repo but stay dormant until the two-layer gate opens.
@@ -361,7 +390,7 @@ npm test
 
 ### API surface (all first-party)
 
-`/api/v1`: `login` `register` `logout` `user` `webauthn/login` `admin/users` `user/publickeys` `user/tokens` `user/memberships` `spaces` `repos` (+ `content` `raw` `commits` `branches` `pullreq` sub-resources) `prefs` `conversations` `passkeys`, plus `/git/{space}/{repo}.git` Smart HTTP.
+`/api/v1`: `login` `register` `logout` `user` `webauthn/login` `admin/users` `user/publickeys` `user/tokens` `user/memberships` `spaces` `repos` (+ `content` `raw` `commits` `branches` `pullreq` `actions` `statuses` `star` `archive` `files` sub-resources) `prefs` `conversations` `passkeys`, plus `/git/{space}/{repo}.git` Smart HTTP.
 
 ## License
 

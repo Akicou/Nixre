@@ -79,6 +79,9 @@ export interface Repository {
   created: number;
   updated: number;
   can_write?: boolean;
+  stars?: number;
+  starred?: boolean;
+  require_checks?: boolean;
 }
 
 export interface CommitIdentity {
@@ -498,7 +501,7 @@ class ApiClient {
     }
   }
 
-  async updateRepo(repoRef: string, update: { description?: string; is_public?: boolean }): Promise<Repository> {
+  async updateRepo(repoRef: string, update: { description?: string; is_public?: boolean; require_checks?: boolean }): Promise<Repository> {
     return this.request<Repository>(`/repos/${repoRef}/+`, {
       method: 'PATCH',
       body: JSON.stringify(update),
@@ -1086,6 +1089,168 @@ class ApiClient {
   spaceDeployments(space: string): Promise<SpaceDeploymentsBoard> {
     return this.request(`/spaces/${encodeURIComponent(space)}/deployments`);
   }
+
+  // --- Actions (CI/CD) ---------------------------------------------------------
+  listWorkflows(repoRef: string, ref?: string): Promise<{ ref: string; sha?: string; workflows: WorkflowInfo[] }> {
+    return this.request(`/repos/${repoRef}/+/actions/workflows${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`);
+  }
+
+  listRuns(repoRef: string, filter: { workflow?: string; branch?: string; event?: string; page?: number } = {}): Promise<{ runs: WorkflowRun[] }> {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(filter)) if (v !== undefined && v !== '') q.set(k, String(v));
+    const qs = q.toString();
+    return this.request(`/repos/${repoRef}/+/actions/runs${qs ? `?${qs}` : ''}`);
+  }
+
+  getRun(repoRef: string, number: number): Promise<{ run: WorkflowRun; jobs: WorkflowJob[]; can_write: boolean }> {
+    return this.request(`/repos/${repoRef}/+/actions/runs/${number}`);
+  }
+
+  async getJobLog(repoRef: string, number: number, jobId: number): Promise<string> {
+    const res = await fetch(`/api/v1/repos/${repoRef}/+/actions/runs/${number}/jobs/${jobId}/log`, { headers: this.getHeaders() });
+    if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+    return res.text();
+  }
+
+  cancelRun(repoRef: string, number: number): Promise<{ ok: boolean }> {
+    return this.request(`/repos/${repoRef}/+/actions/runs/${number}/cancel`, { method: 'POST' });
+  }
+
+  rerunRun(repoRef: string, number: number): Promise<WorkflowRun> {
+    return this.request(`/repos/${repoRef}/+/actions/runs/${number}/rerun`, { method: 'POST' });
+  }
+
+  dispatchWorkflow(repoRef: string, workflow: string, ref: string, inputs: Record<string, string>): Promise<WorkflowRun> {
+    return this.request(`/repos/${repoRef}/+/actions/dispatch`, {
+      method: 'POST',
+      body: JSON.stringify({ workflow, ref, inputs }),
+    });
+  }
+
+  listRepoSecrets(repoRef: string): Promise<{ key: string; updated: number }[]> {
+    return this.request(`/repos/${repoRef}/+/actions/secrets`);
+  }
+
+  setRepoSecret(repoRef: string, key: string, value: string): Promise<{ key: string }> {
+    return this.request(`/repos/${repoRef}/+/actions/secrets/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ value }),
+    });
+  }
+
+  deleteRepoSecret(repoRef: string, key: string): Promise<{ ok: boolean }> {
+    return this.request(`/repos/${repoRef}/+/actions/secrets/${encodeURIComponent(key)}`, { method: 'DELETE' });
+  }
+
+  getPullRequestChecks(repoRef: string, prNumber: number): Promise<PullRequestChecks> {
+    return this.request(`/repos/${repoRef}/+/pullreq/${prNumber}/checks`);
+  }
+
+  // --- stars, archives, file list ------------------------------------------------
+  starRepo(repoRef: string, starred: boolean): Promise<{ starred: boolean; stars: number }> {
+    return this.request(`/repos/${repoRef}/+/star`, { method: starred ? 'PUT' : 'DELETE' });
+  }
+
+  /** Download {ref}.zip|.tar.gz with the session token (works for private repos). */
+  async downloadArchive(repoRef: string, ref: string, format: 'zip' | 'tar.gz'): Promise<void> {
+    const res = await fetch(`/api/v1/repos/${repoRef}/+/archive/${ref.split('/').map(encodeURIComponent).join('/')}.${format}`, {
+      headers: this.getHeaders(),
+    });
+    if (!res.ok) throw new Error(`Download failed (HTTP ${res.status})`);
+    const blob = await res.blob();
+    const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') || '')?.[1] || `archive.${format}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  listFiles(repoRef: string, ref: string): Promise<{ ref: string; truncated: boolean; files: string[] }> {
+    return this.request(`/repos/${repoRef}/+/files?git_ref=${encodeURIComponent(ref)}`);
+  }
+}
+
+export interface WorkflowInput {
+  description: string;
+  required: boolean;
+  default: string;
+  type: 'string' | 'boolean' | 'choice' | 'number' | 'environment';
+  options: string[];
+}
+
+export interface WorkflowInfo {
+  path: string;
+  name: string;
+  error: string | null;
+  events: string[];
+  schedule: string[];
+  inputs: Record<string, WorkflowInput> | null;
+  jobs: { id: string; name: string }[];
+}
+
+export type RunConclusion = 'success' | 'failure' | 'cancelled' | 'skipped' | null;
+
+export interface WorkflowRun {
+  id: number;
+  number: number;
+  workflow_path: string;
+  workflow_name: string;
+  event: 'push' | 'pull_request' | 'schedule' | 'workflow_dispatch';
+  ref: string;
+  branch: string | null;
+  tag: string | null;
+  sha: string;
+  pr_number: number | null;
+  actor: string;
+  inputs: Record<string, string>;
+  status: 'queued' | 'running' | 'completed';
+  conclusion: RunConclusion;
+  error: string | null;
+  created: number;
+  started: number | null;
+  finished: number | null;
+}
+
+export interface WorkflowStep {
+  name: string;
+  status: 'queued' | 'running' | 'completed';
+  conclusion: RunConclusion;
+  started?: number | null;
+  finished?: number | null;
+}
+
+export interface WorkflowJob {
+  id: number;
+  key: string;
+  name: string;
+  matrix: Record<string, unknown>;
+  needs: string[];
+  image: string;
+  status: 'queued' | 'running' | 'completed';
+  conclusion: RunConclusion;
+  steps: WorkflowStep[];
+  started: number | null;
+  finished: number | null;
+}
+
+export interface CommitStatus {
+  context: string;
+  state: 'pending' | 'success' | 'failure' | 'error';
+  description: string;
+  target_url: string;
+  created: number;
+  updated: number;
+}
+
+export interface PullRequestChecks {
+  sha: string | null;
+  state: 'none' | 'pending' | 'success' | 'failure';
+  required: boolean;
+  statuses: CommitStatus[];
 }
 
 export const api = new ApiClient();

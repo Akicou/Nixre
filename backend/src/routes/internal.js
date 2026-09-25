@@ -69,38 +69,52 @@ export function internalRoutes(pool, authenticate) {
     res.json({ exists: true, read: rows[0].is_public || isMember, write: isMember });
   });
 
-  // POST /internal/push-event — called by the SSH-side post-receive hook
-  // and by smartHttp's own post-receive handling; fans out repo webhooks,
-  // then kicks auto-deploys for services watching the pushed branch.
+  // POST /internal/push-event — called by the post-receive hook for every
+  // updated branch or tag. Branches fan out repo webhooks and auto-deploys;
+  // both kinds start matching Actions workflows.
   api.post('/internal/push-event', internalAuth, async (req, res) => {
-    const { space, repo, branch, before, after, pusher } = req.body || {};
-    if (!space || !repo || !branch) {
-      res.status(400).json({ message: 'space, repo, branch required' });
+    const { space, repo, before, after, pusher } = req.body || {};
+    let { branch, ref } = req.body || {};
+    if (!ref && branch) ref = `refs/heads/${branch}`;
+    if (!branch && typeof ref === 'string' && ref.startsWith('refs/heads/')) branch = ref.slice(11);
+    const isTag = typeof ref === 'string' && ref.startsWith('refs/tags/');
+    if (!space || !repo || (!branch && !isTag)) {
+      res.status(400).json({ message: 'space, repo and a branch or tag ref are required' });
       return;
     }
     let deliveries = 0;
-    try {
-      const { fireWebhooks } = await import('../lib/webhooks.js');
-      deliveries = await fireWebhooks(pool, space, repo, {
-        type: 'push',
-        branch,
-        before: String(before || ''),
-        after: String(after || ''),
-        pusher: String(pusher || ''),
-      });
-    } catch (err) {
-      console.error('push-event failed:', err.message);
-      res.status(500).json({ message: 'webhook fanout failed' });
-      return;
+    if (branch) {
+      try {
+        const { fireWebhooks } = await import('../lib/webhooks.js');
+        deliveries = await fireWebhooks(pool, space, repo, {
+          type: 'push',
+          branch,
+          before: String(before || ''),
+          after: String(after || ''),
+          pusher: String(pusher || ''),
+        });
+      } catch (err) {
+        console.error('push-event failed:', err.message);
+        res.status(500).json({ message: 'webhook fanout failed' });
+        return;
+      }
+      // Webhook failures must not block deploys; deploy hiccups must not fail
+      // the push either — best-effort kick, engine records its own state.
+      try {
+        const { deployEngine } = await import('../lib/deployRuntime.js');
+        await deployEngine.maybeAutoDeploy({ space, repo, branch, after });
+      } catch (err) {
+        console.error('auto-deploy fanout failed:', err.message);
+      }
     }
-    // Webhook failures must not block deploys; deploy hiccups must not fail
-    // the push either — best-effort kick, engine records its own state.
-    try {
-      const { deployEngine } = await import('../lib/deployRuntime.js');
-      await deployEngine.maybeAutoDeploy({ space, repo, branch, after });
-    } catch (err) {
-      console.error('auto-deploy fanout failed:', err.message);
-    }
+    // Workflows are discovered and queued in the background so a push never
+    // waits on reading workflow files.
+    const actor = pusher && pusher !== 'webhook' ? String(pusher) : '';
+    void import('../lib/actionsRuntime.js')
+      .then(({ actionsEngine }) =>
+        actionsEngine.onPush({ space, repo, ref, before: String(before || ''), after: String(after || ''), pusher: actor }),
+      )
+      .catch(err => console.error('actions push fanout failed:', err.message));
     res.json({ deliveries });
   });
 

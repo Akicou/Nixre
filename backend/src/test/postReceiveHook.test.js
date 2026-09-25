@@ -38,7 +38,7 @@ async function fakeClient(dir, name, { exitCode = 0 } = {}) {
 
 // Drive the hook through a wrapper that feeds one ref update on stdin the way
 // git does. Running it with stdin left open makes `while read` block forever.
-async function pushRef({ clients, exitCode = 0, ref = 'refs/heads/main' }) {
+async function pushRef({ clients, exitCode = 0, ref = 'refs/heads/main', env = {} }) {
   const dir = await mkdtemp(path.join(tmpdir(), 'nixre-hook-'));
   const repo = path.join(dir, 'repos', 'acme', 'mono.git');
   const bin = path.join(dir, 'bin');
@@ -58,7 +58,7 @@ async function pushRef({ clients, exitCode = 0, ref = 'refs/heads/main' }) {
   await chmod(driver, 0o755);
 
   const result = await exec('/bin/sh', [driver], {
-    env: { PATH: bin, INTERNAL_TOKEN: 'test-token', CORE_URL: 'http://core:3002' },
+    env: { PATH: bin, INTERNAL_TOKEN: 'test-token', CORE_URL: 'http://core:3002', ...env },
   }).catch(err => ({ stdout: err.stdout || '', stderr: err.stderr || '', failed: true }));
 
   const calls = await readFile(path.join(bin, 'calls.txt'), 'utf8').catch(() => '');
@@ -93,8 +93,17 @@ test('no HTTP client at all still exits 0, so the push is never rejected', { ski
   assert.match(stderr, /could not notify core/, 'but says so');
 });
 
-test('the hook ignores tag pushes', { skip: !shellAvailable }, async () => {
+// Tags drive `on: push: tags:` workflows, but never webhooks or auto-deploy
+// (core only fans those out for branches).
+test('the hook reports tag pushes without a branch', { skip: !shellAvailable }, async () => {
   const { calls, stderr } = await pushRef({ clients: ['curl'], ref: 'refs/tags/v1.0.0' });
-  assert.equal(calls, '', 'a tag is not a branch update and notifies nothing');
-  assert.equal(stderr.trim(), '', 'and is not reported as a failure');
+  assert.match(calls, /"ref":"refs\/tags\/v1\.0\.0"/, 'the tag ref is in the payload');
+  assert.doesNotMatch(calls, /"branch"/, 'a tag is not reported as a branch');
+  assert.equal(stderr.trim(), '', 'a working notification is silent');
+});
+
+test('the hook reports who pushed, from HTTPS or SSH, and drops unsafe names', { skip: !shellAvailable }, async () => {
+  assert.match((await pushRef({ clients: ['curl'], env: { REMOTE_USER: 'Lyan' } })).calls, /"pusher":"Lyan"/);
+  assert.match((await pushRef({ clients: ['curl'], env: { NIXRE_PUSHER: 'bob' } })).calls, /"pusher":"bob"/);
+  assert.match((await pushRef({ clients: ['curl'], env: { REMOTE_USER: 'x"y' } })).calls, /"pusher":"webhook"/);
 });

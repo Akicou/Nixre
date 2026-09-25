@@ -4,6 +4,15 @@
 import express from 'express';
 import { diffRefs, mergeBranches, branchExists } from '../git/repo.js';
 import { loadReadableRepo } from '../lib/repoAccess.js';
+import { mergeBlockReason } from '../lib/commitStatus.js';
+import { resolveRef } from '../lib/deployDrivers.js';
+
+// Run pull_request workflows in the background; a PR action never waits on CI.
+function kickActions(space, repo, pr, action, actor) {
+  void import('../lib/actionsRuntime.js')
+    .then(({ actionsEngine }) => actionsEngine.onPullRequest({ space, repo, pr, action, actor }))
+    .catch(err => console.error('actions pull_request fanout failed:', err.message));
+}
 
 function now() {
   return Date.now();
@@ -137,6 +146,7 @@ export function pullRequestRoutes(pool, authenticate) {
     );
     await pool.query('UPDATE repos SET updated = $2 WHERE id = $1', [repo.id, ts]);
     const pr = await rowToPr(pool, rows[0]);
+    kickActions(repo.space_uid, repo.uid, rows[0], 'opened', req.auth.user.uid);
     // pull_request webhook event
     import('../lib/webhooks.js').then(({ fireWebhooks }) =>
       fireWebhooks(pool, repo.space_uid, repo.uid, {
@@ -241,6 +251,27 @@ export function pullRequestRoutes(pool, authenticate) {
       res.status(409).json({ message: `Pull request is already ${pr.state}` });
       return;
     }
+    // Branch protection: with "require passing checks" on, every commit
+    // status on the PR head must be green (and at least one must exist).
+    if (repo.require_checks) {
+      let headSha = null;
+      try {
+        ({ sha: headSha } = await resolveRef(repo.space_uid, repo.uid, `refs/heads/${pr.source_branch}`));
+      } catch {
+        /* source branch gone: the merge below fails with its own message */
+      }
+      if (headSha) {
+        const { rows: statuses } = await pool.query(
+          'SELECT context, state FROM commit_statuses WHERE repo_id = $1 AND sha = $2',
+          [repo.id, headSha],
+        );
+        const reason = mergeBlockReason(statuses);
+        if (reason) {
+          res.status(409).json({ message: reason, code: 'checks_required' });
+          return;
+        }
+      }
+    }
     const method = ['merge', 'squash'].includes(String(req.body?.method))
       ? String(req.body?.method)
       : 'merge';
@@ -294,13 +325,15 @@ export function pullRequestRoutes(pool, authenticate) {
       return;
     }
     const { rows } = await pool.query(
-      'UPDATE pull_requests SET state = $3, updated = $4 WHERE repo_id = $1 AND number = $2 AND state <> $3 RETURNING *',
+      // A merged PR is final; only open <-> closed may change.
+      "UPDATE pull_requests SET state = $3, updated = $4 WHERE repo_id = $1 AND number = $2 AND state <> $3 AND state <> 'merged' RETURNING *",
       [repo.id, Number(req.params.number), state, now()],
     );
     if (rows.length === 0) {
-      res.status(404).json({ message: 'Pull request not found or already in that state' });
+      res.status(404).json({ message: 'Pull request not found, merged, or already in that state' });
       return;
     }
+    if (state === 'open') kickActions(repo.space_uid, repo.uid, rows[0], 'reopened', req.auth.user.uid);
     res.json(await rowToPr(pool, rows[0]));
   });
 

@@ -15,7 +15,9 @@ import {
   ArrowLeft,
   FileCode,
   LayoutGrid,
-  Settings
+  Settings,
+  PlayCircle,
+  Search
 } from 'lucide-react';
 import { api, Repository, Commit, Branch, PullRequest, CommitDetail, User } from '../lib/api';
 import { resolveNodeType } from '../lib/repoPath';
@@ -28,6 +30,8 @@ import { Markdown, isMarkdownFile } from '../components/Markdown';
 import { Avatar } from '../components/Avatar';
 import { DeploymentsSection } from '../pages/DeploymentsPage';
 import { RepositoryHeader } from '../components/RepositoryHeader';
+import { ActionsPanel } from '../components/ActionsPanel';
+import { FileFinder, isTypingTarget } from '../components/FileFinder';
 import { RepositoryFileTree } from '../components/RepositoryFileTree';
 import { createRepositoryTreeLoader } from '../lib/repositoryTree';
 import { REPOSITORY_LAYOUTS, parseRepositoryLayout, useRepositoryLayout } from '../lib/repositoryLayout';
@@ -48,6 +52,8 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
   const prParam = searchParams.get('pr');
   const commitParam = searchParams.get('commit');
   const selectedPrNumber: number | 'new' | null = prParam === 'new' ? 'new' : prParam ? Number(prParam) : null;
+  const runParam = Number(searchParams.get('run')) || null;
+  const [finderOpen, setFinderOpen] = useState(false);
 
   const [repo, setRepo] = useState<Repository | null>(null);
   const currentBranch = searchParams.get('branch') || repo?.default_branch || 'main';
@@ -186,6 +192,18 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
     return <span>{name}</span>;
   };
 
+  // "t" opens the file finder anywhere in the repo, like on GitHub.
+  useEffect(() => {
+    if (!repo) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 't' || e.ctrlKey || e.metaKey || e.altKey || isTypingTarget(e.target)) return;
+      e.preventDefault();
+      setFinderOpen(true);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [repo]);
+
   if (loading && !repo) {
     return <div className="max-w-7xl mx-auto px-4 py-16 text-center text-sm text-txt-tertiary">Loading repository...</div>;
   }
@@ -213,7 +231,18 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
 
   return (
     <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 w-full min-w-0">
-      <RepositoryHeader repo={repo} space={space} branchCount={branches.length} />
+      <RepositoryHeader repo={repo} space={space} branchCount={branches.length} signedIn={!!user} gitRef={currentBranch} />
+      {finderOpen && (
+        <FileFinder
+          repoPath={repoPath}
+          gitRef={currentBranch}
+          onClose={() => setFinderOpen(false)}
+          onPick={path => {
+            setFinderOpen(false);
+            goToNode(path, 'blob');
+          }}
+        />
+      )}
       {/* Tabs — same pattern as user/org profile views */}
       <nav className="border-b border-border-subtle flex items-end gap-1 -mb-px overflow-x-auto">
         <button
@@ -249,6 +278,16 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
               {repo.num_open_pulls}
             </span>
           )}
+        </button>
+
+        <button
+          onClick={() => { setSearchParams({ tab: 'actions' }); }}
+          className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
+            activeTab === 'actions' ? 'border-brand text-txt-primary' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
+        >
+          <PlayCircle className="w-4 h-4" />
+          <span>Actions</span>
         </button>
 
         <button
@@ -343,6 +382,16 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setFinderOpen(true)}
+                title="Go to file (t)"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-canvas border border-border-subtle text-xs font-medium text-txt-primary hover:bg-surface-subtle transition shrink-0"
+              >
+                <Search className="w-3.5 h-3.5" />
+                Go to file
+                <kbd className="ml-1 text-[10px] font-mono text-txt-tertiary border border-border-subtle rounded px-1">t</kbd>
+              </button>
               <label className="inline-flex items-center gap-2 text-xs text-txt-secondary">
                 <LayoutGrid className="w-3.5 h-3.5" /><span>Layout</span>
                 <select aria-label="Repository layout" aria-describedby="repository-layout-description" value={layout} onChange={e => { chooseLayout(parseRepositoryLayout(e.target.value)); setDeploymentsExpanded(false); }} className="rounded-md border border-border-subtle bg-surface-canvas px-2 py-1.5 text-txt-primary">
@@ -631,6 +680,18 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
             </div>
           ))}
         </div>
+      )}
+
+      {/* TAB CONTENT: ACTIONS */}
+      {activeTab === 'actions' && (
+        <ActionsPanel
+          repoPath={repoPath}
+          defaultBranch={repo.default_branch}
+          canWrite={repo.can_write === true}
+          signedIn={!!user}
+          selectedRun={runParam}
+          onSelectRun={n => setSearchParams(n ? { tab: 'actions', run: String(n) } : { tab: 'actions' })}
+        />
       )}
 
       {/* TAB CONTENT: SETTINGS */}

@@ -92,6 +92,7 @@ const targets = {
   user_stt: ['api_key_enc', ['user_uid']],
   service_env_vars: ['value_enc', ['service_id', 'key']],
   repo_webhooks: ['secret_enc', ['id']],
+  repo_secrets: ['value_enc', ['repo_id', 'key']],
 };
 
 function fixturePool({ corrupt = false, failReadback = false, applied = true } = {}) {
@@ -101,6 +102,7 @@ function fixturePool({ corrupt = false, failReadback = false, applied = true } =
     user_secrets: [{ user_uid: 'u', kind: 'github', secret_enc: FIXTURE }],
     user_stt: [{ user_uid: 'u', api_key_enc: FIXTURE }],
     service_env_vars: [{ service_id: 1, key: 'PASSWORD', value_enc: FIXTURE }],
+    repo_secrets: [{ repo_id: 1, key: 'DEPLOY_TOKEN', value_enc: FIXTURE }],
     repo_webhooks: [{ id: 1, secret_enc: null, secret: 'legacy-hook-key' },
       { id: 2, secret_enc: corrupt ? 'broken.ciphertext.fixture' : encryptSecret('current-hook'), secret: '' }],
   };
@@ -139,7 +141,7 @@ function fixturePool({ corrupt = false, failReadback = false, applied = true } =
 test('migration atomically rewrites every encrypted store and plaintext webhooks, then is idempotent', async () => {
   const pool = fixturePool({ applied: false });
   const result = await migrate(pool);
-  assert.deepEqual(result, { verified: 7, rewritten: 6 });
+  assert.deepEqual(result, { verified: 8, rewritten: 7 });
   assert.match(pool.queries[1], /pg_advisory_xact_lock.*schema-migrations/);
   assert.equal(pool.queries.at(-1), 'COMMIT');
   assert.equal(pool.released, true);
@@ -152,7 +154,7 @@ test('migration atomically rewrites every encrypted store and plaintext webhooks
     }
   }
   const after = structuredClone(pool.data);
-  assert.deepEqual(await migrate(pool), { verified: 7, rewritten: 0 });
+  assert.deepEqual(await migrate(pool), { verified: 8, rewritten: 0 });
   assert.deepEqual(pool.data, after);
 });
 
@@ -175,10 +177,10 @@ test('versioned key and salt rotation is verified before the legacy key can be r
   process.env.NIXRE_SECRET_SALT_LEGACY = 'nixre.instance.secret.v1';
   process.env.AI_SECRET = OLD_KEY;
   process.env.NIXRE_SECRET_SALT = 'new-test-salt';
-  assert.deepEqual(await migrate(pool), { verified: 7, rewritten: 7 });
+  assert.deepEqual(await migrate(pool), { verified: 8, rewritten: 8 });
   delete process.env.AI_SECRET_LEGACY;
   delete process.env.NIXRE_SECRET_SALT_LEGACY;
-  assert.deepEqual(await migrate(pool), { verified: 7, rewritten: 0 });
+  assert.deepEqual(await migrate(pool), { verified: 8, rewritten: 0 });
 });
 
 test('updater rollback metadata fails closed for lost COMMIT responses and missing transaction guards', async () => {

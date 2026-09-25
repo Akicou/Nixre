@@ -6,7 +6,8 @@ import {
   Layers,
   Search,
   Terminal,
-  ArrowRight
+  ArrowRight,
+  Star
 } from 'lucide-react';
 import { api, Repository, Space, User } from '../lib/api';
 import { Avatar } from '../components/Avatar';
@@ -21,6 +22,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   const [repos, setRepos] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  // Guests land on an explore view, where the most-starred repos lead.
+  const [sort, setSort] = useState<'name' | 'stars'>(user ? 'name' : 'stars');
 
   useEffect(() => {
     Promise.all([
@@ -35,7 +38,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
 
   const quickStartRepoPath = repos[0]?.path || 'your-space/your-repo';
 
-  const filteredRepos = repos.filter(r =>
+  const filteredRepos = [...repos]
+    .sort((a, b) => (sort === 'stars' ? (b.stars ?? 0) - (a.stars ?? 0) : 0) || a.path.localeCompare(b.path))
+    .filter(r =>
     r.uid.toLowerCase().includes(search.toLowerCase()) || 
     (r.description && r.description.toLowerCase().includes(search.toLowerCase())) ||
     (r.path && r.path.toLowerCase().includes(search.toLowerCase()))
@@ -85,7 +90,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
         {/* Main Repositories List */}
         <div className="lg:col-span-8 space-y-6">
           {/* Search Bar */}
-          <div className="relative">
+          <div className="flex gap-2">
+          <div className="relative flex-1 min-w-0">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-txt-tertiary" />
             <input
               type="text"
@@ -94,6 +100,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
               onChange={e => setSearch(e.target.value)}
               className="w-full pl-9 pr-4 py-2 rounded-md bg-surface-canvas border border-border-subtle text-txt-primary placeholder:text-txt-tertiary text-sm focus:border-brand transition"
             />
+          </div>
+          <select
+            aria-label="Sort repositories"
+            value={sort}
+            onChange={e => setSort(e.target.value as 'name' | 'stars')}
+            className="rounded-md border border-border-subtle bg-surface-canvas px-2 text-sm text-txt-primary"
+          >
+            <option value="name">Name</option>
+            <option value="stars">Most starred</option>
+          </select>
           </div>
 
           {user && <DeploymentsOverview />}
@@ -146,6 +162,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
 
                     <div className="flex items-center gap-4 text-xs text-txt-tertiary font-mono pt-1">
                       <span>branch: {repo.default_branch || 'main'}</span>
+                      {(repo.stars ?? 0) > 0 && (
+                        <span className="flex items-center gap-1" aria-label={`${repo.stars} stars`}>
+                          <Star className="w-3.5 h-3.5" />
+                          <span>{repo.stars}</span>
+                        </span>
+                      )}
                       {repo.num_open_pulls > 0 && (
                         <span className="flex items-center gap-1 text-txt-open">
                           <GitPullRequest className="w-3.5 h-3.5" />

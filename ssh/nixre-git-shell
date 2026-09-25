@@ -83,4 +83,6 @@ if [ "$ACTION" = "write" ] && [ "$WRITE" != "true" ]; then
   exit 1
 fi
 
+# The post-receive hook reports who pushed.
+export NIXRE_PUSHER="$OWNER"
 exec git shell -c "$VERB '$REPOS/$SPACE/$REPO.git'"

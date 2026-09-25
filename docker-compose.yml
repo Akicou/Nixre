@@ -133,6 +133,17 @@ services:
       NIXRE_VERIFY_RESOLVERS: ${NIXRE_VERIFY_RESOLVERS:-1.1.1.1,8.8.8.8,9.9.9.9}
       BLOCKED_PEER_NAMES: ${BLOCKED_PEER_NAMES:-nixre-core,nixre-db,nixre-ssh,nixre-web,nixre-tunnel}
       NIXRE_AI_PRIVATE_ORIGINS: ${NIXRE_AI_PRIVATE_ORIGINS:-}
+      # --- Actions (CI/CD) -----------------------------------------------
+      # Jobs run in throwaway containers on NIXRE_ACTIONS_NETWORK (default:
+      # the apps network; never the database network).
+      NIXRE_PUBLIC_URL: ${NIXRE_PUBLIC_URL:-}
+      NIXRE_ACTIONS_NETWORK: ${NIXRE_ACTIONS_NETWORK:-}
+      NIXRE_ACTIONS_CONCURRENCY: ${NIXRE_ACTIONS_CONCURRENCY:-2}
+      NIXRE_ACTIONS_DEFAULT_IMAGE: ${NIXRE_ACTIONS_DEFAULT_IMAGE:-node:22-bookworm}
+      NIXRE_ACTIONS_MEMORY: ${NIXRE_ACTIONS_MEMORY:-4g}
+      NIXRE_ACTIONS_CPUS: ${NIXRE_ACTIONS_CPUS:-2}
+      NIXRE_ACTIONS_JOB_TIMEOUT_MIN: ${NIXRE_ACTIONS_JOB_TIMEOUT_MIN:-60}
+      NIXRE_ACTIONS_MAX_TIMEOUT_MIN: ${NIXRE_ACTIONS_MAX_TIMEOUT_MIN:-360}
     group_add:
       - ${DOCKER_GID:-999}
       - "1000" # Read the optional host updater control socket/key.

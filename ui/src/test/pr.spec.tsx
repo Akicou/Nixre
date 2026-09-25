@@ -10,6 +10,7 @@ const { api } = vi.hoisted(() => ({
     getPullRequest: vi.fn(),
     getPullRequestDiff: vi.fn(),
     mergePullRequest: vi.fn(),
+    getPullRequestChecks: vi.fn(),
   },
 }));
 vi.mock('../lib/api', () => ({ api }));
@@ -19,6 +20,7 @@ const branches = [branch, { name: 'feature', sha: '66666666666666666666666666666
 describe('PullRequestForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.getPullRequestChecks.mockResolvedValue({ sha: null, state: 'none', required: false, statuses: [] });
   });
 
   function mount(onCreated = vi.fn(), onCancel = vi.fn()) {
@@ -72,6 +74,7 @@ describe('PullRequestForm', () => {
 describe('PullRequestDetail', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.getPullRequestChecks.mockResolvedValue({ sha: null, state: 'none', required: false, statuses: [] });
   });
 
   function mount(onBack = vi.fn()) {
