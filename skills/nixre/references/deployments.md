@@ -2,6 +2,10 @@
 
 Turn any repo subdirectory into a long-running Docker service. **You bring the Dockerfile**; Nixre only detects and builds what you point at. A repo can host **multiple** services (same Dockerfile, different env/ports/branches).
 
+> **Driving this from an agent / a terminal?** Every capability below is a
+> JSON API call — see [deploy-api.md](deploy-api.md) for the full route list,
+> what each one needs, and how to read a failed deployment's build log.
+
 ## Where they live in the UI
 
 Deployments are **visible immediately inside the repo's Code view**, beside an expandable file tree on desktop. The **Layout** selector saves an account-wide preference: Split view (default, preview below), Three columns, Preview left, or Stacked. Three columns stays side by side at every width, with horizontal workspace scrolling on small screens. Opening a service or creation form can expand its workspace. Existing `/{space}/{repo}?deploys=1` and legacy `?tab=deployments` links remain supported.
@@ -27,6 +31,7 @@ Each `deploy_service` row pins: `name` (UNIQUE per repo), `root_dir`, `dockerfil
 - Push to the watched branch auto-deploys if `auto_deploy` is on, or deploy manually at any ref/sha.
 - Build stream live over SSE. Releases are blue/green: the new container must answer **health probes** before it gets traffic.
 - **A failed build/release never touches the serving container** — traffic stays on the previous healthy release and a red banner warns (`last_failed_deployment_id`). From history: inspect logs, redeploy, roll back to an older healthy release, or delete records.
+- **Two logs per deployment.** `build_log` is the docker build output. `runtime_log` is the container's own stdout/stderr, tailed **before** the failed container is removed — for a release that built fine but never answered its health probe that is the only place the reason exists (missing env var, crashed migration, app listening on `127.0.0.1`). Both need write access: build output echoes secrets too often to serve at repo-read level.
 - On restart (server reboot included), core reconciles and recreates service containers from stored images.
 
 ## Domains & routing

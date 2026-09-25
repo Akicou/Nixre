@@ -1045,6 +1045,17 @@ const DeploysPanel: React.FC<{ service: DeployService; onChanged: () => void }> 
   );
 };
 
+// A release failure ("app did not answer on port …") leaves a build log that
+// succeeded, so showing only build output told the reader nothing. The
+// container's own output is appended when the backend captured it.
+export function logViewerText(detail: Pick<DeploymentDetail, 'error' | 'build_log' | 'runtime_log'>): string {
+  const parts: string[] = [];
+  if (detail.error) parts.push(`ERROR: ${detail.error}`);
+  parts.push(detail.build_log ? `--- build log ---\n${detail.build_log}` : '(no build output recorded)');
+  if (detail.runtime_log) parts.push(`--- container output ---\n${detail.runtime_log}`);
+  return parts.join('\n\n');
+}
+
 const LogViewer: React.FC<{ detail: DeploymentDetail; onClose: () => void }> = ({ detail, onClose }) => (
   <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
     <div className="bg-surface-base border border-border-subtle rounded-xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -1056,7 +1067,7 @@ const LogViewer: React.FC<{ detail: DeploymentDetail; onClose: () => void }> = (
         <button onClick={onClose} className="text-txt-tertiary hover:text-txt-primary"><X className="w-4 h-4" /></button>
       </div>
       <div className="overflow-auto p-4 text-[11px] font-mono leading-relaxed whitespace-pre-wrap text-txt-secondary flex-1 bg-black/20">
-        {(detail.error ? `ERROR: ${detail.error}\n\n` : '') + (detail.build_log || '(no build output recorded)')}
+        {logViewerText(detail)}
       </div>
     </div>
   </div>

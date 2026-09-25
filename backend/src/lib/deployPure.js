@@ -150,6 +150,42 @@ export function statusClass(code) {
   return 'none';
 }
 
+// Docker's non-TTY log endpoint multiplexes stdout/stderr into 8-byte framed
+// chunks: [stream(1), 0,0,0, length(4 BE)] followed by `length` payload bytes.
+// A TTY container streams raw text instead, so a buffer that does not look
+// framed is passed through untouched.
+export function demuxDockerLog(input) {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input ?? ''), 'utf8');
+  const parts = [];
+  let offset = 0;
+  while (offset + 8 <= buf.length) {
+    const stream = buf[offset];
+    // Valid frames use stream 0..2 and three zero pad bytes. Anything else
+    // means this is raw (TTY) output — bail out and return it verbatim.
+    if (stream > 2 || buf[offset + 1] !== 0 || buf[offset + 2] !== 0 || buf[offset + 3] !== 0) {
+      return buf.toString('utf8');
+    }
+    const length = buf.readUInt32BE(offset + 4);
+    if (offset + 8 + length > buf.length) break; // truncated tail
+    parts.push(buf.subarray(offset + 8, offset + 8 + length).toString('utf8'));
+    offset += 8 + length;
+  }
+  if (parts.length === 0) return buf.toString('utf8');
+  return parts.join('');
+}
+
+// Keep the LAST `lines` lines of a log. Failures live at the end of a build, so
+// tailing (never heading) is what an agent needs. `lines <= 0` means "all".
+export function tailLines(text, lines) {
+  const body = String(text ?? '');
+  if (!Number.isFinite(lines) || lines <= 0) return body;
+  const parts = body.split('\n');
+  // A trailing newline produces an empty final element — don't spend a line on it.
+  if (parts.length > 0 && parts.at(-1) === '') parts.pop();
+  if (parts.length <= lines) return parts.join('\n');
+  return parts.slice(-lines).join('\n');
+}
+
 // Service name doubles as a DNS label — keep it slug-safe.
 export function sanitizeServiceName(name) {
   const slug = String(name || '')

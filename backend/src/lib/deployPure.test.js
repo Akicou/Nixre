@@ -15,6 +15,8 @@ import {
   bucketizeUptime,
   statusClass,
   sanitizeServiceName,
+  demuxDockerLog,
+  tailLines,
 } from './deployPure.js';
 
 test('normalizeRootDir cleans separators and stays inside the repo', () => {
@@ -231,4 +233,41 @@ test('resolveRoute still prefers an exact custom domain', () => {
   assert.equal(resolveRoute('API.Example.com', routes), 7, 'host matching is case-insensitive');
   assert.equal(resolveRoute('svc-7.apps.example.com:443', routes), 7, 'port is stripped');
   assert.equal(resolveRoute('nope.example.com', routes), null);
+});
+
+function frame(stream, text) {
+  const payload = Buffer.from(text, 'utf8');
+  const header = Buffer.alloc(8);
+  header[0] = stream;
+  header.writeUInt32BE(payload.length, 4);
+  return Buffer.concat([header, payload]);
+}
+
+test('demuxDockerLog unwraps multiplexed frames and keeps stderr interleaved', () => {
+  const buf = Buffer.concat([
+    frame(1, 'listening on 8080\n'),
+    frame(2, 'KeyError: DATABASE_URL\n'),
+    frame(1, 'bye\n'),
+  ]);
+  assert.equal(demuxDockerLog(buf), 'listening on 8080\nKeyError: DATABASE_URL\nbye\n');
+});
+
+test('demuxDockerLog passes raw TTY output through untouched', () => {
+  assert.equal(demuxDockerLog(Buffer.from('plain tty output\n')), 'plain tty output\n');
+  assert.equal(demuxDockerLog(''), '');
+  assert.equal(demuxDockerLog(null), '');
+});
+
+test('demuxDockerLog drops a truncated trailing frame rather than emitting garbage', () => {
+  const partial = Buffer.concat([frame(1, 'first\n'), frame(1, 'second\n').subarray(0, 10)]);
+  assert.equal(demuxDockerLog(partial), 'first\n');
+});
+
+test('tailLines keeps the end of a log, where failures live', () => {
+  const log = 'a\nb\nc\nd\n';
+  assert.equal(tailLines(log, 2), 'c\nd');
+  assert.equal(tailLines(log, 99), 'a\nb\nc\nd');
+  assert.equal(tailLines(log, 0), log, '0 means the whole thing');
+  assert.equal(tailLines(log, NaN), log);
+  assert.equal(tailLines(null, 3), '');
 });

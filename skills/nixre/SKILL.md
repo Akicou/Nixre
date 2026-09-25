@@ -53,6 +53,7 @@ systemctl --user status cloudflared-<name>    # tunnel up?
 
 - **Repos / spaces / PRs / webhooks** — [references/forge.md](references/forge.md)
 - **Deployments** (services, env vars, domains, auto-DNS, TLS gate) — [references/deployments.md](references/deployments.md)
+- **Deployment API for agents** (create a service, deploy, read a failed build log — no browser) — [references/deploy-api.md](references/deploy-api.md)
 - **AI assistant** (providers, models, enabled/disabled, sandbox) — [references/ai-assistant.md](references/ai-assistant.md)
 - **Admin & servers** (users, registration, backups, logs, updates) — [references/administration.md](references/administration.md)
 - **Troubleshooting** (bug patterns, stale cache, TLS, tunnels) — [references/troubleshooting.md](references/troubleshooting.md)

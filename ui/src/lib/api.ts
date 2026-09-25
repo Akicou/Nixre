@@ -1365,6 +1365,11 @@ export interface DeploymentRecord {
 export interface DeploymentDetail extends DeploymentRecord {
   image_tag: string | null;
   build_log: string;
+  // Container stdout/stderr captured when a release failed its health probe —
+  // empty for a build failure (the reason is in build_log) and for viewers
+  // without write access (logs can echo secrets).
+  runtime_log?: string;
+  logs_readable?: boolean;
 }
 
 export interface HttpLogRow {

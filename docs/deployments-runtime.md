@@ -102,3 +102,35 @@ service spawns *sibling* containers (`docker run -v` resolves against the
 
 - `DEPLOY_PROXY_TIMEOUT_MS` (default 120000) — idle timeout for proxied app
   traffic; raise it for streaming AI services that pause between tokens.
+
+## Diagnosing a release that never answered
+
+`health_path` / `health_timeout_ms` decide whether a container gets traffic, so
+they are also the most common reason a deploy fails with
+
+```
+Health check failed: app did not answer on port 8080 / within 30s (no response)
+```
+
+That message means the image built. The reason lives in the container's own
+output, which the failure handler now tails into `deployments.runtime_log`
+**before** removing the container (migration 032) — previously it was discarded
+and the only thing left to read was a build log that had succeeded.
+
+```bash
+# the failed deployment's build output, then its container output
+curl -H "Authorization: Bearer $TOKEN" \
+  ".../+/deployments/services/$ID/deployments/failed/log?stream=all"
+
+# the container serving right now
+curl -H "Authorization: Bearer $TOKEN" ".../+/deployments/services/$ID/logs?tail=200"
+```
+
+Both need **write access** on the owning space: build output regularly echoes
+secrets, so repo-read is the wrong gate for it. See
+`skills/nixre/references/deploy-api.md` for the full route list.
+
+Usual causes, in order: the app bound `127.0.0.1` instead of `0.0.0.0`; a
+`container_port` that does not match what the app listens on; a startup that
+takes longer than the health budget; a missing env var (env changes only apply
+on the next deploy).
