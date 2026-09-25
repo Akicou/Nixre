@@ -694,11 +694,31 @@ class ApiClient {
     return Array.isArray(res) ? res : [];
   }
 
-  /** Branch-to-branch diff without a PR (assistant description drafting). */
+  /**
+   * Branch-to-branch diff without a PR (assistant description drafting).
+   * `base` is the branch being merged INTO (the target); `head` carries the new
+   * work (the source). Three-dot semantics against base's current head, so
+   * anything already merged is excluded. Getting these the wrong way round
+   * describes the target instead of the change.
+   */
   async compareBranches(repoRef: string, base: string, head: string): Promise<FileDiff[]> {
     const res = await this.request<FileDiff[]>(
       `/repos/${repoRef}/+/compare?base=${encodeURIComponent(base)}&head=${encodeURIComponent(head)}`,
     );
+    return Array.isArray(res) ? res : [];
+  }
+
+  /** Commits in `head` that `base` does not have yet, newest first. */
+  async compareCommits(repoRef: string, base: string, head: string): Promise<Commit[]> {
+    const res = await this.request<Commit[]>(
+      `/repos/${repoRef}/+/compare/commits?base=${encodeURIComponent(base)}&head=${encodeURIComponent(head)}`,
+    );
+    return Array.isArray(res) ? res : [];
+  }
+
+  /** Commits a PR has still to land, recomputed against the target's head. */
+  async getPullRequestCommits(repoRef: string, prNumber: number): Promise<Commit[]> {
+    const res = await this.request<Commit[]>(`/repos/${repoRef}/+/pullreq/${prNumber}/commits`);
     return Array.isArray(res) ? res : [];
   }
 

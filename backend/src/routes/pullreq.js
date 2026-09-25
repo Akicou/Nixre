@@ -2,7 +2,7 @@
 // Wire shapes match the UI (PullRequest interface, base64 patches).
 
 import express from 'express';
-import { aheadBehind, diffRefs, mergeBranches, branchExists } from '../git/repo.js';
+import { aheadBehind, commitsAhead, diffRefs, mergeBranches, branchExists } from '../git/repo.js';
 import { loadReadableRepo } from '../lib/repoAccess.js';
 import { mergeBlockReason } from '../lib/commitStatus.js';
 import { resolveRef } from '../lib/deployDrivers.js';
@@ -237,6 +237,48 @@ export function pullRequestRoutes(pool, authenticate) {
     }
   });
 
+  // GET /repos/{space}/{repo}/+/pullreq/{n}/commits — the commits still to
+  // land, recomputed against the target's current head on every request. A PR
+  // that was partly merged already reports only what is left.
+  api.get('/repos/:space/:repo/\\+/pullreq/:number/commits', optionalAuth, async (req, res) => {
+    const repo = await loadRepo(req, res);
+    if (!repo) return;
+    const { rows } = await pool.query(
+      'SELECT * FROM pull_requests WHERE repo_id = $1 AND number = $2',
+      [repo.id, Number(req.params.number)],
+    );
+    const pr = rows[0];
+    if (!pr) {
+      res.status(404).json({ message: 'Pull request not found' });
+      return;
+    }
+    try {
+      res.json(await commitsAhead(repo.space_uid, repo.uid, pr.target_branch, pr.source_branch));
+    } catch (err) {
+      console.error('pr commits failed:', err.message);
+      res.json([]);
+    }
+  });
+
+  // GET /repos/{space}/{repo}/+/compare/commits?base=&head= — commits in `head`
+  // that `base` does not have yet (used by the description generator).
+  api.get('/repos/:space/:repo/\\+/compare/commits', optionalAuth, async (req, res) => {
+    const repo = await loadRepo(req, res);
+    if (!repo) return;
+    const base = String(req.query.base || '');
+    const head = String(req.query.head || '');
+    if (!base || !head) {
+      res.status(400).json({ message: 'base and head are required' });
+      return;
+    }
+    try {
+      res.json(await commitsAhead(repo.space_uid, repo.uid, base, head));
+    } catch (err) {
+      console.error('compare commits failed:', err.message);
+      res.json([]);
+    }
+  });
+
   // POST /repos/{space}/{repo}/+/pullreq/{n}/merge {method}
   api.post('/repos/:space/:repo/\\+/pullreq/:number/merge', auth, async (req, res) => {
     const repo = await loadRepo(req, res);
@@ -290,7 +332,16 @@ export function pullRequestRoutes(pool, authenticate) {
       });
     } catch (err) {
       console.error('merge failed:', err.message);
-      res.status(422).json({ message: 'Merge failed (conflicts?) — branches diverged irreconcilably.' });
+      // Distinct causes get distinct answers: a real conflict is the user's
+      // problem to resolve, a missing branch or a push race is not, and both
+      // used to be reported as "branches diverged irreconcilably".
+      const status = err.code === 'merge_conflict' ? 409 : err.code === 'missing_branch' ? 400 : 422;
+      res.status(status).json({
+        message: err.code === 'merge_conflict'
+          ? `${err.message}. Rebase or merge '${pr.target_branch}' into '${pr.source_branch}' and resolve the conflicts first.`
+          : err.message,
+        code: err.code || 'merge_failed',
+      });
       return;
     }
 

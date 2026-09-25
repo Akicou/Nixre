@@ -34,24 +34,46 @@ export const PullRequestForm: React.FC<PullRequestFormProps> = ({ repoPath, bran
     setGenerating(true);
     setError('');
     try {
-      // Give the model the actual branch diff so the description reflects
-      // reality instead of just the title.
+      // The basis is what is NOT yet in the target: `compareBranches(base =
+      // target, head = source)` is a three-dot comparison against the target's
+      // CURRENT head, and the commit list is the same range. Both are fetched
+      // fresh on every click, so work that has already been merged is never
+      // described again. (These arguments used to be swapped, which asked for
+      // the target's own changes — usually nothing — and left the model with
+      // only the title to go on, producing the same generic text every time.)
       let diffText = '';
+      let commitText = '';
+      let haveBasis = false;
       try {
-        const files = await api.compareBranches(repoPath, sourceBranch, targetBranch);
+        const [files, commits] = await Promise.all([
+          api.compareBranches(repoPath, targetBranch, sourceBranch),
+          api.compareCommits(repoPath, targetBranch, sourceBranch),
+        ]);
         diffText = files.map(f => `--- ${f.path} (${f.status}, +${f.additions}/-${f.deletions}) ---`).join('\n');
-      } catch {}
+        commitText = commits.map(c => `- ${c.title}`).join('\n');
+        haveBasis = files.length > 0 || commits.length > 0;
+        if (!haveBasis) {
+          setError(`'${sourceBranch}' has nothing that is not already in '${targetBranch}' — nothing left to describe.`);
+          return;
+        }
+      } catch {
+        // Comparison unavailable: fall through and draft from the title alone.
+      }
       let out = '';
       await streamAiChat(
         [
           {
             role: 'system',
             content:
-              'You draft pull request descriptions. Output ONLY Markdown: a one-paragraph summary, then "## Changes" bullets, then "## Verification". Under 200 words. No preamble.',
+              'You draft pull request descriptions. You are given ONLY the commits and files that are not yet in the target branch; anything already merged is deliberately absent, so never describe work outside the given basis. Output ONLY Markdown: a one-paragraph summary, then "## Changes" bullets, then "## Verification". Under 200 words. No preamble.',
           },
           {
             role: 'user',
-            content: `Repo: ${repoPath}\nBranches: ${sourceBranch} → ${targetBranch}\nTitle: ${title || '(untitled)'}\n${diffText ? `Changed files:\n${diffText}` : ''}\n\nDraft the PR description.`,
+            content: `Repo: ${repoPath}\nMerging ${sourceBranch} → ${targetBranch}\nTitle: ${title || '(untitled)'}\n${
+              haveBasis
+                ? `\nThese are the only changes not yet in '${targetBranch}'.\n${commitText ? `\nUnmerged commits (${commitText.split('\n').length}):\n${commitText}\n` : ''}${diffText ? `\nChanged files:\n${diffText}\n` : ''}`
+                : ''
+            }\nDraft the PR description.`,
           },
         ],
         { model: profile.model, reasoningLevel: 'none' },

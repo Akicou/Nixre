@@ -588,27 +588,113 @@ export async function diffRefs(space, repo, target, source) {
   }));
 }
 
+/** True when every commit of `source` is already reachable from `target`. */
+export async function isFullyMerged(space, repo, target, source) {
+  const dir = repoDir(space, repo);
+  try {
+    await git(dir, ['merge-base', '--is-ancestor', `refs/heads/${source}`, `refs/heads/${target}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// git reports a content conflict on stdout ("CONFLICT (content): ...") and the
+// summary line on stderr. Anything else is an infrastructure failure and must
+// not be reported to the user as "your branches conflict".
+function isConflictFailure(err) {
+  const out = `${err?.stdout || ''}\n${err?.stderr || ''}`;
+  return /^CONFLICT\b/m.test(out) || /Automatic merge failed/i.test(out) ||
+    /error: could not apply/i.test(out) || /would be overwritten by merge/i.test(out);
+}
+
+function mergeError(message, code, cause) {
+  const err = new Error(message);
+  err.code = code;
+  if (cause) err.cause = cause;
+  return err;
+}
+
+// Commits that are in `source` but NOT yet reachable from `target`, newest
+// first. This is the honest basis for any "what does this branch change?"
+// question: it is resolved from the target's CURRENT head, so commits that have
+// already landed (a partial merge of the branch, a cherry-pick) drop out.
+// `target..source` is the two-dot range, which is exactly
+// `merge-base(target, source)..source`.
+export async function commitsAhead(space, repo, target, source, { limit = 100 } = {}) {
+  const t = validBranchName(target);
+  const s = validBranchName(source);
+  if (!t || !s) throw httpError(400, 'Invalid branch name');
+  return listCommits(space, repo, `${t}..${s}`, { limit });
+}
+
 // Merge source into target in a temp clone and push the result.
-// method: 'merge' (merge commit) | 'squash' (single commit). Returns the
-// resulting target sha.
+// method: 'merge' (merge commit) | 'squash' (single commit); anything else is
+// treated as 'merge'.
+//
+// Returns { sha, alreadyMerged }. The bare repo is only ever modified by the
+// final push, so any failure before it leaves the repository exactly as it was
+// — no moved refs, no merge state, no surviving temp clone.
+//
+// Failures carry a `code` so callers can tell the cases apart:
+//   'missing_branch'  — target or source does not exist
+//   'merge_conflict'  — the two branches genuinely conflict
+//   'merge_failed'    — anything else (push race, disk, git blowing up)
 export async function mergeBranches(space, repo, target, source, method, { authorName, authorEmail }) {
   const dir = repoDir(space, repo);
+  for (const [label, branch] of [['target', target], ['source', source]]) {
+    if (!(await branchExists(space, repo, branch))) {
+      throw mergeError(`The ${label} branch '${branch}' does not exist`, 'missing_branch');
+    }
+  }
+  // Nothing to do when the source is already contained in the target — this is
+  // the state after an earlier partial merge plus a later full one. Doing the
+  // real dance here would either invent an empty merge commit ('merge') or fail
+  // with git's opaque "nothing to commit" ('squash'), which used to surface as
+  // "Merge failed (conflicts?)".
+  if (await isFullyMerged(space, repo, target, source)) {
+    const head = await git(dir, ['rev-parse', `refs/heads/${target}`]);
+    return { sha: head.trim(), alreadyMerged: true };
+  }
+
   const tmp = `${dir}-merge-${crypto.randomBytes(4).toString('hex')}`;
   const { rm } = await import('node:fs/promises');
-  const identity = ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`];
+  const identity = ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail || ''}`];
   try {
     await exec('git', ['clone', dir, tmp]);
     await exec('git', ['-C', tmp, 'fetch', 'origin', target, source]);
     await exec('git', ['-C', tmp, 'checkout', '-B', target, `origin/${target}`]);
-    if (method === 'squash') {
-      await exec('git', ['-C', tmp, ...identity, 'merge', '--squash', `origin/${source}`]);
-      await exec('git', ['-C', tmp, ...identity, 'commit', '-m', `Squash merge ${source} into ${target}`]);
-    } else {
-      await exec('git', ['-C', tmp, ...identity, 'merge', '--no-ff', '-m', `Merge branch '${source}' into ${target}`, `origin/${source}`]);
+    try {
+      if (method === 'squash') {
+        await exec('git', ['-C', tmp, ...identity, 'merge', '--squash', `origin/${source}`]);
+        // A squash of an already-squashed branch stages nothing. `git commit`
+        // then exits 1 with "nothing to commit", which used to reach the user
+        // as "Merge failed (conflicts?)". It is a no-op, not a failure.
+        const staged = await exec('git', ['-C', tmp, 'diff', '--cached', '--quiet'])
+          .then(() => false, () => true);
+        if (!staged) {
+          const { stdout } = await exec('git', ['-C', tmp, 'rev-parse', target]);
+          return { sha: stdout.trim(), alreadyMerged: true };
+        }
+        await exec('git', ['-C', tmp, ...identity, 'commit', '-m', `Squash merge ${source} into ${target}`]);
+      } else {
+        await exec('git', ['-C', tmp, ...identity, 'merge', '--no-ff', '-m', `Merge branch '${source}' into ${target}`, `origin/${source}`]);
+      }
+    } catch (err) {
+      throw isConflictFailure(err)
+        ? mergeError(`'${source}' conflicts with '${target}' and cannot be merged automatically`, 'merge_conflict', err)
+        : mergeError(`Merge of '${source}' into '${target}' failed: ${err.message}`, 'merge_failed', err);
     }
-    await exec('git', ['-C', tmp, 'push', 'origin', target]);
+    try {
+      await exec('git', ['-C', tmp, 'push', 'origin', target]);
+    } catch (err) {
+      throw mergeError(
+        `Could not update '${target}' — it may have moved since the merge started. Retry.`,
+        'merge_failed', err,
+      );
+    }
     const { stdout } = await exec('git', ['-C', tmp, 'rev-parse', target]);
-    return stdout.trim();
+    return { sha: stdout.trim(), alreadyMerged: false };
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }

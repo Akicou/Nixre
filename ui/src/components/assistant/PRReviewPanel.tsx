@@ -25,16 +25,33 @@ export const PRReviewPanel: React.FC<PRReviewPanelProps> = ({ repoPath, pr, onCl
         if (!cancelled) setProfile(p);
       })
       .catch(() => {});
-    api
-      .getPullRequestDiff(repoPath, pr.number)
-      .then(files => {
+    // Diff AND commit list are both the `target...source` range resolved against
+    // the target's current head, fetched when the panel opens — not cached from
+    // when the PR was created. A branch that has been partly merged since then
+    // contributes only its remaining commits, so a summary cannot restate work
+    // that already landed.
+    Promise.all([
+      api.getPullRequestDiff(repoPath, pr.number),
+      api.getPullRequestCommits(repoPath, pr.number).catch(() => []),
+    ])
+      .then(([files, commits]) => {
         if (cancelled) return;
-        const text = files
+        const header = [
+          `Pull request #${pr.number} "${pr.title}" merges ${pr.source_branch} into ${pr.target_branch}.`,
+          `Everything below is what is NOT yet in ${pr.target_branch}. Commits already merged into`,
+          `${pr.target_branch} are deliberately excluded — do not describe them.`,
+          '',
+          commits.length > 0
+            ? `Unmerged commits (${commits.length}, newest first):\n${commits.map(c => `- ${c.title}`).join('\n')}`
+            : 'No unmerged commits remain: this branch is already contained in the target.',
+          '',
+        ].join('\n');
+        const text = (header + files
           .map(f => `--- ${f.path} (${f.status}, +${f.additions}/-${f.deletions}) ---\n${decodeBase64Patch(f.patch)}`)
-          .join('\n\n')
+          .join('\n\n'))
           .slice(0, 120_000); // keep inside a sane context budget
         setDiffContext({
-          label: `Full diff of PR #${pr.number} "${pr.title}" (${pr.source_branch} → ${pr.target_branch})`,
+          label: `Unmerged changes of PR #${pr.number} "${pr.title}" (${pr.source_branch} → ${pr.target_branch}, vs ${pr.target_branch}'s current head)`,
           text,
         });
       })
