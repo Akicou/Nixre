@@ -1366,6 +1366,12 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
+  // New variables are held as rows with a stable id. They used to live in
+  // `drafts` under a `NEW_<timestamp>` key that was rewritten to the typed name
+  // on every keystroke — which changed the row's React key, remounted it and
+  // stole focus, so a name could never grow past its first character.
+  const [newRows, setNewRows] = useState<Array<{ id: string; name: string; value: string }>>([]);
+  const [saving, setSaving] = useState(false);
   // .env file editor state
   const [mode, setMode] = useState<'rows' | 'file'>('rows');
   const [fileText, setFileText] = useState('');
@@ -1393,8 +1399,10 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
     setErr('');
     const seeded: Record<string, string> = {};
     for (const [k, v] of Object.entries(drafts)) {
-      const name = k.startsWith('NEW_') ? k.slice(4) : k;
-      if (name) seeded[name] = v ?? '';
+      if (k) seeded[k] = v ?? '';
+    }
+    for (const row of newRows) {
+      if (row.name) seeded[row.name] = row.value ?? '';
     }
     for (const k of keys) {
       if (seeded[k.key] === undefined && revealed[k.key] && values[k.key] !== undefined) seeded[k.key] = values[k.key];
@@ -1427,7 +1435,7 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
       setFileLoading(false);
       setErr('Could not reveal environment variable values from the server — showing what was already loaded.');
     }
-  }, [space, repoUid, service.id, fileLoaded, drafts, keys, revealed, values]);
+  }, [space, repoUid, service.id, fileLoaded, drafts, newRows, keys, revealed, values]);
 
   const saveFile = async () => {
     if (parsed.errors.length) return;
@@ -1452,9 +1460,13 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
     // the .env editor (values pulled via reveal) — including values that were
     // loaded for editing and left untouched.
     const explicit: Record<string, string> = {};
-    for (const [k, v] of Object.entries(drafts)) {
-      if (k.startsWith('NEW_')) continue; // transient new-row placeholder
-      explicit[k] = v;
+    for (const [k, v] of Object.entries(drafts)) explicit[k] = v;
+    // New rows are part of the save. They were previously skipped outright, so
+    // adding a variable and pressing Save silently did nothing.
+    for (const row of newRows) {
+      const name = row.name.trim();
+      if (!name) continue;
+      explicit[name] = row.value;
     }
     for (const k of keys) {
       if (explicit[k.key] !== undefined) continue;
@@ -1462,6 +1474,11 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
       // included so a save round-trips them; masked ones are skipped — the
       // backend keeps them untouched (partial merge via PATCH env).
       if (revealed[k.key] && values[k.key] !== undefined) explicit[k.key] = values[k.key];
+    }
+    setErr('');
+    if (rowErrors.length) {
+      setErr(rowErrors[0]);
+      return;
     }
     if (Object.keys(explicit).length === 0) {
       setMsg('Nothing changed.');
@@ -1473,8 +1490,19 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
     }
     // Partial merge: only the explicit keys are written; secrets left masked
     // (never revealed/edited) stay untouched on the server.
-    await api.patchDeployService(space!, repoUid!, service.id, { env: explicit });
+    setSaving(true);
+    try {
+      await api.patchDeployService(space!, repoUid!, service.id, { env: explicit });
+    } catch (e) {
+      // This used to be an unhandled rejection: a rejected save printed nothing
+      // and looked exactly like a save that had worked.
+      setErr((e as Error).message || 'The variables could not be saved.');
+      return;
+    } finally {
+      setSaving(false);
+    }
     setDrafts({});
+    setNewRows([]);
     setMsg('Saved — takes effect on the next deploy.');
     load();
     onChanged();
@@ -1483,16 +1511,15 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   const allKeys = [...new Set([...keys.map(k => k.key), ...Object.keys(drafts)])];
   // Client-side guard mirroring the backend: invalid/duplicate names are
   // rejected before hitting the API.
-  const newRowInvalid = Object.keys(drafts)
-    .filter(k => k.startsWith('NEW_') && drafts[k] !== undefined)
-    .map(k => k.slice(4))
-    .filter(Boolean);
   const rowErrors: string[] = [];
-  for (const k of Object.keys(drafts)) {
-    if (!k.startsWith('NEW_')) continue;
-    const name = k.slice(4);
-    if (name && !ENV_KEY_RE.test(name)) rowErrors.push(`'${name || '(empty)'}' is not a valid name — use [A-Za-z_][A-Za-z0-9_]*`);
-    else if (name && keys.some(x => x.key === name)) rowErrors.push(`'${name}' already exists`);
+  const seenNew = new Set<string>();
+  for (const row of newRows) {
+    const name = row.name.trim();
+    if (!name) continue;
+    if (!ENV_KEY_RE.test(name)) rowErrors.push(`'${name}' is not a valid name — use [A-Za-z_][A-Za-z0-9_]*`);
+    else if (keys.some(x => x.key === name)) rowErrors.push(`'${name}' already exists`);
+    else if (seenNew.has(name)) rowErrors.push(`'${name}' is listed twice`);
+    seenNew.add(name);
   }
 
   return (
@@ -1511,7 +1538,7 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
         </div>
         {mode === 'rows' && (
           <button
-            onClick={() => setDrafts(d => ({ ...d, [`NEW_${Date.now()}`]: '' }))}
+            onClick={() => setNewRows(r => [...r, { id: `new-${Date.now()}-${r.length}`, name: '', value: '' }])}
             className="text-xs text-brand hover:underline flex items-center gap-1"
           >
             <Plus className="w-3 h-3" /> Add variable
@@ -1559,26 +1586,9 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
             </div>
           )}
       <div className="divide-y divide-border-subtle border border-border-subtle rounded-lg">
-        {allKeys.map(key => {
-          const isNew = key.startsWith('NEW_');
-          return (
+        {allKeys.map(key => (
             <div key={key} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
-              <span className="font-mono text-xs text-txt-primary w-full sm:w-44 md:w-56 truncate" title={key}>{isNew ? '' : key}</span>
-              {isNew ? (
-                <input
-                  autoFocus
-                  placeholder="KEY_NAME"
-                  onChange={e => {
-                    const val = drafts[key];
-                    const next = { ...drafts };
-                    delete next[key];
-                    if (val !== undefined) next[e.target.value] = val;
-                    else next[e.target.value] = '';
-                    setDrafts(next);
-                  }}
-                  className="bg-surface-base border border-border-subtle rounded px-2 py-1 text-xs font-mono w-full sm:max-w-[13rem] text-txt-primary"
-                />
-              ) : null}
+              <span className="font-mono text-xs text-txt-primary w-full sm:w-44 md:w-56 truncate" title={key}>{key}</span>
               <div className="flex-1 min-w-[180px] sm:min-w-0 flex items-center gap-1.5">
                 {editing === key ? (
                   <>
@@ -1617,8 +1627,7 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
                       }}
                       className="bg-surface-base border border-border-subtle rounded px-2 py-1 text-xs font-mono w-full text-txt-primary"
                     />
-                    {!isNew && (
-                      <button
+                    <button
                         onClick={async () => {
                           if (revealed[key]) {
                             setRevealed(r => ({ ...r, [key]: false }));
@@ -1636,10 +1645,8 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
                         title={revealed[key] ? 'Hide' : 'View value'}
                       >
                         {revealed[key] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                      </button>
-                    )}
-                    {!isNew && (
-                      <button
+                    </button>
+                    <button
                         onClick={async () => {
                           try {
                             const out = await api.revealEnvVar(space!, repoUid!, service.id, key);
@@ -1655,20 +1662,11 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
                         title="Edit value"
                       >
                         <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+                    </button>
                   </>
                 )}
                 <button
                   onClick={async () => {
-                    if (isNew) {
-                      setDrafts(d => {
-                        const next = { ...d };
-                        delete next[key];
-                        return next;
-                      });
-                      return;
-                    }
                     await api.removeEnvVar(space!, repoUid!, service.id, key);
                     load();
                     onChanged();
@@ -1680,12 +1678,46 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
                 </button>
               </div>
             </div>
-          );
-        })}
-        {allKeys.length === 0 && <p className="text-xs text-txt-tertiary px-3 py-4">No variables yet.</p>}
+        ))}
+        {newRows.map(row => (
+          <div key={row.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2" data-testid="env-new-row">
+            <input
+              autoFocus
+              placeholder="KEY_NAME"
+              value={row.name}
+              onChange={e => {
+                const name = e.target.value;
+                setNewRows(rows => rows.map(r => (r.id === row.id ? { ...r, name } : r)));
+                setDirty(true);
+              }}
+              className="bg-surface-base border border-border-subtle rounded px-2 py-1 text-xs font-mono w-full sm:w-44 md:w-56 text-txt-primary"
+            />
+            <div className="flex-1 min-w-[180px] sm:min-w-0 flex items-center gap-1.5">
+              <input
+                type="text"
+                placeholder="value"
+                value={row.value}
+                onChange={e => {
+                  const value = e.target.value;
+                  setNewRows(rows => rows.map(r => (r.id === row.id ? { ...r, value } : r)));
+                  setDirty(true);
+                }}
+                className="bg-surface-base border border-border-subtle rounded px-2 py-1 text-xs font-mono w-full text-txt-primary"
+              />
+              <button
+                onClick={() => setNewRows(rows => rows.filter(r => r.id !== row.id))}
+                className="text-txt-tertiary hover:text-red-400 shrink-0"
+                title="Discard this variable"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        ))}
+        {allKeys.length === 0 && newRows.length === 0 && <p className="text-xs text-txt-tertiary px-3 py-4">No variables yet.</p>}
       </div>
       <div className="flex items-center gap-3">
-        <button onClick={saveAll} className="px-3 py-1.5 text-xs font-medium rounded-md bg-brand text-white hover:opacity-90">Save changes</button>
+        <button onClick={saveAll} disabled={saving} className="px-3 py-1.5 text-xs font-medium rounded-md bg-brand text-white hover:opacity-90 disabled:opacity-40">{saving ? 'Saving…' : 'Save changes'}</button>
         {msg && <span className="text-xs text-txt-secondary">{msg}</span>}
         {dirty && !msg && <span className="text-xs text-amber-400">Unsaved edits</span>}
       </div>

@@ -388,6 +388,68 @@ describe('DeploymentsPage', () => {
     await waitFor(() => expect(api.removeEnvVar).toHaveBeenCalledWith('acme', 'webshop', 12, 'A'));
     expect(api.setEnvVars).not.toHaveBeenCalled();
   });
+
+  // A new row used to live in `drafts` under a `NEW_<timestamp>` key that was
+  // rewritten to the typed text on every keystroke. That changed the row's
+  // React key, remounted it and stole focus, so the name could never grow past
+  // its first character — and `saveAll` skipped `NEW_*` keys outright, so the
+  // variable was never sent either.
+  it('a new env var keeps its whole name while typing and is actually saved', async () => {
+    api.listEnvVars.mockResolvedValue([{ key: 'EXISTING', updated: 1 }]);
+    api.patchDeployService.mockResolvedValue({});
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'env' }));
+    await screen.findByText('EXISTING');
+
+    fireEvent.click(screen.getByRole('button', { name: /Add variable/i }));
+    const nameInput = await screen.findByPlaceholderText('KEY_NAME');
+    fireEvent.change(nameInput, { target: { value: 'PORT' } });
+
+    // The whole name survives; it is not truncated to its first character.
+    expect((screen.getByPlaceholderText('KEY_NAME') as HTMLInputElement).value).toBe('PORT');
+
+    fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: '8080' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(api.patchDeployService).toHaveBeenCalledWith('acme', 'webshop', 12, { env: { PORT: '8080' } }),
+    );
+  });
+
+  it('an invalid new variable name is refused before any request', async () => {
+    api.listEnvVars.mockResolvedValue([{ key: 'EXISTING', updated: 1 }]);
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'env' }));
+    await screen.findByText('EXISTING');
+
+    fireEvent.click(screen.getByRole('button', { name: /Add variable/i }));
+    fireEvent.change(await screen.findByPlaceholderText('KEY_NAME'), { target: { value: '1BAD NAME' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await screen.findByTestId('env-row-errors');
+    expect(api.patchDeployService).not.toHaveBeenCalled();
+  });
+
+  // A rejected save used to be an unhandled promise rejection: no message, no
+  // error, indistinguishable from a save that had worked.
+  it('a failed save reports the reason instead of looking like success', async () => {
+    api.listEnvVars.mockResolvedValue([{ key: 'EXISTING', updated: 1 }]);
+    api.patchDeployService.mockRejectedValueOnce(new Error('service is mid-deploy'));
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'env' }));
+    await screen.findByText('EXISTING');
+
+    fireEvent.click(screen.getByRole('button', { name: /Add variable/i }));
+    fireEvent.change(await screen.findByPlaceholderText('KEY_NAME'), { target: { value: 'PORT' } });
+    fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: '8080' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('service is mid-deploy')).toBeInTheDocument();
+    expect(screen.queryByText(/Saved/)).not.toBeInTheDocument();
+  });
 });
 
 describe('Dashboard deployments overview', () => {
