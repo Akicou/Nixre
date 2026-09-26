@@ -432,6 +432,54 @@ describe('DeploymentsPage', () => {
     expect(api.patchDeployService).not.toHaveBeenCalled();
   });
 
+  // After saving, the row used to stay in the `editing` branch with its draft
+  // cleared, so the input rendered empty and showed its "new value"
+  // placeholder rather than the masked dots. The only way back was a reload.
+  it('saving an edited value leaves edit mode and re-masks the row', async () => {
+    api.listEnvVars.mockResolvedValue([{ key: 'SECRET', updated: 1 }]);
+    api.revealEnvVar.mockResolvedValue({ value: 'old-value' });
+    api.patchDeployService.mockResolvedValue({});
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'env' }));
+    await screen.findByText('SECRET');
+
+    fireEvent.click(screen.getByTitle('Edit value'));
+    const input = await screen.findByPlaceholderText('new value');
+    fireEvent.change(input, { target: { value: 'new-value' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(api.patchDeployService).toHaveBeenCalledWith('acme', 'webshop', 12, { env: { SECRET: 'new-value' } }),
+    );
+    // Back to a masked row: the edit input is gone entirely.
+    await waitFor(() => expect(screen.queryByPlaceholderText('new value')).not.toBeInTheDocument());
+    const masked = screen.getByPlaceholderText('••••••••') as HTMLInputElement;
+    expect(masked.type).toBe('password');
+    expect(masked.value).toBe('');
+  });
+
+  // load() cleared `msg`, so the confirmation vanished the instant the list
+  // refetched and a successful save looked like nothing had happened.
+  it('the saved confirmation survives the list refetch', async () => {
+    api.listEnvVars.mockResolvedValue([{ key: 'SECRET', updated: 1 }]);
+    api.revealEnvVar.mockResolvedValue({ value: 'old-value' });
+    api.patchDeployService.mockResolvedValue({});
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'env' }));
+    await screen.findByText('SECRET');
+
+    fireEvent.click(screen.getByTitle('Edit value'));
+    fireEvent.change(await screen.findByPlaceholderText('new value'), { target: { value: 'v2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    const note = await screen.findByText(/Saved — takes effect on the next deploy\./);
+    // Still there after the refetch has settled.
+    await new Promise(r => setTimeout(r, 50));
+    expect(note).toBeInTheDocument();
+  });
+
   // The backend has always accepted container_port in PATCH, but the UI never
   // rendered the field, so a service created with the wrong port could only be
   // fixed by deleting and recreating the whole service.

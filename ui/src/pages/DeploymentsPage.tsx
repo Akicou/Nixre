@@ -1383,7 +1383,9 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
     api.listEnvVars(space!, repoUid!, service.id).then(k => {
       setKeys(k);
       setDirty(false);
-      setMsg('');
+      // Deliberately does not clear `msg`: a save sets its confirmation and
+      // then calls load(), and clearing here made that confirmation flash and
+      // disappear as soon as the refetch resolved.
     });
   }, [space, repoUid, service.id]);
   useEffect(load, [load]);
@@ -1440,6 +1442,7 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   const saveFile = async () => {
     if (parsed.errors.length) return;
     setErr('');
+    setMsg('');
     try {
       await api.setEnvVars(space!, repoUid!, service.id, parsed.vars);
       setMsg('Saved — takes effect on the next deploy.');
@@ -1456,6 +1459,7 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
   // handle their own loading/error state. Removed rather than left as a trap.
 
   const saveAll = async () => {
+    setMsg('');
     // Build the explicit var set: anything the user touched in rows mode or
     // the .env editor (values pulled via reveal) — including values that were
     // loaded for editing and left untouched.
@@ -1503,6 +1507,13 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
     }
     setDrafts({});
     setNewRows([]);
+    // Leave edit mode and re-mask. Without this the row stayed in the `editing`
+    // branch with its draft cleared, so the input rendered empty and showed its
+    // "new value" placeholder instead of the masked dots — and any revealed
+    // value was now the pre-save plaintext, displayed as if it were current.
+    setEditing(null);
+    setRevealed({});
+    setValues({});
     setMsg('Saved — takes effect on the next deploy.');
     load();
     onChanged();
