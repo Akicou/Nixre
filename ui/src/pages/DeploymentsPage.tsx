@@ -1765,6 +1765,32 @@ const RuntimePanel: React.FC<{ service: DeployService; onChanged: () => void }> 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  // The port the health probe and the proxy target. The backend has always
+  // accepted it in PATCH; the UI never exposed it, so a service created with
+  // the wrong port could only be fixed by deleting and recreating it.
+  const [port, setPort] = useState(String(service.container_port ?? ''));
+  const [portBusy, setPortBusy] = useState(false);
+  const portChanged = port.trim() !== String(service.container_port ?? '');
+
+  const savePort = async () => {
+    const value = Number(port.trim());
+    if (!Number.isInteger(value) || value < 1 || value > 65535) {
+      setErr('Port must be a whole number between 1 and 65535.');
+      return;
+    }
+    setPortBusy(true);
+    setErr('');
+    setMsg('');
+    try {
+      await api.patchDeployService(space!, repoUid!, service.id, { container_port: value });
+      setMsg('Port saved — redeploy to apply it.');
+      onChanged();
+    } catch (e) {
+      setErr((e as Error).message || 'The port could not be saved.');
+    } finally {
+      setPortBusy(false);
+    }
+  };
 
   const dirty = service.runtime_options
     ? text !== JSON.stringify(service.runtime_options, null, 2)
@@ -1818,6 +1844,32 @@ const RuntimePanel: React.FC<{ service: DeployService; onChanged: () => void }> 
             </span>
           ))
         )}
+      </div>
+      <div className="flex flex-wrap items-end gap-2 pb-1">
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-txt-secondary">Container port</span>
+          <input
+            type="number"
+            min={1}
+            max={65535}
+            value={port}
+            onChange={e => setPort(e.target.value)}
+            data-testid="container-port"
+            className="bg-surface-base border border-border-subtle rounded px-2 py-1 text-xs font-mono w-28 text-txt-primary"
+          />
+        </label>
+        <button
+          onClick={savePort}
+          disabled={portBusy || !portChanged}
+          data-testid="container-port-save"
+          className="px-3 py-1.5 text-xs font-medium rounded-md border border-border-subtle text-txt-primary hover:border-brand disabled:opacity-40"
+        >
+          {portBusy ? 'Saving…' : 'Save port'}
+        </button>
+        <span className="text-[11px] text-txt-tertiary">
+          The port your app listens on. The health probe and the proxy both target it, so a
+          mismatch fails the release even though the container is healthy.
+        </span>
       </div>
       <textarea
         value={text}

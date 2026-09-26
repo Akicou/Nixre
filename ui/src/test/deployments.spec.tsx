@@ -432,6 +432,40 @@ describe('DeploymentsPage', () => {
     expect(api.patchDeployService).not.toHaveBeenCalled();
   });
 
+  // The backend has always accepted container_port in PATCH, but the UI never
+  // rendered the field, so a service created with the wrong port could only be
+  // fixed by deleting and recreating the whole service.
+  it('the container port can be corrected without recreating the service', async () => {
+    api.patchDeployService.mockResolvedValue({});
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'runtime' }));
+
+    const port = await screen.findByTestId('container-port');
+    expect((port as HTMLInputElement).value).toBe('3000');
+    // Unchanged means nothing to save.
+    expect(screen.getByTestId('container-port-save')).toBeDisabled();
+
+    fireEvent.change(port, { target: { value: '8080' } });
+    fireEvent.click(screen.getByTestId('container-port-save'));
+
+    await waitFor(() =>
+      expect(api.patchDeployService).toHaveBeenCalledWith('acme', 'webshop', 12, { container_port: 8080 }),
+    );
+  });
+
+  it('an out-of-range container port is refused before any request', async () => {
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'runtime' }));
+
+    fireEvent.change(await screen.findByTestId('container-port'), { target: { value: '99999' } });
+    fireEvent.click(screen.getByTestId('container-port-save'));
+
+    expect(await screen.findByText(/between 1 and 65535/)).toBeInTheDocument();
+    expect(api.patchDeployService).not.toHaveBeenCalled();
+  });
+
   // A rejected save used to be an unhandled promise rejection: no message, no
   // error, indistinguishable from a save that had worked.
   it('a failed save reports the reason instead of looking like success', async () => {
