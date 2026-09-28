@@ -38,8 +38,17 @@ const { api } = vi.hoisted(() => ({
   },
 }));
 vi.mock('../lib/api', () => ({ api }));
+const { deployListeners } = vi.hoisted(() => ({
+  deployListeners: [] as Array<(evt: { type: string; status?: string }) => void>,
+}));
 vi.mock('../lib/deployEvents', () => ({
-  subscribeDeployEvents: () => () => {},
+  subscribeDeployEvents: (_s: string, _r: string, _id: number, fn: (evt: { type: string; status?: string }) => void) => {
+    deployListeners.push(fn);
+    return () => {
+      const i = deployListeners.indexOf(fn);
+      if (i >= 0) deployListeners.splice(i, 1);
+    };
+  },
 }));
 
 import { DeploymentsSection, logViewerText } from '../pages/DeploymentsPage';
@@ -89,6 +98,7 @@ const baseService = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  deployListeners.length = 0;
   api.getRepo.mockResolvedValue({ default_branch: 'main' });
   api.listDeployServices.mockResolvedValue([baseService]);
   api.serviceStats.mockResolvedValue({
@@ -457,6 +467,48 @@ describe('DeploymentsPage', () => {
     const masked = screen.getByPlaceholderText('••••••••') as HTMLInputElement;
     expect(masked.type).toBe('password');
     expect(masked.value).toBe('');
+  });
+
+  // The .env editor's confirmation was only rendered in rows mode, so a save
+  // that worked showed nothing and looked broken until the next deploy.
+  it('saving from the .env file editor confirms the save', async () => {
+    api.listEnvVars.mockResolvedValue([{ key: 'API_TOKEN', updated: 1 }]);
+    api.revealEnvVar.mockResolvedValue({ key: 'API_TOKEN', value: 's3cr3t' });
+    api.setEnvVars.mockResolvedValue({});
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'env' }));
+    fireEvent.click(screen.getByRole('button', { name: '.env file' }));
+    const editor = await screen.findByTestId('env-file-editor');
+    const ta = editor.querySelector('textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(ta.value).toContain('API_TOKEN=s3cr3t'));
+
+    fireEvent.change(ta, { target: { value: 'API_TOKEN=s3cr3t\nLOG_LEVEL=info\n' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save 2 variables' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved 2 variables — takes effect on the next deploy.');
+    expect(api.setEnvVars).toHaveBeenCalledWith('acme', 'webshop', 12, { API_TOKEN: 's3cr3t', LOG_LEVEL: 'info' });
+  });
+
+  // The Deploys table loaded once on open. A status event refreshed the header
+  // but not the table, so a finished deploy stayed BUILDING while the release
+  // it replaced kept showing LIVE.
+  it('the deploys table follows live status events', async () => {
+    const row = (id: number, status: string) => ({
+      id, ref: 'main', sha: 'deadbeef00', short_sha: 'deadbee', message: 'm', status, trigger: 'manual', started: id, finished: null,
+    });
+    api.listDeployments.mockResolvedValue([row(83, 'building'), row(82, 'live')]);
+    mountPage();
+    fireEvent.click((await screen.findAllByTestId('service-card-web'))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'deploys' }));
+    expect(await screen.findByText('building')).toBeInTheDocument();
+
+    api.listDeployments.mockResolvedValue([row(83, 'live'), row(82, 'superseded')]);
+    api.listDeployServices.mockResolvedValue([{ ...baseService, current_deployment_id: 83 }]);
+    deployListeners.forEach(fn => fn({ type: 'status', status: 'live' }));
+
+    expect(await screen.findByText('superseded')).toBeInTheDocument();
+    expect(screen.queryByText('building')).toBeNull();
   });
 
   // load() cleared `msg`, so the confirmation vanished the instant the list
