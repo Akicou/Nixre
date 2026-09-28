@@ -936,7 +936,12 @@ const DeploysPanel: React.FC<{ service: DeployService; onChanged: () => void }> 
   const load = useCallback(() => {
     api.listDeployments(space!, repoUid!, service.id).then(setHistory).catch(() => {});
   }, [space, repoUid, service.id]);
-  useEffect(load, [load]);
+  // Refetch whenever the service row is refetched. SSE status events (building,
+  // live, failed…) refresh the parent's services list, which hands us a new
+  // `service`; keying only on `load` froze the table at whatever it showed
+  // when the tab opened, so a finished deploy stayed BUILDING and the row it
+  // replaced kept claiming LIVE until a manual reload.
+  useEffect(load, [load, service]);
 
   const act = async (fn: () => Promise<unknown>) => {
     await fn().catch(() => {});
@@ -1443,14 +1448,18 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
     if (parsed.errors.length) return;
     setErr('');
     setMsg('');
+    setSaving(true);
     try {
       await api.setEnvVars(space!, repoUid!, service.id, parsed.vars);
-      setMsg('Saved — takes effect on the next deploy.');
+      const n = Object.keys(parsed.vars).length;
+      setMsg(`Saved ${n} variable${n === 1 ? '' : 's'} — takes effect on the next deploy.`);
       setFileLoaded(false);
       load();
       onChanged();
     } catch (e) {
-      setErr((e as Error).message);
+      setErr((e as Error).message || 'The variables could not be saved.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -1581,12 +1590,20 @@ const EnvPanel: React.FC<{ service: DeployService; onChanged: () => void }> = ({
           <div className="flex items-center gap-3">
             <button
               onClick={saveFile}
-              disabled={parsed.errors.length > 0 || !fileText.trim()}
+              disabled={saving || parsed.errors.length > 0 || !fileText.trim()}
               className="px-3 py-1.5 text-xs font-medium rounded-md bg-brand text-white hover:opacity-90 disabled:opacity-40"
             >
-              Save {Object.keys(parsed.vars).length} variable{Object.keys(parsed.vars).length === 1 ? '' : 's'}
+              {saving
+                ? 'Saving…'
+                : `Save ${Object.keys(parsed.vars).length} variable${Object.keys(parsed.vars).length === 1 ? '' : 's'}`}
             </button>
-            <span className="text-[11px] text-txt-tertiary">Full replace — comments and blank lines are not stored.</span>
+            {/* The confirmation used to render only in rows mode, so a
+                successful .env save showed nothing at all. */}
+            {msg ? (
+              <span className="text-xs text-emerald-400" role="status">{msg}</span>
+            ) : (
+              <span className="text-[11px] text-txt-tertiary">Full replace — comments and blank lines are not stored.</span>
+            )}
           </div>
         </div>
       ) : (
