@@ -66,11 +66,11 @@ function unverifiedDomain(overrides = {}) {
   };
 }
 
-function mount() {
+function mount(service: DeployService = SERVICE) {
   return render(
     <MemoryRouter initialEntries={['/acme/webshop?deploys=1']}>
       <Routes>
-        <Route path="/:space/:repo" element={<DomainsPanel service={SERVICE} />} />
+        <Route path="/:space/:repo" element={<DomainsPanel service={service} />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -129,5 +129,20 @@ describe('domain ownership gate', () => {
     await waitFor(() => expect(screen.getByTestId('domain-verified-badge')).toBeTruthy());
     expect(screen.queryByTestId('domain-unverified-badge')).toBeNull();
     expect(screen.queryByTestId('domain-verify-panel')).toBeNull();
+  });
+});
+
+describe('internal hostnames', () => {
+  it('lists the stable private addresses other apps can call', async () => {
+    mount({ ...SERVICE, internal_hosts: ['svc-12', 'webshop.webshop.acme.internal'] });
+    await waitFor(() => expect(screen.getByTestId('internal-hosts')).toBeTruthy());
+    expect(screen.getByText('http://svc-12:8080')).toBeTruthy();
+    expect(screen.getByText('http://webshop.webshop.acme.internal:8080')).toBeTruthy();
+  });
+
+  it('says nothing when the server sent none', async () => {
+    mount();
+    await waitFor(() => expect(screen.getByTestId('domain-card')).toBeTruthy());
+    expect(screen.queryByTestId('internal-hosts')).toBeNull();
   });
 });

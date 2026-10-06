@@ -13,6 +13,7 @@ import {
   filterDockerfiles,
   normalizeRootDir,
   sanitizeServiceName,
+  internalHosts,
   shortSha,
   tailLines,
 } from '../lib/deployPure.js';
@@ -162,10 +163,14 @@ export function deploymentRoutes(pool, authenticate) {
     getDeployProxy()?.invalidateRoutes();
   }
 
-  function rowToService(s, extra = {}) {
+  // `where` is the service's repo ({ uid, space_uid }) when the query did not
+  // join it in. internal_hosts reflects the CURRENT name; a running container
+  // carries the aliases it was created with until its next deployment.
+  function rowToService(s, extra = {}, where = null) {
     return {
       id: Number(s.id),
       name: s.name,
+      internal_hosts: internalHosts(s.id, s.name, where?.uid ?? s.repo_uid, where?.space_uid ?? s.space),
       root_dir: s.root_dir,
       dockerfile_path: s.dockerfile_path,
       branch: s.branch,
@@ -223,7 +228,7 @@ export function deploymentRoutes(pool, authenticate) {
     );
     const out = [];
     for (const s of rows) {
-      out.push(rowToService(s, { current: await currentDeploymentSummary(s) }));
+      out.push(rowToService(s, { current: await currentDeploymentSummary(s) }, repo));
     }
     res.json(out);
   }));
@@ -349,7 +354,7 @@ export function deploymentRoutes(pool, authenticate) {
       );
     }
 
-    res.status(201).json(rowToService(service, { current: null }));
+    res.status(201).json(rowToService(service, { current: null }, repo));
   }));
 
   const SERVICE_PATCHABLE = new Set([
@@ -509,7 +514,7 @@ export function deploymentRoutes(pool, authenticate) {
     const fresh = (
       await pool.query('SELECT * FROM deploy_services WHERE id = $1', [service.id])
     ).rows[0];
-    res.json(rowToService(fresh, { current: await currentDeploymentSummary(fresh) }));
+    res.json(rowToService(fresh, { current: await currentDeploymentSummary(fresh) }, ctx.repo));
   }));
 
   api.delete('/repos/:space/:repo/\\+/deployments/services/:id', auth, guard(async (req, res) => {
@@ -1467,7 +1472,7 @@ export function deploymentRoutes(pool, authenticate) {
         domains: domainsByService.get(Number(s.id)) || [],
         tls_risk_domains: tlsRiskByService.get(Number(s.id)) || [],
         unverified_domains: unverifiedByService.get(Number(s.id)) || [],
-      }));
+      }, { uid: s.repo_uid, space_uid: space.uid }));
     }
 
     // Activity feed: latest deployments across the space's services.
