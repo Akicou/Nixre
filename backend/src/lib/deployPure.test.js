@@ -17,6 +17,7 @@ import {
   sanitizeServiceName,
   demuxDockerLog,
   tailLines,
+  internalHosts,
 } from './deployPure.js';
 
 test('normalizeRootDir cleans separators and stays inside the repo', () => {
@@ -270,4 +271,18 @@ test('tailLines keeps the end of a log, where failures live', () => {
   assert.equal(tailLines(log, 0), log, '0 means the whole thing');
   assert.equal(tailLines(log, NaN), log);
   assert.equal(tailLines(null, 3), '');
+});
+
+test('internalHosts gives a stable id alias and a readable one only when unambiguous', () => {
+  assert.deepEqual(internalHosts(15, 'sriq-train-sandbox', 'sriq-train', 'sriq'), [
+    'svc-15',
+    'sriq-train-sandbox.sriq-train.sriq.internal',
+  ]);
+  // Never sanitised into a label: `my_repo` and `my-repo` would collide and
+  // share an alias, which is round-robin between two tenants' containers.
+  assert.deepEqual(internalHosts(3, 'web', 'my_repo', 'acme'), ['svc-3']);
+  assert.deepEqual(internalHosts(3, 'web', 'Repo', 'acme'), ['svc-3']);
+  assert.deepEqual(internalHosts(3, 'web', undefined, 'acme'), ['svc-3']);
+  assert.deepEqual(internalHosts(3, 'web', 'a'.repeat(64), 'acme'), ['svc-3']);
+  assert.deepEqual(internalHosts('7', 'api', 'r', 's'), ['svc-7', 'api.r.s.internal']);
 });

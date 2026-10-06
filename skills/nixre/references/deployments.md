@@ -46,6 +46,18 @@ automation is admin-only and never overwrites conflicting records. Reserved
 hostnames apply to all route types; `DEPLOY_BASE_DOMAIN` supplies automatic app
 addresses and its namespace cannot be claimed as a custom domain.
 
+### Internal hostnames (app-to-app)
+
+Containers on the deploy network can reach each other directly, without the
+proxy, at stable aliases that survive redeploys:
+
+- `svc-<id>` — always
+- `<name>.<repo>.<space>.internal` — when all three are already lowercase DNS labels
+
+Use `http://<alias>:<container_port>`. They are returned as `internal_hosts` on
+the service API. There is no bare `<name>` alias (names are only unique per
+repo). Renames apply from the next deployment.
+
 ## Security upgrades
 
 Follow `docs/security-upgrade.md` before changing keys or networks. Boot converts

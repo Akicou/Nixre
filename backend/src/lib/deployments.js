@@ -15,6 +15,7 @@ import {
   archiveSpec,
   makeImageTag,
   containerName,
+  internalHosts,
   computeUsage,
   demuxDockerLog,
 } from './deployPure.js';
@@ -594,7 +595,12 @@ export function createDeploymentEngine({
     if (ro?.entrypoint) createOpts.Entrypoint = ro.entrypoint;
     // Explicit network modes conflict with EndpointsConfig — omit ours then.
     if (net && !(hc && hc.network_mode)) {
-      createOpts.NetworkingConfig = { EndpointsConfig: { [net]: {} } };
+      // Stable internal hostnames (see internalHosts). During a blue/green
+      // rollout the old and new containers briefly share them, exactly as
+      // they share the public route.
+      createOpts.NetworkingConfig = {
+        EndpointsConfig: { [net]: { Aliases: internalHosts(service.id, service.name, repo.uid, repo.space_uid) } },
+      };
     }
     const created = await docker.createContainer(createOpts);
     await created.start();

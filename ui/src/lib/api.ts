@@ -1340,6 +1340,8 @@ export interface RuntimeOptions {
 export interface DeployService {
   id: number;
   name: string;
+  /** Stable hostnames other containers on the deploy network resolve this service by. */
+  internal_hosts?: string[];
   root_dir: string;
   dockerfile_path: string;
   branch: string;

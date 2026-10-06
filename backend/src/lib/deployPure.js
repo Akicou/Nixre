@@ -122,6 +122,35 @@ export function containerName(serviceId, deploymentId) {
   return `nixre-app-${hash}`;
 }
 
+// A DNS label exactly as given, or null. No sanitising: two different uids
+// must never fold into the same label (`a_b` and `a-b` would), because a shared
+// alias on the deploy network is DNS round-robin between the two containers —
+// one tenant's service would receive another's internal traffic.
+const DNS_LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+function exactDnsLabel(value) {
+  const label = String(value ?? '');
+  return DNS_LABEL_RE.test(label) ? label : null;
+}
+
+// Stable names other containers on the deploy network resolve a service by.
+// Container names embed the deployment id and change on every deploy, and
+// IPs are reassigned, so service-to-service calls (an app and its sidecar)
+// had no address that survived a redeploy.
+//
+//   svc-<id>                          always; ids are unique instance-wide
+//   <name>.<repo>.<space>.internal    when all three are already DNS labels;
+//                                     unique because (repo, name) is unique
+//                                     and a repo path is unique
+//
+// Deliberately no bare `<name>` alias: service names are only unique per repo,
+// so it would let one repository claim another's internal hostname.
+export function internalHosts(serviceId, serviceName, repoUid, spaceUid) {
+  const hosts = [`svc-${Number(serviceId)}`];
+  const labels = [serviceName, repoUid, spaceUid].map(exactDnsLabel);
+  if (labels.every(Boolean)) hosts.push(`${labels.join('.')}.internal`);
+  return hosts;
+}
+
 export function shortSha(sha) {
   return sha ? String(sha).slice(0, 7) : '';
 }

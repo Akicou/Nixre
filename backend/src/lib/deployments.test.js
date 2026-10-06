@@ -439,6 +439,11 @@ test('create options inject decrypted env, limits, labels, restart policy', asyn
   assert.equal(create.Labels['nixre.service'], String(svc.id));
   assert.match(create.Labels['nixre.deployment'], /^\d+$/);
   assert.ok(create.NetworkingConfig.EndpointsConfig.nixre, 'joins core network');
+  assert.deepEqual(
+    create.NetworkingConfig.EndpointsConfig.nixre.Aliases,
+    [`svc-${svc.id}`, 'web.mono.acme.internal'],
+    'stable internal hostnames survive the per-deployment container name',
+  );
   assert.deepEqual(create.HostConfig.CapDrop, ['ALL']);
   assert.deepEqual(create.HostConfig.SecurityOpt, ['no-new-privileges:true']);
 });

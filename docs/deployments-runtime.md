@@ -98,6 +98,27 @@ The bind-mounted host path must be identical inside the container when the
 service spawns *sibling* containers (`docker run -v` resolves against the
 **host** filesystem), which is exactly what the sandbox runner needs.
 
+## Internal hostnames
+
+Unless `network_mode` replaces the default network, every service container is
+attached to the apps network with two DNS aliases that other containers there
+can resolve:
+
+| Alias | When |
+| --- | --- |
+| `svc-<id>` | always |
+| `<name>.<repo>.<space>.internal` | service name, repo uid and space uid are all already lowercase DNS labels |
+
+Container names (`nixre-app-<hash>`) embed the deployment id and IPs are
+reassigned, so neither survives a redeploy; these do. Point an app at its
+sidecar with e.g. `SIDECAR_URL=http://svc-15:8000`.
+
+Uids are never sanitised into a label, and no bare `<name>` alias exists: either
+would let two services share an alias, and a shared alias on a Docker network is
+round-robin DNS — one repository could receive another's internal traffic.
+During a blue/green rollout the old and new containers both carry the aliases
+until the old one is retired, the same overlap the public route has.
+
 ## Related knobs
 
 - `DEPLOY_PROXY_TIMEOUT_MS` (default 120000) — idle timeout for proxied app

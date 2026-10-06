@@ -743,6 +743,19 @@ export const DomainsPanel: React.FC<{ service: DeployService }> = ({ service }) 
         </p>
       )}
 
+      {service.internal_hosts?.length ? (
+        <p className="text-xs text-txt-tertiary" data-testid="internal-hosts">
+          Other deployed apps reach it privately at
+          {service.internal_hosts.map((host, i) => (
+            <span key={host}>
+              {i ? ' or' : ''}
+              <code className="ml-1 font-mono text-txt-secondary">{`http://${host}:${service.container_port}`}</code>
+            </span>
+          ))}
+          . Stable across redeploys; a rename applies from the next deployment.
+        </p>
+      ) : null}
+
       {domains.map(d => {
         const dns = d.dns || { auto: false, status: 'manual' as const };
         const autoCreated = dns.auto && dns.status === 'created';
