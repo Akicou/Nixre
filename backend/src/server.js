@@ -26,6 +26,7 @@ import { internalRoutes } from './routes/internal.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { deploymentRoutes } from './routes/deployments.js';
 import { actionsRoutes } from './routes/actions.js';
+import { activityRoutes } from './routes/activity.js';
 import { aiRoutes } from './routes/ai.js';
 import { smartHttp } from './git/smartHttp.js';
 import { REPOS_ROOT, repairAllHooks } from './git/repo.js';
@@ -106,6 +107,7 @@ export function createApp({ pool = sharedPool, authenticate: authenticateOverrid
   app.use('/api/v1', aiRoutes(pool, authenticate));
   app.use('/api/v1', deploymentRoutes(pool, authenticate));
   app.use('/api/v1', actionsRoutes(pool, authenticate));
+  app.use('/api/v1', activityRoutes(pool, authenticate));
 
   // Git streams never enter the API body parser.
   app.use('/git', smartHttp(pool, authenticate));

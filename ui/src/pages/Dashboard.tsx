@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   GitPullRequest,
   FolderGit2,
@@ -7,15 +7,20 @@ import {
   Search,
   Terminal,
   ArrowRight,
-  Star
+  Star,
+  Activity,
 } from 'lucide-react';
-import { api, Repository, Space, User } from '../lib/api';
+import { api, ActivityFeed, Repository, Space, User } from '../lib/api';
 import { Avatar } from '../components/Avatar';
 import { DeploymentsOverview } from '../components/DeploymentsOverview';
+import { ActivityPulse } from '../components/ActivityPulse';
+import { ActivityFeedList, TopContributors } from '../components/ActivityFeed';
 
 interface DashboardProps {
   user: User | null;
 }
+
+type Tab = 'activity' | 'repos';
 
 export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   const [spaces, setSpaces] = useState<Space[]>([]);
@@ -24,6 +29,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   const [search, setSearch] = useState('');
   // Guests land on an explore view, where the most-starred repos lead.
   const [sort, setSort] = useState<'name' | 'stars'>(user ? 'name' : 'stars');
+  const [feed, setFeed] = useState<ActivityFeed | null>(null);
+  const [feedLoading, setFeedLoading] = useState(true);
+  const [feedError, setFeedError] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Guests land on the explore list; signed-in people on what's new.
+  const defaultTab: Tab = user ? 'activity' : 'repos';
+  const tabParam = searchParams.get('tab');
+  const tab: Tab = tabParam === 'repos' || tabParam === 'activity' ? tabParam : defaultTab;
 
   useEffect(() => {
     Promise.all([
@@ -36,6 +49,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
     });
   }, []);
 
+  const loadFeed = useCallback(() => {
+    setFeedLoading(true);
+    // Older backends (or test mocks) without the endpoint just get an empty feed.
+    Promise.resolve()
+      .then(() => api.getActivity(80))
+      .then(f => { setFeed(f); setFeedError(false); })
+      .catch(() => setFeedError(true))
+      .finally(() => setFeedLoading(false));
+  }, []);
+
+  useEffect(loadFeed, [loadFeed]);
+
+  const selectTab = (next: Tab) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === defaultTab) params.delete('tab');
+    else params.set('tab', next);
+    setSearchParams(params, { replace: true });
+  };
+
   const quickStartRepoPath = repos[0]?.path || 'your-space/your-repo';
 
   const filteredRepos = [...repos]
@@ -46,49 +78,48 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
     (r.path && r.path.toLowerCase().includes(search.toLowerCase()))
   );
 
+  const tabClass = (active: boolean) =>
+    `flex items-center gap-1.5 px-1 pb-2.5 -mb-px border-b-2 text-sm font-medium transition ${
+      active ? 'border-brand text-txt-primary' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+    }`;
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 w-full min-w-0">
-      {/* Top Banner & Quick Stats */}
-      <div className="mb-8 border-b border-border-subtle pb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-txt-primary flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span>Repositories & Spaces</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-surface-subtle text-txt-secondary font-mono border border-border-subtle font-normal">
-              {repos.length} repos
-            </span>
-          </h1>
-          <p className="text-sm text-txt-secondary mt-1">
-            Self-hosted Git collaboration with AI agents and built-in deployments.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {user && (
-            <Link
-              to={`/${user.uid}`}
-              className="px-3 py-1.5 rounded text-sm text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle border border-border-subtle transition font-medium flex items-center gap-1.5"
-            >
-              <span className="flex items-center gap-1.5">
-                <Avatar name={user.uid} url={user.avatar_url} size={20} />
-                <span>My Profile</span>
-              </span>
-            </Link>
-          )}
-          {user && (
-          <Link
-            to="/new-space"
-            className="px-3 py-1.5 rounded text-sm text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle border border-border-subtle transition font-medium flex items-center gap-1.5"
-          >
-            <Layers className="w-4 h-4 text-txt-tertiary" />
-            <span>New Space</span>
-          </Link>
-          )}
-        </div>
-      </div>
+      <ActivityPulse user={user} feed={feed} loading={feedLoading && !feed} />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 xl:gap-8">
         {/* Main Repositories List */}
-        <div className="lg:col-span-8 space-y-6">
+        <div className="lg:col-span-8 space-y-6 min-w-0">
+          <div className="flex items-end justify-between gap-3 border-b border-border-subtle">
+            <div className="flex items-center gap-5" role="tablist" aria-label="Dashboard sections">
+              <button type="button" role="tab" aria-selected={tab === 'activity'} onClick={() => selectTab('activity')} className={tabClass(tab === 'activity')}>
+                <Activity className="w-4 h-4" />
+                <span>Activity</span>
+              </button>
+              <button type="button" role="tab" aria-selected={tab === 'repos'} onClick={() => selectTab('repos')} className={tabClass(tab === 'repos')}>
+                <FolderGit2 className="w-4 h-4" />
+                <span>Repositories</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-surface-subtle text-txt-secondary font-mono border border-border-subtle">
+                  {repos.length}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {tab === 'activity' && (
+            <>
+              {user && <DeploymentsOverview />}
+              <ActivityFeedList
+                events={feed?.events ?? null}
+                loading={feedLoading}
+                error={feedError}
+                signedIn={Boolean(user)}
+                onRefresh={loadFeed}
+              />
+            </>
+          )}
+
+          {tab === 'repos' && (<>
           {/* Search Bar */}
           <div className="flex gap-2">
           <div className="relative flex-1 min-w-0">
@@ -111,8 +142,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
             <option value="stars">Most starred</option>
           </select>
           </div>
-
-          {user && <DeploymentsOverview />}
 
           {loading ? (
             <div className="py-16 text-center text-sm text-txt-tertiary">Loading repositories...</div>
@@ -187,10 +216,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
               ))}
             </div>
           )}
+          </>)}
         </div>
 
-        {/* Sidebar: Spaces & Quick Info */}
+        {/* Sidebar: who is active, spaces & quick info */}
         <div className="lg:col-span-4 space-y-6">
+          {user && (
+            <Link
+              to={`/${user.uid}`}
+              className="flex items-center gap-3 border border-border-subtle rounded-lg bg-surface-canvas p-3 hover:bg-surface-subtle/60 transition"
+            >
+              <Avatar name={user.uid} url={user.avatar_url} size={36} />
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-semibold text-txt-primary truncate">{user.display_name || user.uid}</span>
+                <span className="block text-xs text-txt-tertiary font-mono truncate">@{user.uid} · My Profile</span>
+              </span>
+              <ArrowRight className="w-4 h-4 text-txt-tertiary" />
+            </Link>
+          )}
+
+          {feed && <TopContributors contributors={feed.contributors} />}
+
           {/* Spaces Sidebar Section */}
           <div className="border border-border-subtle rounded-lg bg-surface-canvas p-4 space-y-3">
             <div className="flex items-center justify-between">

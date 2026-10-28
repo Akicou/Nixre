@@ -404,6 +404,24 @@ export async function commitDates(space, repo, { since, until, authorEmail } = {
   }
 }
 
+// Newest commits across every branch, for the dashboard activity feed. Author
+// date order; empty / unreadable repos return [].
+export async function recentCommits(space, repo, { since, limit = 200 } = {}) {
+  const dir = repoDir(space, repo);
+  const fmt = ['%H', '%h', '%s', '%an', '%ae', '%aI'].join(US);
+  const args = ['log', '--all', '--date-order', `--format=${fmt}`, '--no-color', `--max-count=${limit}`];
+  if (since) args.push(`--since=${since}`);
+  try {
+    const out = await git(dir, args);
+    return out.split('\n').filter(Boolean).map(line => {
+      const [sha, shortSha, title, name, email, authored] = line.split(US);
+      return { sha, short_sha: shortSha, title, name, email, when: authored };
+    });
+  } catch {
+    return [];
+  }
+}
+
 // Parse one commit record for `show <ref>` (used by getCommit).
 async function readSingleCommit(space, repo, ref) {
   const dir = repoDir(space, repo);
