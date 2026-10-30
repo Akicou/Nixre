@@ -49,6 +49,6 @@ Everything here is first-class in `nixre-core` (not a plugin).
 
 ## API surface quick reference
 
-`/api/v1`: `login` `register` `logout` `user` `admin/registration` `admin/users` `webauthn/login` `passkeys` `user/publickeys` `user/tokens` `user/memberships` `spaces` `spaces/:uid/{members,repos,contributions}` `repos` (+ content/tree/raw/commits/branches/pullreq sub-resources) `prefs` `conversations` `ai/*` `deployments/*`, plus `/git/{space}/{repo}.git` Smart HTTP.
+`/api/v1`: `login` `register` `logout` `user` `admin/registration` `admin/users` `webauthn/login` `passkeys` `user/publickeys` `user/tokens` `user/memberships` `spaces` `spaces/:uid/{members,repos,contributions}` `repos` (+ content/tree/raw/commits/branches/pullreq sub-resources) `prefs` `conversations` `activity` (dashboard feed, visibility-scoped) `ai/*` `deployments/*`, plus `/git/{space}/{repo}.git` Smart HTTP.
 
 > **Param-naming pitfall:** many service-scoped helpers read `req.params.id` but older routes named the param `:serviceId`. When a whole endpoint 500s, check that the route param name and the helper's read match (a recent bug crashed every `/deployments/services/:id/*` route this way).

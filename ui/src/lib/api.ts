@@ -129,6 +129,57 @@ export interface UserGoal {
   repo?: { space_uid: string; uid: string; path: string; default_branch: string; readme: string } | null;
 }
 
+export interface ActivityActor {
+  uid: string | null;
+  display_name: string;
+  avatar_url: string;
+}
+
+interface ActivityBase {
+  id: string;
+  at: number;
+  actor: ActivityActor | null;
+  repo?: string;
+}
+
+export type ActivityEvent =
+  | (ActivityBase & { kind: 'push'; repo: string; count: number; commits: { sha: string; short_sha: string; title: string }[] })
+  | (ActivityBase & { kind: 'pr_opened' | 'pr_merged' | 'pr_closed'; repo: string; number: number; title: string; draft: boolean })
+  | (ActivityBase & { kind: 'star' | 'repo_created'; repo: string })
+  | (ActivityBase & { kind: 'deploy_live' | 'deploy_failed'; repo: string; service: string; ref: string; short_sha: string; trigger: string; duration_ms: number | null })
+  | (ActivityBase & { kind: 'run_success' | 'run_failure'; repo: string; workflow: string; run_number: number; ref: string; short_sha: string })
+  | (ActivityBase & { kind: 'user_joined' });
+
+export type ActivityKind = ActivityEvent['kind'];
+
+export interface ActivityDay {
+  date: string;
+  commits: number;
+  prs: number;
+  other: number;
+}
+
+export interface ActivityContributor extends ActivityActor {
+  count: number;
+  commits: number;
+  prs: number;
+}
+
+export interface ActivityFeed {
+  window_days: number;
+  events: ActivityEvent[];
+  daily: ActivityDay[];
+  contributors: ActivityContributor[];
+  stats: {
+    repos: number;
+    open_prs: number;
+    commits_7d: number;
+    contributors_7d: number;
+    live_services: number;
+    members: number | null;
+  };
+}
+
 export interface UserGoals {
   goals: UserGoal[];
 }
@@ -598,6 +649,10 @@ class ApiClient {
 
   async getUserProfile(uid: string): Promise<UserProfile> {
     return this.request<UserProfile>(`/users/${uid}`);
+  }
+
+  async getActivity(limit = 60): Promise<ActivityFeed> {
+    return this.request<ActivityFeed>(`/activity?limit=${limit}`);
   }
 
   async getUserGoals(uid: string): Promise<UserGoals> {

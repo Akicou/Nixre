@@ -42,7 +42,7 @@ describe('App routing & auth guards', () => {
     api.listSpaces.mockResolvedValue([space]);
     window.history.pushState(null, '', '/');
     render(<App />);
-    await screen.findByText(/Repositories & Spaces/i);
+    await screen.findByTestId('activity-pulse');
     expect(window.location.pathname).toBe('/');
     expect(screen.queryByText('New Space')).toBeNull();
     expect(screen.queryByText(/Sign in to Nixre/i)).toBeNull();
@@ -69,12 +69,12 @@ describe('App routing & auth guards', () => {
   it('shows the dashboard for a signed-in user', async () => {
     api.currentUser.mockResolvedValue(user);
     render(<App />);
-    await screen.findByText(/Repositories & Spaces/i);
+    await screen.findByTestId('activity-pulse');
   });
 
   it('serves the dashboard for an admin user', async () => {
     api.currentUser.mockResolvedValue(adminUser);
     render(<App />);
-    await screen.findByText(/Repositories & Spaces/i);
+    await screen.findByTestId('activity-pulse');
   });
 });
