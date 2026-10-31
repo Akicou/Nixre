@@ -10,7 +10,15 @@ const STATUS_CLS: Record<SecurityScanRun['status'], string> = {
   skipped: 'bg-surface-subtle text-txt-secondary',
 };
 
+export function formatCountdown(ms: number): string {
+  if (ms <= 0) return 'due now';
+  const m = Math.ceil(ms / 60_000);
+  const h = Math.floor(m / 60);
+  return h > 0 ? `in ${h}h ${m % 60}m` : `in ${m}m`;
+}
+
 export const SecurityScanSettings: React.FC = () => {
+  const [now, setNow] = useState(() => Date.now());
   const [state, setState] = useState<SecurityScanState | null>(null);
   const [form, setForm] = useState<Settings | null>(null);
   const [msg, setMsg] = useState('');
@@ -39,6 +47,11 @@ export const SecurityScanSettings: React.FC = () => {
     const t = setInterval(() => { api.getSecurityScan().then(apply, () => {}); }, 5000);
     return () => clearInterval(t);
   }, [running]);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   if (!state || !form) {
     return <div className="text-xs text-txt-tertiary font-mono">{msg || 'Loading security scan…'}</div>;
@@ -82,6 +95,12 @@ export const SecurityScanSettings: React.FC = () => {
       </h2>
       <p className="text-xs text-txt-secondary">
         Periodically checks running deployments for known CVEs with the assistant, and files issues with fixes.
+      </p>
+
+      <p className="text-sm text-txt-primary" data-testid="next-scan">
+        {running ? 'Scan running now.'
+          : state.nextRunAt == null ? 'Scheduled scans are off.'
+          : <>Next scan <strong>{formatCountdown(state.nextRunAt - now)}</strong> <span className="text-txt-tertiary text-xs">({new Date(state.nextRunAt).toLocaleString()})</span></>}
       </p>
 
       <div className="grid sm:grid-cols-2 gap-4 max-w-3xl">

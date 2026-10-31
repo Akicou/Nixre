@@ -1,6 +1,6 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { SecurityScanSettings } from '../components/SecurityScanSettings';
+import { SecurityScanSettings, formatCountdown } from '../components/SecurityScanSettings';
 
 const { api } = vi.hoisted(() => ({
   api: {
@@ -22,11 +22,11 @@ const run = {
 describe('SecurityScanSettings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    api.getSecurityScan.mockResolvedValue({ settings, providers, running: false, runs: [run] });
+    api.getSecurityScan.mockResolvedValue({ settings, providers, running: false, nextRunAt: null, runs: [run] });
   });
 
   it('saves the chosen provider, model and interval', async () => {
-    api.saveSecurityScan.mockResolvedValue({ settings: { ...settings, enabled: true }, providers, running: false, runs: [run] });
+    api.saveSecurityScan.mockResolvedValue({ settings: { ...settings, enabled: true }, providers, running: false, nextRunAt: null, runs: [run] });
     render(<SecurityScanSettings />);
     await screen.findByText('Enable scheduled scans');
     fireEvent.click(screen.getByLabelText('Enable scheduled scans'));
@@ -48,5 +48,24 @@ describe('SecurityScanSettings', () => {
 
     fireEvent.click(await screen.findByText('2 findings'));
     expect(await screen.findByText('clear')).toBeInTheDocument();
+  });
+});
+
+describe('next scan countdown', () => {
+  it('formats the time left', () => {
+    expect(formatCountdown(0)).toBe('due now');
+    expect(formatCountdown(-5)).toBe('due now');
+    expect(formatCountdown(59_000)).toBe('in 1m');
+    expect(formatCountdown(2 * 3_600_000 + 14 * 60_000)).toBe('in 2h 14m');
+  });
+
+  it('shows when the next scan is due, or that scheduling is off', async () => {
+    api.getSecurityScan.mockResolvedValue({ settings: { ...settings, enabled: true }, providers, running: false, nextRunAt: Date.now() + 2 * 3_600_000 + 60_000, runs: [run] });
+    const { unmount } = render(<SecurityScanSettings />);
+    expect(await screen.findByTestId('next-scan')).toHaveTextContent(/Next scan in 2h [12]m/);
+    unmount();
+    api.getSecurityScan.mockResolvedValue({ settings, providers, running: false, nextRunAt: null, runs: [run] });
+    render(<SecurityScanSettings />);
+    expect(await screen.findByTestId('next-scan')).toHaveTextContent('Scheduled scans are off.');
   });
 });

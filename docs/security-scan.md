@@ -1,8 +1,8 @@
-﻿# Security scan and issues
+# Security scan and issues
 
 Nixre scans itself. Every 3 hours (admin setting, 1-168h) nixre-core inventories `nixre-core` and every running deployment, checks the result against known CVEs, and has your configured assistant model decide what actually threatens the live apps. It files repository issues with the fix, or dispatches a rebuild workflow.
 
-On by default. It needs no new credentials: it uses an admin's existing **Assistant provider** (Plugins). Pick a specific provider/model under **Admin → Security scan**, or leave it on the admin's default. With no provider configured the scan still runs and keeps its report, but files nothing.
+On by default. Admin → Security scan shows a countdown to the next scan. It needs no new credentials: it uses an admin's existing **Assistant provider** (Plugins). Pick a specific provider/model under **Admin → Security scan**, or leave it on the admin's default. With no provider configured the scan still runs and keeps its report, but files nothing.
 
 ## What a scan does
 

@@ -43,6 +43,8 @@ Plus:
 6. **Domain routing:** apps go through deploy proxy port `3003`, tunnel catches everything else. Don't wire A-records/port-forward — this router no port forward. All internet comes in via cloudflare tunnel.
 7. **`nixre.dev` marketing repo is SEPARATE** (github.com/Akicou/nixre.dev). It has the landing page `index.html` + its own `llms.txt`. The forge repo `README.md`/`llms.txt` ALSO say the live instance. Keep them in sync.
 
+8. **AI agents SHOW their work.** If a change touches the UI, the PR must have screenshots of it. If it takes more than one step to use, it must also have a short video. Details in "If an AI agent opens a PR" below.
+
 ---
 
 ## CAVEMAN SAY: what must change when thing happen
@@ -69,6 +71,15 @@ Plus:
 - Edit `backend/src/...`, update `docker-compose` or `.env.example` if new env var.
 - Rebuild: `docker compose up -d --build nixre-core`. Check `/healthz`.
 - Add migration in `backend/src/db/migrations/` if DB change (numbered, next in sequence).
+
+### If an AI agent opens a PR (proof of work)
+Tests passing is not proof the thing looks or works right. Human must see it.
+- **Any UI change -> screenshots.** Run the built app (`ui/dist` or dev server), capture the screens you added or changed, and put them in the PR description. Show the states that matter: empty, filled, error, and mobile width if layout changed. No screenshots of a blank page or a login wall.
+- **More than one step -> a video.** If using the feature takes several actions (create, configure, run, see result), record one short clean screen capture that does it start to finish: no failed attempts, no dead time, no debug consoles, cursor moves on purpose. Aim for under 90 seconds. Example: for the security scan, enable it, press Run now, expand the report, open the issue it filed.
+- **Backend-only change** with no UI: no screenshot needed. Put the real command and its real output in the PR instead (curl, test run, log line).
+- **If you cannot capture it** (no browser, headless box, no display), SAY SO in the PR, name what was not shown, and do not claim it works visually. Never fake or mock a screenshot.
+- **Where media lives:** attach to the PR description or a PR comment. Do NOT commit screenshots or videos into the repo (it bloats clones). Check them for secrets, tokens, emails and real hostnames before uploading, same as the `skills/` cleaning rule.
+- Say in the PR which screenshot or video proves which claim.
 
 ### If change the deployment feature
 - Backend: `backend/src/routes/deployments.js`, `backend/src/lib/deploy*`.
