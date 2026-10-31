@@ -107,7 +107,7 @@ describe('Dashboard', () => {
   it('shows the hero stats, 30-day chart and leaderboard', async () => {
     mount('/');
     const hero = await screen.findByTestId('activity-pulse');
-    expect(hero).toHaveTextContent(`Good`);
+    expect(hero).toHaveTextContent(/Good|Burning the midnight oil/);
     await waitFor(() => expect(screen.getAllByTestId('activity-bar')).toHaveLength(30));
     expect(hero).toHaveTextContent('12');
     expect(hero).toHaveTextContent('of 5');

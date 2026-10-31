@@ -914,7 +914,7 @@ export const AgentWorkspace: React.FC = () => {
         }}
         aria-label={`Select model: ${modelLabel(activeModelLabel)}`}
         aria-expanded={modelOpen}
-        className="flex min-w-0 items-center gap-1.5 min-h-11 px-2.5 rounded-lg border border-border-subtle text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition"
+        className="flex min-w-0 items-center gap-1.5 min-h-11 px-2.5 rounded-lg border border-transparent text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle hover:border-border-subtle transition"
       >
         <Cpu className="w-4 h-4 shrink-0 text-brand" aria-hidden="true" />
         <span className="text-txt-tertiary">Model</span>
@@ -925,7 +925,7 @@ export const AgentWorkspace: React.FC = () => {
         <ChevronDown className="w-3 h-3 text-txt-tertiary" />
       </button>
       {modelOpen && (
-        <div className="absolute left-0 bottom-[calc(100%+8px)] w-[min(22rem,calc(100vw-4rem))] max-h-[60vh] overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-xl z-40 animate-pop">
+        <div className="absolute right-0 bottom-[calc(100%+8px)] w-[min(22rem,calc(100vw-4rem))] max-h-[60vh] overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-xl z-40 animate-pop">
           <div className="px-3 py-2 border-b border-border-subtle">
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
               Model
@@ -988,7 +988,7 @@ export const AgentWorkspace: React.FC = () => {
 
   const queuePanel =
     queued.length > 0 ? (
-      <div className="w-full max-w-3xl mb-2 space-y-1.5">
+      <div className="w-full max-w-[52rem] mb-2 space-y-1.5">
         <p className="px-1 text-[10px] font-medium uppercase tracking-[0.12em] text-txt-tertiary">
           Queued for the agent
         </p>
@@ -1058,14 +1058,24 @@ export const AgentWorkspace: React.FC = () => {
       </div>
     ) : null;
 
+  const sessionStats = (() => {
+    let turns = 0;
+    let steps = 0;
+    for (const msg of messages) {
+      if ((msg as { kind?: string }).kind) continue;
+      if (msg.role === 'user') turns += 1;
+      else steps += messageParts(msg).filter(part => part.type === 'tool').length;
+    }
+    return { turns, steps };
+  })();
+
   const composer = (
     <div
-      className={`w-full rounded-2xl border border-border-subtle bg-surface-canvas shadow-lg transition focus-within:border-brand/50 ${
-        empty ? 'max-w-[40rem]' : 'max-w-3xl'
+      className={`w-full rounded-2xl border border-border-subtle bg-surface-canvas shadow-sm transition focus-within:border-brand/50 ${
+        empty ? 'max-w-[40rem]' : 'max-w-[52rem]'
       }`}
     >
       <div className="px-3 pt-3">
-        {!currentId && <label className="flex flex-wrap items-center gap-2 text-xs text-txt-tertiary mb-2">Task permissions<select aria-label="New task permissions" value={taskPreset} onChange={e => setTaskPreset(e.target.value)} className="bg-surface-base border border-border-subtle rounded px-2 py-1"><option value="workspace">Review edits and approve commands</option><option value="read_only">Read only</option><option value="restricted">Edits and approved checks only</option></select></label>}
         <ComposerAttach images={pendingImages} disabled={attaching} onRemove={id => { setPendingImages(imgs => imgs.filter(i => i.id !== id)); setAttachmentError(''); }} />
         {attachmentError && <p role="alert" className="text-xs text-feedback-error-text pb-2">{attachmentError}</p>}
         {attaching && <p role="status" className="text-xs text-txt-secondary pb-2">Reading attachments…</p>}
@@ -1126,9 +1136,22 @@ export const AgentWorkspace: React.FC = () => {
             <Plus className="w-4 h-4" aria-hidden="true" />
             Attach
           </button>
-          {modelCard}
+          {!currentId && (
+            <select
+              aria-label="New task permissions"
+              title="What the agent may do in this task: ask first (review edits and approve commands), read only, or checks only"
+              value={taskPreset}
+              onChange={e => setTaskPreset(e.target.value)}
+              className="min-h-11 max-w-[10rem] rounded-lg bg-transparent px-2 text-xs text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary outline-none cursor-pointer transition"
+            >
+              <option value="workspace" title="Review edits and approve commands">Ask first</option>
+              <option value="read_only" title="The agent can only read">Read only</option>
+              <option value="restricted" title="Edits and approved checks only">Checks only</option>
+            </select>
+          )}
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+          {modelCard}
           <button
             type="button"
             onClick={requestEnvFeedback}
@@ -1181,10 +1204,10 @@ export const AgentWorkspace: React.FC = () => {
             setSessionDrawerOpen(false);
             startNew();
           }}
-          className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium transition min-h-11 ${
+          className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-border-subtle text-[13px] font-medium transition min-h-11 ${
             empty
               ? 'bg-surface-subtle text-txt-primary'
-              : 'text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary'
+              : 'text-txt-primary hover:bg-surface-subtle'
           }`}
         >
           <Sparkles className="w-3.5 h-3.5" />
@@ -1199,15 +1222,15 @@ export const AgentWorkspace: React.FC = () => {
         ) : (
           groupedSessions.map(([groupPath, convs]) => (
             <div key={groupPath}>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-txt-tertiary">
-                <FolderGit2 className="w-3 h-3 shrink-0 opacity-70" />
+              <div className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] font-medium text-txt-secondary">
+                <FolderGit2 className="w-3.5 h-3.5 shrink-0 text-brand" />
                 <span className="truncate">{workspaceLabel(groupPath)}</span>
               </div>
               <div className="space-y-0.5">
                 {convs.map(c => (
                   <div
                     key={c.id}
-                    className={`group flex items-center gap-1 rounded-md pl-2.5 pr-1 py-2 cursor-pointer transition min-h-11 ${
+                    className={`group flex items-center gap-1 rounded-lg pl-6 pr-1 py-2 cursor-pointer transition min-h-11 ${
                       c.id === currentId
                         ? 'bg-surface-subtle text-txt-primary'
                         : 'text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary active:bg-surface-subtle'
@@ -1235,7 +1258,7 @@ export const AgentWorkspace: React.FC = () => {
                           .catch(() => {})
                           .finally(refreshSessions);
                       }}
-                      className="opacity-70 sm:opacity-0 sm:group-hover:opacity-100 flex min-h-11 min-w-11 items-center justify-center rounded text-txt-tertiary hover:text-rose-400 transition shrink-0"
+                      className="opacity-70 sm:hidden sm:group-hover:flex flex min-h-11 min-w-9 items-center justify-center rounded text-txt-tertiary hover:text-rose-400 transition shrink-0"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1548,14 +1571,6 @@ export const AgentWorkspace: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {lastTurnMetrics(trace) && (
-                <span
-                  className="hidden sm:inline font-mono text-[10px] text-txt-tertiary"
-                  title="Last turn — logged for distillation"
-                >
-                  {lastTurnMetrics(trace)!.tokensPerSecond} tok/s · {lastTurnMetrics(trace)!.modelId}
-                </span>
-              )}
               {trace.length > 0 && (
                 <button
                   type="button"
@@ -1663,7 +1678,7 @@ export const AgentWorkspace: React.FC = () => {
         ) : (
           <>
             <div ref={scrollRef} className="flex-1 overflow-y-auto">
-              <div className="max-w-3xl mx-auto px-5 py-8 space-y-7">
+              <div className="max-w-[52rem] mx-auto px-5 py-8 space-y-7">
                 {currentId && <AgentTaskPanel key={currentId} conversationId={currentId} running={streaming} onResume={() => { setStreaming(true); attachFollow(currentId); }} />}
                 {messages
                   .filter(msg => (msg as { kind?: string }).kind !== 'session_trace')
@@ -1694,9 +1709,20 @@ export const AgentWorkspace: React.FC = () => {
 
             {/* Docked floating composer */}
             <div className="px-3 sm:px-5 pb-5 pt-2 flex flex-col items-center">
-              <div className="w-full max-w-3xl mb-2">{contextPickers(true)}</div>
+              <div className="w-full max-w-[52rem] mb-2">{contextPickers(true)}</div>
               {queuePanel}
               {composer}
+              {sessionStats.turns > 0 && (
+                <p data-testid="session-stats" className="mt-2 flex flex-wrap items-center justify-center gap-x-3 text-[11px] text-txt-tertiary tabular-nums">
+                  {[
+                    `${sessionStats.turns} ${sessionStats.turns === 1 ? 'turn' : 'turns'}`,
+                    `${sessionStats.steps} ${sessionStats.steps === 1 ? 'step' : 'steps'}`,
+                    ...(lastTurnMetrics(trace) ? [`${lastTurnMetrics(trace)!.tokensPerSecond} tok/s`] : []),
+                  ].map((label, i) => (
+                    <span key={label}>{i > 0 && <span aria-hidden className="mr-3">·</span>}{label}</span>
+                  ))}
+                </p>
+              )}
             </div>
           </>
         )}
