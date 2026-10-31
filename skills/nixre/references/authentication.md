@@ -8,6 +8,8 @@ Nixre owns its own auth: **argon2 password hashes, server-side sessions, WebAuth
 - Passkeys (WebAuthn) live server-side in your account and can open a new session.
 - Sessions are tracked server-side; **logout** invalidates the session.
 
+Public repos, orgs and profiles are readable (and public repos cloneable) without any account.
+
 ## Mint a personal access token (for git over HTTPS)
 
 **Settings → Access Tokens → Generate.** Tokens start with `nxp_`, are shown **only once**, are stored **hashed**, and have a lifetime (default 30 days). When it expires you get `Authentication failed` and mint a new one.

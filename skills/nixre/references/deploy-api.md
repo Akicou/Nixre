@@ -64,7 +64,9 @@ private repo of that name exists. Write access you lack answers **403**.
   the current policy.
 
 Returns `201` with the service, including its numeric `id` — every later call
-needs it. `PATCH {SVC}/services/{id}` changes any of the same fields;
+needs it — and `internal_hosts`, the stable app-to-app aliases
+(`svc-<id>`, `<name>.<repo>.<space>.internal`; see
+[deployments](deployments.md#internal-hostnames-app-to-app)). `PATCH {SVC}/services/{id}` changes any of the same fields;
 `DELETE {SVC}/services/{id}` stops the container and removes the service and its
 history.
 
