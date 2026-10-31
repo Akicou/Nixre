@@ -43,6 +43,9 @@ export function securityScanRoutes(pool, authenticate) {
         models: [...new Set([p.default_model, ...(p.enabled_models ?? [])].filter(Boolean))],
       })),
       running: isScanRunning(),
+      // null while a scan runs or scheduling is off. The scheduler ticks once a minute, so the real start can trail this by up to 60s.
+      nextRunAt: !settings.enabled || isScanRunning() ? null
+        : runs[0] ? Number(runs[0].started) + Math.max(1, Number(settings.intervalHours) || 3) * 3_600_000 : Date.now(),
       runs: runs.map(runPublic),
     };
   }
