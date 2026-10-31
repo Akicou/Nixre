@@ -6,6 +6,7 @@
 //   /api/v1/user/publickeys | /user/tokens                            (account)
 //   /api/v1/user/memberships | /spaces... | /repos...                 (forge)
 //   /api/v1/repos/.../+/pullreq...                                    (pull reqs)
+//   /api/v1/repos/.../+/issues... | /admin/security-scan...            (issues, scanner)
 //   /api/v1/prefs | /conversations | /passkeys                        (sync)
 //   /api/sync/v1/*                                                    (compat alias)
 //   /git/{space}/{repo}.git                                           (Smart HTTP)
@@ -20,6 +21,8 @@ import { updateMaintenance } from './lib/instanceUpdater.js';
 import { syncRoutes } from './routes/sync.js';
 import { forgeRoutes } from './routes/forge.js';
 import { pullRequestRoutes } from './routes/pullreq.js';
+import { issueRoutes } from './routes/issues.js';
+import { securityScanRoutes } from './routes/securityScan.js';
 import { accountRoutes } from './routes/account.js';
 import { avatarRoutes } from './routes/avatar.js';
 import { internalRoutes } from './routes/internal.js';
@@ -102,6 +105,8 @@ export function createApp({ pool = sharedPool, authenticate: authenticateOverrid
   app.use('/api/v1', avatarRoutes(pool, authenticate));
   app.use('/api/v1', forgeRoutes(pool, authenticate));
   app.use('/api/v1', pullRequestRoutes(pool, authenticate));
+  app.use('/api/v1', issueRoutes(pool, authenticate));
+  app.use('/api/v1', securityScanRoutes(pool, authenticate));
   app.use('/api/v1', internalRoutes(pool, authenticate));
   app.use('/api/v1', webhookRoutes(pool, authenticate));
   app.use('/api/v1', aiRoutes(pool, authenticate));
@@ -277,6 +282,15 @@ async function bootActions() {
     .catch(err => console.error('actions sweep failed:', err.message));
   const tickMs = Number(process.env.NIXRE_ACTIONS_SCHEDULE_TICK_MS || 20_000);
   setInterval(() => void actionsEngine.scheduleTick().catch(err => console.error('actions schedule tick failed:', err.message)), tickMs).unref();
+}
+
+// Security scan: due-check every minute; the interval itself is an admin setting
+// (default 3h). First check waits two minutes so boot work settles first.
+async function bootSecurityScan() {
+  const { sweepInterruptedScans, securityScanTick } = await import('./lib/securityScanRun.js');
+  await sweepInterruptedScans(pool).catch(err => console.error('security scan sweep failed:', err.message));
+  const tick = () => void securityScanTick(pool).catch(err => console.error('security scan tick failed:', err.message));
+  setTimeout(() => { tick(); setInterval(tick, 60_000).unref(); }, 120_000).unref();
 }
 
 async function bootDeployments() {

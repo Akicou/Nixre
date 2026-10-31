@@ -239,6 +239,61 @@ export interface TreeEntry {
   size?: number;
 }
 
+export interface IssueAuthor { uid: string; display_name: string }
+export interface Issue {
+  number: number;
+  title: string;
+  body: string;
+  state: 'open' | 'closed';
+  labels: string[];
+  source: 'user' | 'security-scan';
+  author: IssueAuthor;
+  created: number;
+  updated: number;
+  closed?: number;
+  comment_count: number;
+}
+export interface IssueComment {
+  id: number;
+  body: string;
+  author: IssueAuthor;
+  source: 'user' | 'security-scan';
+  created: number;
+}
+
+export interface SecurityScanSettings {
+  enabled: boolean;
+  intervalHours: number;
+  providerId: number | null;
+  model: string;
+  coreRepo: string;
+}
+export interface SecurityScanProvider {
+  id: number;
+  label: string;
+  provider: string;
+  models: string[];
+  defaultModel: string;
+}
+export interface SecurityScanRun {
+  id: number;
+  started: number;
+  finished: number | null;
+  status: 'running' | 'ok' | 'error' | 'skipped';
+  trigger: 'schedule' | 'manual';
+  summary: string;
+  error: string | null;
+  findings: number;
+  issues_created: number;
+  report: { markdown: string } | null;
+}
+export interface SecurityScanState {
+  settings: SecurityScanSettings;
+  providers: SecurityScanProvider[];
+  running: boolean;
+  runs: SecurityScanRun[];
+}
+
 export interface PullRequest {
   number: number;
   title: string;
@@ -713,6 +768,60 @@ class ApiClient {
   async getBranches(repoRef: string): Promise<Branch[]> {
     const res = await this.request<any>(`/repos/${repoRef}/+/branches`);
     return res.branches || res || [];
+  }
+
+  // Issues
+  async listIssues(repoRef: string, state: 'open' | 'closed' | 'all' = 'open'): Promise<Issue[]> {
+    return this.request<Issue[]>(`/repos/${repoRef}/+/issues?state=${state}`);
+  }
+
+  async getIssue(repoRef: string, n: number): Promise<{ issue: Issue; comments: IssueComment[] }> {
+    return this.request(`/repos/${repoRef}/+/issues/${n}`);
+  }
+
+  async createIssue(repoRef: string, title: string, body: string, labels: string[] = []): Promise<Issue> {
+    return this.request<Issue>(`/repos/${repoRef}/+/issues`, {
+      method: 'POST',
+      body: JSON.stringify({ title, body, labels }),
+    });
+  }
+
+  async updateIssue(
+    repoRef: string,
+    n: number,
+    patch: { title?: string; body?: string; state?: 'open' | 'closed'; labels?: string[] },
+  ): Promise<Issue> {
+    return this.request<Issue>(`/repos/${repoRef}/+/issues/${n}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  }
+
+  async commentOnIssue(repoRef: string, n: number, body: string): Promise<IssueComment> {
+    return this.request<IssueComment>(`/repos/${repoRef}/+/issues/${n}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  // Security scan (admin)
+  async getSecurityScan(): Promise<SecurityScanState> {
+    return this.request<SecurityScanState>('/admin/security-scan');
+  }
+
+  async saveSecurityScan(settings: SecurityScanSettings): Promise<SecurityScanState> {
+    return this.request<SecurityScanState>('/admin/security-scan', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    });
+  }
+
+  async runSecurityScan(): Promise<{ started: boolean }> {
+    return this.request('/admin/security-scan/run', { method: 'POST' });
+  }
+
+  async getSecurityScanRun(id: number): Promise<SecurityScanRun> {
+    return this.request<SecurityScanRun>(`/admin/security-scan/runs/${id}`);
   }
 
   // Pull Requests

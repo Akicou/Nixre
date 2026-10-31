@@ -4,6 +4,7 @@ import { Shield, Lock, Unlock, Users, Check, MessageSquareWarning } from 'lucide
 import { api, User, EnvFeedback } from '../lib/api';
 import { Avatar } from '../components/Avatar';
 import { InstanceUpdates } from '../components/InstanceUpdates';
+import { SecurityScanSettings } from '../components/SecurityScanSettings';
 import { isRegistrationHidden, setRegistrationHidden } from '../lib/authLock';
 
 function formatWhen(iso: string) {
@@ -101,6 +102,7 @@ export const AdminView: React.FC = () => {
       )}
 
       <InstanceUpdates />
+      <SecurityScanSettings />
 
       {/* Security Controls */}
       <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">

@@ -11,6 +11,7 @@ const { api } = vi.hoisted(() => ({
     setRegistrationClosed: vi.fn(),
     listEnvFeedback: vi.fn(),
     getInstanceUpdates: vi.fn(),
+    getSecurityScan: vi.fn(),
   },
 }));
 vi.mock('../lib/api', () => ({ api }));
@@ -31,6 +32,7 @@ describe('AdminView', () => {
     api.getRegistrationStatus.mockResolvedValue({ closed: false });
     api.listEnvFeedback.mockResolvedValue([]);
     api.getInstanceUpdates.mockResolvedValue({ enabled: false });
+    api.getSecurityScan.mockReturnValue(new Promise(() => {}));
   });
 
   it('lists registered accounts', async () => {

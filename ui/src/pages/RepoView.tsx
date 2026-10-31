@@ -17,6 +17,7 @@ import {
   LayoutGrid,
   Settings,
   PlayCircle,
+  CircleDot,
   Search
 } from 'lucide-react';
 import { api, Repository, Commit, Branch, PullRequest, CommitDetail, User } from '../lib/api';
@@ -33,6 +34,7 @@ import { decodeBase64Patch, parsePatchLines } from '../lib/diff';
 import { DeploymentsSection } from '../pages/DeploymentsPage';
 import { RepositoryHeader } from '../components/RepositoryHeader';
 import { ActionsPanel } from '../components/ActionsPanel';
+import { IssuesPanel } from '../components/IssuesPanel';
 import { FileFinder, isTypingTarget } from '../components/FileFinder';
 import { RepositoryFileTree } from '../components/RepositoryFileTree';
 import { createRepositoryTreeLoader } from '../lib/repositoryTree';
@@ -54,6 +56,8 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
   const prParam = searchParams.get('pr');
   const commitParam = searchParams.get('commit');
   const selectedPrNumber: number | 'new' | null = prParam === 'new' ? 'new' : prParam ? Number(prParam) : null;
+  const issueParam = searchParams.get('issue');
+  const selectedIssue: number | 'new' | null = issueParam === 'new' ? 'new' : Number(issueParam) || null;
   const runParam = Number(searchParams.get('run')) || null;
   const [finderOpen, setFinderOpen] = useState(false);
 
@@ -280,6 +284,16 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
               {repo.num_open_pulls}
             </span>
           )}
+        </button>
+
+        <button
+          onClick={() => { setSearchParams({ tab: 'issues' }); }}
+          className={`px-4 py-3 text-sm font-medium border-b-2 transition shrink-0 inline-flex items-center gap-2 ${
+            activeTab === 'issues' ? 'border-brand text-txt-primary' : 'border-transparent text-txt-secondary hover:text-txt-primary'
+          }`}
+        >
+          <CircleDot className="w-4 h-4" />
+          <span>Issues</span>
         </button>
 
         <button
@@ -686,6 +700,17 @@ export const RepoView: React.FC<{ user?: User | null }> = ({ user = null }) => {
             </div>
           ))}
         </div>
+      )}
+
+      {/* TAB CONTENT: ISSUES */}
+      {activeTab === 'issues' && (
+        <IssuesPanel
+          repoPath={repoPath}
+          canWrite={repo.can_write === true}
+          signedIn={!!user}
+          selected={selectedIssue}
+          onSelect={n => setSearchParams(n === null ? { tab: 'issues' } : { tab: 'issues', issue: String(n) })}
+        />
       )}
 
       {/* TAB CONTENT: ACTIONS */}
