@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same PR makes the older run pointless; cancel it. Pushes to
+# main are never cancelled so every merged commit gets a full result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # AGENTS.md requires "build the UI, run the tests, commit ui/dist" before every
 # push. Nothing enforced it, so a broken or stale build reached main. This
 # workflow is that enforcement.
@@ -55,8 +61,37 @@ jobs:
           docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
           docker run --rm -e NIXRE_TRUSTED_EDGE_CIDRS="127.0.0.1/32 ::1/128" -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
+  # The Docker upgrade check takes ~9 minutes and only exercises the images and
+  # compose stack. A PR that touches none of their inputs (UI-only, docs) skips
+  # it. A skipped job counts as passing for required checks. Pushes to main
+  # always run it. ui/dist is deliberately not listed: the check only has Caddy
+  # serve it as static files, and the UI job already verifies the bundle.
+  changes:
+    name: Detect Docker-relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      docker: ${{ steps.diff.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "docker=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
+            | grep -Eq '^(backend/|ssh/|scripts/|docker-compose\.yml$|Caddyfile$|\.env\.example$|\.github/workflows/ci\.yml$)'; then
+            echo "docker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docker=false" >> "$GITHUB_OUTPUT"
+            echo "No Docker-relevant files changed; skipping the upgrade check."
+          fi
   docker-upgrade:
     name: Isolated Docker upgrade
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
