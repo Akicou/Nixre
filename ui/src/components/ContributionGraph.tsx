@@ -104,7 +104,7 @@ export const ContributionGraph: React.FC<ContributionGraphProps> = ({
   const weekCount = Math.ceil(cells.length / 7);
 
   return (
-    <div className="border border-border-subtle rounded-lg bg-surface-canvas p-4">
+    <div>
       <div className="flex items-start justify-between gap-4 mb-3">
         <h2 className="text-sm font-semibold text-txt-primary">
           {loading ? 'Loading contributions…' : `${total.toLocaleString()} contributions in ${year}`}

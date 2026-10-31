@@ -62,7 +62,7 @@ export function InstanceUpdates() {
   };
   const plan = state?.current?.status === 'checked' ? state.current.plan : undefined;
   const locked = pending || active(state?.current) || state?.current?.status === 'recovery_required';
-  return <section className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
+  return <section className="border-t border-border-subtle pt-6 space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <h2 className="text-sm font-semibold">Instance updates</h2>
       <button className={button} disabled={pending} onClick={() => { void refresh(); }}><RefreshCw className="inline w-3 h-3 mr-1" />Reconnect</button>

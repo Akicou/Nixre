@@ -115,7 +115,7 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
   };
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-3xl space-y-10">
       {error && (
         <div className="p-3 rounded bg-feedback-error-bg border border-feedback-error-border text-feedback-error-text text-xs">
           {error}
@@ -127,7 +127,7 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
         </div>
       )}
 
-      <form onSubmit={handleSave} className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-5">
+      <form onSubmit={handleSave} className="space-y-5">
         <div>
           <h2 className="text-sm font-semibold text-txt-primary uppercase tracking-wider">General</h2>
           <p className="text-xs text-txt-secondary mt-0.5">Repository description and visibility.</p>
@@ -195,7 +195,7 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
 
       {/* Nixre Assistant (per-repo) */}
       {assistantLive && (
-        <div className="space-y-4">
+        <div className="border-t border-border-subtle pt-8 space-y-4">
           {showAssistantConfig ? (
             <AssistantProfileForm
               mode="full"
@@ -203,7 +203,7 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
               onClose={() => setShowAssistantConfig(false)}
             />
           ) : (
-            <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
+            <div className="space-y-4">
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <div className="p-2 rounded bg-surface-subtle border border-border-subtle text-txt-brand">
@@ -234,7 +234,7 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
 
       <ActionsSettings repo={repo} repoPath={repoPath} onUpdated={onUpdated} />
 
-      <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-4">
+      <div className="border-t border-border-subtle pt-8 space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-txt-primary uppercase tracking-wider">Transfer repository</h2>
           <p className="text-xs text-txt-secondary mt-0.5">
@@ -304,7 +304,7 @@ export const RepoSettingsPanel: React.FC<RepoSettingsPanelProps> = ({ repo, repo
         </button>
       </div>
 
-      <div className="border border-feedback-error-border rounded-lg bg-surface-canvas p-6 space-y-4">
+      <div className="border-t border-feedback-error-border pt-8 space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-feedback-error-text uppercase tracking-wider">Danger Zone</h2>
           <p className="text-xs text-txt-secondary mt-0.5">

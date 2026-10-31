@@ -36,11 +36,6 @@
   --color-activity-star: var(--color-semantic-amber-400);
   --color-activity-people: var(--color-accent-pink-500);
 }
-.activity-hero-glow {
-  background:
-    radial-gradient(55% 140% at 0% 0%, color-mix(in srgb, var(--color-activity-code) 16%, transparent), transparent 70%),
-    radial-gradient(40% 120% at 100% 100%, color-mix(in srgb, var(--color-activity-merged) 12%, transparent), transparent 70%);
-}
 @keyframes activity-rise {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }

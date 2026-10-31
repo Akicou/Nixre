@@ -224,7 +224,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
           {user && (
             <Link
               to={`/${user.uid}`}
-              className="flex items-center gap-3 border border-border-subtle rounded-lg bg-surface-canvas p-3 hover:bg-surface-subtle/60 transition"
+              className="flex items-center gap-3 rounded-lg p-2 -mx-2 hover:bg-surface-subtle/60 transition"
             >
               <Avatar name={user.uid} url={user.avatar_url} size={36} />
               <span className="flex-1 min-w-0">
@@ -238,7 +238,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
           {feed && <TopContributors contributors={feed.contributors} />}
 
           {/* Spaces Sidebar Section */}
-          <div className="border border-border-subtle rounded-lg bg-surface-canvas p-4 space-y-3">
+          <section className="border-t border-border-subtle pt-6 space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold text-txt-tertiary uppercase tracking-wider flex items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5" />
@@ -272,10 +272,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
                 ))}
               </div>
             )}
-          </div>
+          </section>
 
-          {/* Quick Git Commands Card */}
-          <div className="border border-border-subtle rounded-lg bg-surface-canvas p-4 space-y-3">
+          {/* Quick Git Commands */}
+          <section className="border-t border-border-subtle pt-6 space-y-3">
             <h2 className="text-xs font-semibold text-txt-tertiary uppercase tracking-wider flex items-center gap-1.5">
               <Terminal className="w-3.5 h-3.5" />
               <span>Git Quick Start</span>
@@ -292,7 +292,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
                 </>
               )}
             </div>
-          </div>
+          </section>
         </div>
       </div>
     </div>
