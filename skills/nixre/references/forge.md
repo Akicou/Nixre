@@ -15,6 +15,14 @@ Everything here is first-class in `nixre-core` (not a plugin).
 - Repo payloads include `stars`, `starred` (for the viewer) and `require_checks`. In the UI, `t` opens a fuzzy file finder.
 - A repo's UI lives under `/{space}/{repo}`. A compact repository header sits above the tab navigation. Code shows an expandable file tree and deployments immediately. The account-saved Layout selector offers Split view (default: preview below), Three columns, Preview left, and Stacked. Three columns uses horizontal workspace scrolling when needed rather than reverting to another layout. Layout changes preserve folder expansion and editing state.
 
+- **Guests** can browse public repos, orgs and profiles (files, commits, branches, PRs) and clone public repos anonymously. Private content stays members-only; an unreadable repo answers `404`, never `403`.
+
+## Issues
+
+- `GET /repos/:space/:repo/+/issues?state=open|closed|all` (default `open`, max 500), `POST` to create (`{title, body, labels}`, write access).
+- `GET .../issues/:number` returns `{issue, comments}`; `PATCH` takes any of `title`, `body`, `labels`, `state` (`open`/`closed`); `POST .../issues/:number/comments {body}` (max 60000 chars).
+- Reads follow repo visibility; writes need space membership. Issues filed by the security scan carry `source: 'security-scan'` and a *security scan* badge. See [administration](administration.md#security-scan).
+
 ## Pull requests
 
 - `GET/POST /repos/:space/:repo/+/pullreq`, `.../pullreq/:number`, `.../pullreq/:number/diff`.

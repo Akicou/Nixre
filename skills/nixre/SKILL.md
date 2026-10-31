@@ -1,6 +1,6 @@
 ---
 name: nixre
-description: Operate and admin a self-hosted Nixre instance (a Git forge + AI assistant + deploy platform). Covers the deployment topology, how to authenticate (web login, personal access tokens, SSH keys, git clone/push over HTTPS and SSH), and how to manage everything — repos/spaces/pull requests/webhooks, deployments (services, env vars, custom domains, Cloudflare auto-DNS, TLS-risk gating), the AI assistant (providers/models), and server administration (users, registration lock, backups, logs, updates, troubleshooting). Use when working with, deploying, troubleshooting, configuring, or asking about nixre, nixre-core, or Nixre.
+description: Operate and admin a self-hosted Nixre instance (a Git forge + AI assistant + deploy platform). Covers the deployment topology, how to authenticate (web login, personal access tokens, SSH keys, git clone/push over HTTPS and SSH), and how to manage everything — repos/spaces/pull requests/webhooks, deployments (services, env vars, custom domains, Cloudflare auto-DNS, TLS-risk gating), the AI assistant (providers/models), CI/CD Actions, issues, the built-in security scan, and server administration (users, registration lock, backups, logs, managed updates, troubleshooting). Use when working with, deploying, troubleshooting, configuring, or asking about nixre, nixre-core, or Nixre.
 ---
 
 # Nixre ops & admin skill
@@ -11,6 +11,7 @@ A self-hosted **Git forge** that also runs an **AI engineering assistant** and a
 
 - **Git forge**: spaces (orgs), repos, pull requests, signed webhooks, personal access tokens (PATs), SSH keys, passkeys, avatars — all owned by `nixre-core`, no external forge dependency.
 - **AI assistant** ("Nixre Assistant"): an agentic copilot that reads files, searches code, runs shell in a sandboxed clone of the target repo, and chats in Ask/Plan/Agent/Debug modes.
+- **Actions, issues, security scan**: built-in CI/CD runner (`.nixre/workflows`), per-repo issues, and a scheduled self-scan that files issues for CVEs in running deployments.
 - **Deployments**: turn any repo subdirectory into a Docker service (you bring the Dockerfile). Per-service env vars, limits, custom domains, blue/green releases, SSE logs.
 
 ## Identifying your instance's values
@@ -51,11 +52,11 @@ systemctl --user status cloudflared-<name>    # tunnel up?
 
 ## Managing everything (point to [references/](references/))
 
-- **Repos / spaces / PRs / webhooks** — [references/forge.md](references/forge.md)
+- **Repos / spaces / PRs / issues / Actions / webhooks** — [references/forge.md](references/forge.md)
 - **Deployments** (services, env vars, domains, auto-DNS, TLS gate) — [references/deployments.md](references/deployments.md)
 - **Deployment API for agents** (create a service, deploy, read a failed build log — no browser) — [references/deploy-api.md](references/deploy-api.md)
 - **AI assistant** (providers, models, enabled/disabled, sandbox) — [references/ai-assistant.md](references/ai-assistant.md)
-- **Admin & servers** (users, registration, backups, logs, updates) — [references/administration.md](references/administration.md)
+- **Admin & servers** (users, registration, security scan, backups, logs, managed updates) — [references/administration.md](references/administration.md)
 - **Troubleshooting** (bug patterns, stale cache, TLS, tunnels) — [references/troubleshooting.md](references/troubleshooting.md)
 
 ## Helper scripts (run from `scripts/`)
@@ -78,3 +79,5 @@ systemctl --user status cloudflared-<name>    # tunnel up?
 8. **Registration is closed by default.** An unset `NIXRE_REGISTRATION_CLOSED` means closed. Set it to `false` in `.env`, or flip it live via `PUT /api/v1/admin/registration`.
 9. **Custom domains must be verified before they route.** Attaching one parks it and issues a TXT challenge (`_nixre-verify.<domain>`); use the Verify action, or let an admin force it. Set `NIXRE_RESERVED_DOMAINS` to your own hostnames so a deployment can never claim them.
 10. **Run tests from the right directory** (`cd ui && npx vitest run`, `cd backend && npm test`, or `npm test` at the repo root). Running `npx vitest run` from the root finds no jsdom config and fails every UI test with `document is not defined`.
+11. **A managed updater may own the checkout.** If `nixre-updater.service` exists, update from Admin → Instance updates (browser session only); `update-nixre.sh` refuses. Restart core with `NIXRE_CORE_IMAGE` pinned to the running image or you lose the updater's per-revision identity ([administration](references/administration.md#updating-nixre)).
+12. **The security scan files issues on its own.** Expect issues with a *security scan* badge; close them once fixed. They reopen only while the problem persists.
