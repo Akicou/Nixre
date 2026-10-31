@@ -445,3 +445,13 @@
 .markdown-body .hljs-meta { color: var(--syntax-variable); }
 .markdown-body .hljs-emphasis { font-style: italic; }
 .markdown-body .hljs-strong { font-weight: 700; }
+
+/* Theme switch wave (lib/themeTransition.ts): the browser's default cross-fade is
+   disabled so the clip-path circle on the new snapshot is the only animation. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) { z-index: 1; }
+::view-transition-new(root) { z-index: 2; }

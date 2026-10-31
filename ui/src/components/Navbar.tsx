@@ -20,6 +20,7 @@ import { useOutsideClick } from '../lib/useOutsideClick';
 import { isPluginLive } from '../lib/pluginPreferences';
 import { BrandMark } from './BrandMark';
 import { Avatar } from './Avatar';
+import { withThemeWave } from '../lib/themeTransition';
 
 interface NavbarProps {
   currentUser: User | null;
@@ -50,11 +51,13 @@ export const Navbar: React.FC<NavbarProps> = ({ currentUser, onLogout }) => {
   const activeSpace = spaces.find(s => s.uid === activeSpaceUid);
   const switcherLabel = activeSpace?.uid || spaces[0]?.uid || 'Spaces';
 
-  const toggleTheme = () => {
+  const toggleTheme = (e: React.MouseEvent<HTMLElement>) => {
     const nextTheme = isDark ? 'light' : 'dark';
-    setIsDark(!isDark);
-    document.documentElement.setAttribute('data-theme', nextTheme);
-    localStorage.setItem('nixre_theme', nextTheme);
+    withThemeWave(e.currentTarget, () => {
+      setIsDark(!isDark);
+      document.documentElement.setAttribute('data-theme', nextTheme);
+      localStorage.setItem('nixre_theme', nextTheme);
+    });
   };
 
   useEffect(() => {
