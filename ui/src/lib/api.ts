@@ -291,6 +291,7 @@ export interface SecurityScanState {
   settings: SecurityScanSettings;
   providers: SecurityScanProvider[];
   running: boolean;
+  nextRunAt: number | null;
   runs: SecurityScanRun[];
 }
 
