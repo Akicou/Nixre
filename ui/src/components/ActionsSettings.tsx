@@ -62,7 +62,7 @@ export const ActionsSettings: React.FC<{
   const field = 'w-full px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-sm text-txt-primary font-mono';
 
   return (
-    <div className="border border-border-subtle rounded-lg bg-surface-canvas p-6 space-y-5">
+    <div className="border-t border-border-subtle pt-8 space-y-5">
       <div>
         <h2 className="text-sm font-semibold text-txt-primary uppercase tracking-wider">Actions</h2>
         <p className="text-xs text-txt-secondary mt-0.5">

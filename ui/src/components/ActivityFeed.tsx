@@ -372,7 +372,7 @@ export const TopContributors: React.FC<{ contributors: ActivityContributor[] }> 
   if (!contributors.length) return null;
   const top = contributors[0].count || 1;
   return (
-    <div className="border border-border-subtle rounded-lg bg-surface-canvas p-4 space-y-3" data-testid="top-contributors">
+    <section className="border-t border-border-subtle pt-6 space-y-3" data-testid="top-contributors">
       <h2 className="text-xs font-semibold text-txt-tertiary uppercase tracking-wider flex items-center gap-1.5">
         <Flame className="w-3.5 h-3.5" style={{ color: 'var(--color-activity-star)' }} />
         <span>Most active this week</span>
@@ -415,6 +415,6 @@ export const TopContributors: React.FC<{ contributors: ActivityContributor[] }> 
           );
         })}
       </ol>
-    </div>
+    </section>
   );
 };

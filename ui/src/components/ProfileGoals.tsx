@@ -63,8 +63,8 @@ export const ProfileGoals: React.FC<{ uid: string; onChanged?: () => void }> = (
   const doneCount = goals?.goals.filter(g => g.done).length ?? 0;
 
   return (
-    <div className="border border-border-subtle rounded-lg bg-surface-canvas overflow-hidden">
-      <div className="px-4 py-3 border-b border-border-subtle flex items-center justify-between gap-3">
+    <div className="border-y border-border-subtle">
+      <div className="py-3 border-b border-border-subtle flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <FileText className="w-4 h-4 text-brand" />
           <h2 className="text-xs font-semibold text-txt-primary uppercase tracking-wider">Getting started</h2>
@@ -78,7 +78,7 @@ export const ProfileGoals: React.FC<{ uid: string; onChanged?: () => void }> = (
 
       <div className="divide-y divide-border-subtle">
         {loading ? (
-          <div className="px-4 py-10 flex items-center justify-center gap-2 text-xs text-txt-tertiary">
+          <div className="py-10 flex items-center justify-center gap-2 text-xs text-txt-tertiary">
             <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading goals…
           </div>
         ) : (
@@ -90,7 +90,7 @@ export const ProfileGoals: React.FC<{ uid: string; onChanged?: () => void }> = (
                 ? `${goal.count}/${goal.target}+`
                 : `${goal.current}/${goal.target}`;
             return (
-              <div key={goal.id} className="px-4 py-3 space-y-2">
+              <div key={goal.id} className="py-3 space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <span
@@ -142,7 +142,7 @@ export const ProfileGoals: React.FC<{ uid: string; onChanged?: () => void }> = (
       </div>
 
       {showQuickstart && (
-        <div className="px-4 py-4 border-t border-border-subtle bg-surface-base/50 space-y-3">
+        <div className="py-4 border-t border-border-subtle bg-surface-base/50 space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[12.5px] font-semibold text-txt-primary">Create your profile README</p>
