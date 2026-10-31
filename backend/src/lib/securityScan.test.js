@@ -68,3 +68,13 @@ test('issue input validation', () => {
   assert.deepEqual(validateIssueInput({ title: ' hi ', body: 'b' }), { title: 'hi', body: 'b' });
   assert.deepEqual(cleanLabels(['a', 'a', ' ', 'b']), ['a', 'b']);
 });
+
+import { upgradeAdvice } from './securityScan.js';
+test('upgrade advice takes the highest fixed version across advisories', () => {
+  const details = { A: { id: 'A', severity: 'LOW', fixed: ['4.2.1'] }, B: { id: 'B', severity: 'HIGH', fixed: ['4.10.0', '4.9.0'] } };
+  const a = upgradeAdvice(['A', 'B', 'C'], details);
+  assert.equal(a.upgrade_to, '4.10.0');
+  assert.equal(a.worst_severity, 'HIGH');
+  assert.equal(a.advisory_count, 3);
+  assert.equal(upgradeAdvice(['Z'], {}).upgrade_to, null);
+});

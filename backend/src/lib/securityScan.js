@@ -176,6 +176,21 @@ export function nodeSecurityLag(running, index) {
   };
 }
 
+/** Per-package upgrade advice: the highest "fixed" version across all advisories, so one bump clears them all. */
+export function upgradeAdvice(ids, details) {
+  const ds = ids.map(id => details[id]).filter(Boolean);
+  const fixes = ds.flatMap(d => d.fixed ?? []);
+  const rank = s => SEV_RANK[s] ?? 4;
+  return {
+    advisory_count: ids.length,
+    worst_severity: ds.map(d => d.severity).sort((a, b) => rank(a) - rank(b))[0] ?? 'UNKNOWN',
+    upgrade_to: fixes.length ? fixes.reduce((a, b) => (cmp(a, b) >= 0 ? a : b)) : null,
+    examples: ds.slice(0, 3).map(d => ({ id: d.id, aliases: d.aliases, summary: d.summary })),
+  };
+}
+
+const SEV_RANK = { CRITICAL: 0, HIGH: 1, MODERATE: 2, MEDIUM: 2, LOW: 3, UNKNOWN: 4 };
+
 export async function fetchNodeIndex() {
   const r = await guardedFetch('https://nodejs.org/dist/index.json', {}, { timeoutMs: 30_000 });
   if (!r.ok) throw new Error(`nodejs.org returned HTTP ${r.status}`);
