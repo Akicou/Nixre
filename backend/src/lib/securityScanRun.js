@@ -13,13 +13,13 @@ import { actionsEngine } from './actionsRuntime.js';
 import { addComment, createIssue, setIssueState } from './issues.js';
 import {
   execSafe, fetchNodeIndex, fingerprintFindings, issueFingerprint, nodeSecurityLag, osvDetails, osvQuery,
-  osvDistroEcosystem, parseApkInfo, parseDpkg, parseNpmTree, parseOsRelease, parsePipList, SAFE_COMMAND_LIST,
+  osvDistroEcosystem, parseApkInfo, parseDpkg, parseNpmTree, parseOsRelease, parsePipList, SAFE_COMMAND_LIST, upgradeAdvice,
 } from './securityScan.js';
 
 const SETTINGS_KEY = 'security_scan';
 export const DEFAULT_SETTINGS = { enabled: true, intervalHours: 3, userUid: '', providerId: null, model: '', coreRepo: '' };
 const MAX_DISPATCHES = 3;
-const MAX_VULN_DETAILS = 40;
+const MAX_VULN_DETAILS = 400; // one package can carry 50+ advisories; truncating starved later packages of fix versions
 
 export async function loadScanSettings(pool = sharedPool) {
   const { rows } = await pool.query('SELECT value FROM instance_settings WHERE key = $1', [SETTINGS_KEY]);
@@ -314,7 +314,7 @@ async function triage_(pool, { data, settings, ai, deps }) {
     instance_repo_configured: Boolean(settings.coreRepo),
     findings: data.findings.slice(0, 120).map(f => ({
       target: f.target, kind: f.kind, package: f.package, version: f.version,
-      advisories: f.kind === 'node-runtime' ? f.detail : f.ids.slice(0, 5).map(id => data.details[id] ?? { id }),
+      advisories: f.kind === 'node-runtime' ? f.detail : upgradeAdvice(f.ids, data.details),
     })),
   };
 
