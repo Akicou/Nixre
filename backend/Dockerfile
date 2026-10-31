@@ -1,9 +1,9 @@
-FROM node:22-alpine
+FROM node:22.23.4-alpine3.24
 
 # git is the storage engine (bare repos); git-daemon ships http-backend
 # (the Smart HTTP CGI used by src/git/smartHttp.js). su-exec drops from
 # root to uid 1000 after the entrypoint chowns the bind-mounted volume.
-RUN apk add --no-cache git git-daemon su-exec
+RUN apk upgrade --no-cache && apk add --no-cache git git-daemon su-exec
 
 WORKDIR /app
 
