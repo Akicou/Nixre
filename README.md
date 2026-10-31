@@ -1,34 +1,28 @@
 # Nixre
-A self-hosted Git forge. Official site: [nixre.dev](https://nixre.dev). Live instance: [git.nixre.dev](https://git.nixre.dev) — a **personal instance**, not an open registration service: it hosts the owner's projects and accounts for invited friends only (registration is closed).
 
+A self-hosted Git forge. Official site: [nixre.dev](https://nixre.dev). Live instance: [git.nixre.dev](https://git.nixre.dev). It is a **personal instance**, not an open registration service: it hosts the owner's projects and accounts for invited friends only (registration is closed).
 
-Nixre runs its own backend (nixre-core, Node + PostgreSQL), its own git storage (bare repositories on disk with Smart HTTP transport), and its own auth (argon2 + sessions + passkeys + PATs). It does not depend on Gitness or any other forge.
+Nixre has its own backend (nixre-core, Node + PostgreSQL), its own git storage (bare repositories on disk, Smart HTTP transport) and its own auth (argon2, sessions, passkeys, PATs). It does not depend on Gitness or any other forge.
 
 ## Features
 
-- **Minimalist UI**: Booton typography, JetBrains Mono for code, flat layout, dark/light theme.
-- **Sovereign**: nixre-core owns auth, spaces, repos, git transport, pull requests, and account data. Core forge features run independently; optional GitHub integration uses GitHub APIs.
-- **Passkeys**: WebAuthn credentials stored server-side in your account. A passkey can open a new session.
-- **Git Smart HTTP + SSH**: clone and push over HTTPS (`/git/<space>/<repo>.git`) with session/PAT basic auth, or over SSH (`ssh://git@host:3022/<space>/<repo>.git`) with your registered keys.
-- **Pull requests**: create PRs between branches, view unified diffs per file, merge (`--no-ff`) or squash. Each PR shows the checks on its latest commit, and **Require passing checks before merging** blocks the merge until they are green.
-- **Issues and a self-scanning security check**: per-repo issues, plus a built-in scan every 3 hours that checks running deployments and 
-ixre-core for known CVEs, asks your configured assistant what actually matters, and files issues with the fix or dispatches a rebuild workflow. See [docs/security-scan.md](docs/security-scan.md).
-- **Actions (CI/CD)**: workflows in `.nixre/workflows/*.yml` (`.gitea/workflows` and `.github/workflows` also work) run on push, pull request, cron schedule or a manual **Run workflow** button. Jobs run in throwaway containers with a real git checkout, with `needs`, matrices, `if:` expressions, job outputs, encrypted secrets masked in logs, live logs, cancel and re-run, commit statuses and README badges. `uses: nixre/deploy@v1` releases a deploy service once tests pass. See [docs/actions.md](docs/actions.md).
-- **Stars, downloads and a file finder**: star repos (the public home page sorts by stars), download any branch as ZIP or tar.gz, and press `t` in a repo to fuzzy-find a file.
-- **Signed webhooks**: subscribe `push` and `pull_request` events to external URLs. Deliveries are HMAC-SHA256 signed (`X-Nixre-Signature`) with retries and a delivery log.
-- **Spaces**: multi-tenant workspaces with membership-based access control.
-- **Public browsing**: public repos, orgs and user profiles (files, commits, branches, pull requests) are readable without an account, and public repos clone anonymously. Private content stays members-only.
-- **Personal access tokens and SSH keys**: mint PATs (returned once, stored hashed) and manage SSH public keys with fingerprints.
-- **Plugin system**: bundled plugins stay inert until enabled. The Nixre Assistant is an AI engineering copilot. Plugin state is account-scoped and server-persisted.
-- **Deployments**: ship any root-directory of a repo as a Docker service (you bring the Dockerfile — Nixre never invents the build). Push-to-branch auto-deploys with automatic fallback to the last healthy release, live build/deploy logs over SSE, Railway-style encrypted env vars, per-service CPU/RAM limits with live usage bars, HTTP request logs that preserve failures by status code by default, uptime/downtime charts, and custom domains routed through a central proxy port (`:3003`) with copy-paste DNS guidance for host Caddy/Nginx or Cloudflare Tunnel.
-
-Plugins are gated twice: the operator enables a plugin for the instance, and each user toggles it on from **Plugins** (`/plugins`). Every plugin is disabled by default.
+- **UI**: Booton and JetBrains Mono fonts, flat layout, dark/light theme.
+- **Passkeys**: WebAuthn credentials stored server-side in your account.
+- **Git over HTTPS and SSH**: `/git/<space>/<repo>.git` with session/PAT basic auth, or `ssh://git@host:3022/<space>/<repo>.git` with registered keys.
+- **Pull requests**: unified diffs per file, merge (`--no-ff`) or squash. Each PR shows the checks on its latest commit, and **Require passing checks before merging** blocks the merge until they are green.
+- **Issues and security scan**: per-repo issues, plus a built-in scan every 3 hours that checks running deployments and nixre-core for known CVEs, asks your configured assistant what matters, and files issues with the fix or dispatches a rebuild workflow. See [docs/security-scan.md](docs/security-scan.md).
+- **Actions (CI/CD)**: workflows in `.nixre/workflows/*.yml` (`.gitea/workflows` and `.github/workflows` also work) run on push, pull request, cron or a manual **Run workflow** button. Jobs run in throwaway containers with a real checkout and support `needs`, matrices, `if:`, job outputs, encrypted secrets, live logs, cancel/re-run, commit statuses and README badges. `uses: nixre/deploy@v1` releases a deploy service once tests pass. See [docs/actions.md](docs/actions.md).
+- **Stars, downloads, file finder**: stars sort the public home page, branches download as ZIP or tar.gz, `t` in a repo opens a fuzzy file finder.
+- **Signed webhooks**: `push` and `pull_request` events, HMAC-SHA256 signed (`X-Nixre-Signature`), with retries and a delivery log.
+- **Spaces**: multi-tenant workspaces with membership-based access.
+- **Public browsing**: public repos, orgs and profiles are readable and cloneable without an account. Private content is members-only.
+- **PATs and SSH keys**: PATs are shown once and stored hashed.
+- **Plugins**: off until enabled. Bundled: the Nixre Assistant, an AI engineering copilot.
+- **Deployments**: run any root directory of a repo as a Docker service (you supply the Dockerfile). Auto-deploy on push, fallback to the last healthy release, live logs, encrypted env vars, CPU/RAM limits, uptime charts, custom domains via proxy port `:3003`.
 
 ## Quick start
 
-**Existing installation?** Follow [the security upgrade guide](docs/security-upgrade.md)
-before changing secrets or rebuilding. It covers legacy credential conversion,
-PostgreSQL password rotation, container migration, proxy trust, and rollback.
+**Existing installation?** Read [the security upgrade guide](docs/security-upgrade.md) before changing secrets or rebuilding. It covers legacy credential conversion, PostgreSQL password rotation, container migration, proxy trust and rollback.
 
 ```bash
 git clone https://github.com/Akicou/Nixre.git
@@ -44,50 +38,38 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Compose refuses to start without `.env`: `NIXRE_INTERNAL_TOKEN`, `NIXRE_AI_SECRET`
-and `POSTGRES_PASSWORD` are all required, and core additionally refuses to boot
-on a known published default for the first two. That is deliberate —
-`/api/v1/internal/*` is reachable through the `/api/*` route, so a default token
-is a live credential rather than a convenience.
+Compose refuses to start without `.env` values for `NIXRE_INTERNAL_TOKEN`, `NIXRE_AI_SECRET` and `POSTGRES_PASSWORD`. Core also refuses to boot on a published default for the first two, since `/api/v1/internal/*` is reachable through `/api/*`.
 
-Open `http://localhost:3000` and register. The first account becomes the instance admin.
-
-> Registration is **closed by default**. Set `NIXRE_REGISTRATION_CLOSED=false`
-> before the first boot (or flip it later from the admin console) to allow signups.
+Open `http://localhost:3000` and register. The first account becomes the instance admin. Registration is closed by default: set `NIXRE_REGISTRATION_CLOSED=false` before the first boot (or flip it later in the admin console) to allow signups.
 
 ### The stack
 
 | Service | What it is |
 | --- | --- |
-| `nixre-agent-sandbox` | Build-only: produces the `nixre-agent-sandbox` image the assistant's `run_command` uses. Exits immediately (`entrypoint: true`), so it is not "running". |
-| `nixre-web` | Caddy: HTTP entrypoint on port 3000 (TLS terminates upstream), reverse-proxies `/api/*` and `/git/*` to core, serves the static SPA |
-| `nixre-core` | The backend: REST API, auth, git Smart HTTP (via `git http-backend`), PR merges, webhook delivery |
-| `nixre-ssh` | SSH git transport: sshd with core-resolved keys (AuthorizedKeysCommand), each session locked to a per-key git-shell wrapper |
-| `nixre-db` | PostgreSQL: users, sessions, tokens, spaces, repos, pull requests, webhooks, plugin prefs, chats, passkeys |
+| `nixre-agent-sandbox` | Build-only. Produces the image the assistant's `run_command` uses, then exits immediately (`entrypoint: true`). |
+| `nixre-web` | Caddy on port 3000 (TLS terminates upstream). Proxies `/api/*` and `/git/*` to core and serves the static SPA. |
+| `nixre-core` | Backend: REST API, auth, git Smart HTTP (via `git http-backend`), PR merges, webhook delivery. |
+| `nixre-ssh` | SSH git transport: sshd with core-resolved keys (AuthorizedKeysCommand), each session locked to a per-key git-shell wrapper. |
+| `nixre-db` | PostgreSQL: users, sessions, tokens, spaces, repos, pull requests, webhooks, plugin prefs, chats, passkeys. |
 
-`nixre-tunnel` (cloudflared) is also defined but sits behind the `tunnels` profile — start it with `docker compose --profile tunnels up -d`.
+`nixre-tunnel` (cloudflared) is also defined behind the `tunnels` profile: `docker compose --profile tunnels up -d`.
 
-Git objects live as bare repositories on the `./data/repos` volume. Postgres holds metadata only, the same split Gitea and GitLab use.
+Git objects live as bare repositories on the `./data/repos` volume. Postgres holds metadata only.
 
-**Networks.** Postgres is isolated on the internal `nixre-data` network; only `nixre-core` can reach it. Deployed app containers run on `nixre-apps` (with core, which probes and proxies to them) and agent sandboxes on a non-database network — so neither can open a socket to Postgres. This matters because a deployment's Dockerfile is user-supplied code and creating one only requires write access to a space.
+**Networks.** Postgres is on the internal `nixre-data` network and only `nixre-core` reaches it. Deployed apps run on `nixre-apps` (shared with core, which probes and proxies to them) and agent sandboxes on a non-database network, so neither can open a socket to Postgres. A deployment's Dockerfile is user-supplied code, so this isolation is required.
 
-**Custom domains are gated on ownership.** Attaching a hostname parks it until TXT proof or admin approval/provisioning. Cloudflare automation requires an admin and refuses conflicting records. `NIXRE_RESERVED_DOMAINS` protects your own hostnames across custom, automatic, and grandfathered routes.
+**Custom domains need proof of ownership.** A new hostname is parked until TXT proof or admin approval. Cloudflare automation requires an admin and refuses conflicting records. `NIXRE_RESERVED_DOMAINS` protects your own hostnames across custom, automatic and grandfathered routes.
 
-**Proxy identity.** Configure `TRUSTED_PROXY_CIDRS` on core and, for tunnels,
-`NIXRE_TRUSTED_EDGE_CIDRS` on Caddy with controlled peer addresses. Otherwise
-visitors share the proxy's rate-limit bucket. Never trust shared app subnets.
-Private AI/STT origins need explicit `NIXRE_AI_PRIVATE_ORIGINS` approval.
+**Proxy identity.** Set `TRUSTED_PROXY_CIDRS` on core and, for tunnels, `NIXRE_TRUSTED_EDGE_CIDRS` on Caddy with controlled peer addresses. Otherwise all visitors share the proxy's rate-limit bucket. Never trust shared app subnets. Private AI/STT origins need explicit approval via `NIXRE_AI_PRIVATE_ORIGINS`.
 
-**Runtime compatibility.** Existing deployments retain their capability policy
-on recreation; new services use least-privilege defaults. Admins can explicitly
-migrate old services after image testing. See [runtime options](docs/deployments-runtime.md).
+**Runtime compatibility.** Existing deployments keep their capability policy on recreation, and new services get least-privilege defaults. Admins can migrate old services after image testing. See [runtime options](docs/deployments-runtime.md).
 
 ### Cloning
 
-Git over HTTPS uses HTTP Basic auth where the **password must be a token** — account passwords are never accepted for git transport. Clone URLs and credentials:
+Git over HTTPS uses HTTP Basic auth, and the password must be a token. Account passwords are never accepted for git transport.
 
-1. Create a token in the web UI: **Settings → Access Tokens** → name it → Generate. It starts with `nxp_` and is shown only once.
-2. Clone. When git (or your credential manager) prompts: **username** = your Nixre username (any value works; it is ignored), **password** = the token.
+1. Create a token under **Settings → Access Tokens**. It starts with `nxp_` and is shown once.
+2. Clone. When prompted, use your Nixre username (any value works, it is ignored) and the token as password.
 
 ```bash
 git clone https://<host>/git/<space>/<repo>.git
@@ -95,16 +77,16 @@ git clone https://<host>/git/<space>/<repo>.git
 git clone https://<username>:<token>@<host>/git/<space>/<repo>.git
 ```
 
-Your credential manager stores it after the first successful auth, so pulls/pushes won't prompt again. Tokens have a lifetime (default 30 days) — when it expires you get `Authentication failed` and simply mint a new one. If git keeps failing after you fixed credentials, remove the stale cached entry (Windows: Credential Manager → Windows Credentials → `git:https://<host>`; macOS: `git credential-osxkeychain erase`).
+Tokens expire (default 30 days); git then reports `Authentication failed` and you mint a new one. If git keeps failing after fixing credentials, remove the stale cached entry (Windows: Credential Manager → Windows Credentials → `git:https://<host>`; macOS: `git credential-osxkeychain erase`).
 
-Alternatively, clone over SSH with a registered key — no prompts, no expiry:
+SSH with a registered key has no prompts and no expiry:
 
 ```bash
 # register a public key in Settings → SSH Keys first
 git clone ssh://git@<host>:3022/<space>/<repo>.git
 ```
 
-If the instance is exposed through a **Cloudflare Tunnel** (the `git.nixre.dev` setup — no port forwarding), port 3022 is not directly reachable. Install `cloudflared` on the client machine and add this to `~/.ssh/config`:
+If the instance is behind a **Cloudflare Tunnel** (the `git.nixre.dev` setup), port 3022 is not reachable directly. Install `cloudflared` on the client and add this to `~/.ssh/config`:
 
 ```sshconfig
 Host git.nixre.dev
@@ -115,7 +97,7 @@ Then clone as usual: `git clone git@git.nixre.dev:<space>/<repo>.git`.
 
 ### Webhooks
 
-Create one via the API (`POST /api/v1/repos/<space>/<repo>/+/webhooks` with `{url, events}`). The response contains the signing secret, shown once. Deliveries post JSON with `X-Nixre-Event` and `X-Nixre-Signature: sha256=…` (HMAC-SHA256 of the raw body, keyed by the secret) and retry with backoff up to 5 attempts. Inspect history at `GET …/webhooks/<id>/deliveries`.
+Create one with `POST /api/v1/repos/<space>/<repo>/+/webhooks` and `{url, events}`. The response contains the signing secret, shown once. Deliveries are JSON with `X-Nixre-Event` and `X-Nixre-Signature: sha256=…` (HMAC-SHA256 of the raw body, keyed by the secret), retried with backoff up to 5 attempts. History is at `GET …/webhooks/<id>/deliveries`.
 
 ### Migrating from a legacy Gitness instance
 
@@ -127,18 +109,18 @@ Spaces and repositories migrate with full git history via `clone --mirror`. User
 
 ## Self-hosting guide
 
-Two ways to expose an instance publicly. **Option A (Cloudflare Tunnel)** is what `git.nixre.dev` uses: no port forwarding and no public IP needed, TLS is handled by Cloudflare, and it works behind any NAT / CGNAT or a router with no forwarding support. **Option B** is the classic setup: A record + port forwarding + Caddy ACME.
+There are two ways to expose an instance. **Option A (Cloudflare Tunnel)** is what `git.nixre.dev` uses: no port forwarding or public IP, TLS handled by Cloudflare, works behind NAT/CGNAT. **Option B** is an A record, port forwarding and Caddy ACME.
 
 ### Option A: Cloudflare Tunnel (no port forwarding)
 
-1. **Create the tunnel** (on the Nixre host):
+1. **Create the tunnel** on the Nixre host:
 
    ```bash
    cloudflared tunnel login          # browser flow: authorise your Cloudflare account/zone
    cloudflared tunnel create nixre   # writes ~/.cloudflared/<tunnel-id>.json
    ```
 
-2. **Ingress config** — `~/.cloudflared/config-nixre.yml`:
+2. **Ingress config** in `~/.cloudflared/config-nixre.yml`:
 
    ```yaml
    tunnel: <tunnel-id>
@@ -152,23 +134,23 @@ Two ways to expose an instance publicly. **Option A (Cloudflare Tunnel)** is wha
      - service: http_status:404
    ```
 
-   `localhost:3000` is the Caddy entrypoint (SPA + `/api/*` and `/git/*` proxied to nixre-core); `localhost:3022` is nixre-ssh.
+   `localhost:3000` is the Caddy entrypoint (SPA, plus `/api/*` and `/git/*` proxied to nixre-core). `localhost:3022` is nixre-ssh.
 
-3. **DNS records.** Either let cloudflared create them:
+3. **DNS records.** Let cloudflared create them:
 
    ```bash
    cloudflared tunnel route dns nixre git.nixre.dev
    cloudflared tunnel route dns nixre ssh.nixre.dev
    ```
 
-   or add them manually in the Cloudflare dashboard (needed when the login token cannot edit the zone's DNS):
+   or add them in the Cloudflare dashboard (needed when the login token cannot edit the zone's DNS):
 
    | Type | Name | Target | Proxy |
    | --- | --- | --- | --- |
    | CNAME | `git` | `<tunnel-id>.cfargotunnel.com` | Proxied |
    | CNAME | `ssh` | `<tunnel-id>.cfargotunnel.com` | Proxied |
 
-4. **Run as a service** — user-level unit `~/.config/systemd/user/cloudflared-nixre.service` (enable linger with `sudo loginctl enable-linger $USER` so it survives logout and starts at boot):
+4. **Run as a service** with a user-level unit at `~/.config/systemd/user/cloudflared-nixre.service`. Enable linger (`sudo loginctl enable-linger $USER`) so it survives logout and starts at boot:
 
    ```ini
    [Unit]
@@ -190,48 +172,40 @@ Two ways to expose an instance publicly. **Option A (Cloudflare Tunnel)** is wha
    systemctl --user enable --now cloudflared-nixre
    ```
 
-5. **SSH clients through the tunnel.** Each client needs `cloudflared` plus this in `~/.ssh/config` (see [Cloning](#cloning)):
+5. **SSH clients** need `cloudflared` plus this in `~/.ssh/config` (see [Cloning](#cloning)):
 
    ```sshconfig
    Host git.nixre.dev
        ProxyCommand cloudflared access ssh --hostname ssh.nixre.dev
    ```
 
-6. **Cloudflare SSL/TLS mode:** **Full** is enough — the tunnel authenticates the origin with its credentials, no origin certificate required.
+6. **Cloudflare SSL/TLS mode**: **Full** is enough. The tunnel authenticates the origin, so no origin certificate is needed.
 
-Note: after adding the proxied records, stale local/resolver caches can keep returning NXDOMAIN for a few minutes (TTL is 300s); `ipconfig /flushdns` (Windows) or a browser restart clears it.
+After adding the proxied records, stale resolver caches can return NXDOMAIN for a few minutes (TTL 300s). `ipconfig /flushdns` (Windows) or a browser restart clears it.
 
 ### Option B: Direct exposure (port forwarding + Sunrise Connect Box 3)
 
-This section covers exposing Nixre on a custom subdomain (for example `git.yourdomain.com`) behind a Sunrise Connect Box 3 (or a standard ISP router) with automatic Let's Encrypt certificates using Caddy. Skip this if you use Option A.
+Exposes Nixre on a custom subdomain (for example `git.yourdomain.com`) behind a Sunrise Connect Box 3 or standard ISP router, with Let's Encrypt via Caddy.
 
-### 1. DNS configuration
+#### 1. DNS configuration
 
-At your domain registrar (Namecheap, Cloudflare, GoDaddy, Porkbun), add an A record:
+At your registrar (Namecheap, Cloudflare, GoDaddy, Porkbun), add an A record:
 
 - **Type:** `A`
 - **Name / Host:** `git` (for `git.yourdomain.com`)
 - **Value:** your public IPv4 address (find it with `curl ifconfig.me`)
 - **TTL:** `Automatic` or `300s`
 
-### 2. Sunrise Connect Box 3 port forwarding
+#### 2. Sunrise Connect Box 3 port forwarding
 
-1. Open `http://192.168.1.1` (the Sunrise Connect Box 3 admin portal).
-2. Log in with the settings password on the sticker under your modem.
-3. In the left sidebar, go to **Advanced settings** → **Security** → **Port forwarding**.
-4. Click **Add rule** and configure two rules for your server's local IP (for example `192.168.1.114`):
+1. Open `http://192.168.1.1` and log in with the settings password on the modem's sticker.
+2. Go to **Advanced settings** → **Security** → **Port forwarding**.
+3. Add two TCP rules to your server's local IP (for example `192.168.1.114`): `80` → `80` (ACME validation) and `443` → `443` (web and git).
+4. Click **Apply changes**.
 
-#### Rule 1: HTTP / ACME SSL validation
-- **Local IP:** `192.168.1.114` · **Ports:** `80` → `80` · **Protocol:** TCP · **Enabled:** On
+> **DS-Lite:** if "Port forwarding" is missing, your connection is in IPv6 DS-Lite mode. Ask Sunrise Support for a public IPv4 Dual-Stack profile. It is free and takes about 10 minutes.
 
-#### Rule 2: HTTPS / secure web and git traffic
-- **Local IP:** `192.168.1.114` · **Ports:** `443` → `443` · **Protocol:** TCP · **Enabled:** On
-
-5. Click **Apply changes**.
-
-> **Sunrise DS-Lite note:** if the "Port forwarding" option is missing, your connection is in IPv6 DS-Lite mode. Call Sunrise Support and ask for a public IPv4 Dual-Stack profile. It is free and takes about 10 minutes.
-
-### 3. Caddy reverse proxy configuration
+#### 3. Caddy reverse proxy
 
 ```caddyfile
 git.yourdomain.com {
@@ -249,57 +223,55 @@ git.yourdomain.com {
 }
 ```
 
-Restart Caddy (`sudo systemctl restart caddy`). It completes the ACME HTTP-01 challenge through the Sunrise box and serves a trusted certificate automatically.
+Restart Caddy (`sudo systemctl restart caddy`). It completes the ACME HTTP-01 challenge itself.
 
 ## Deployments (Docker apps from your repos)
 
-Deploy any subdirectory of a hosted repo as a long-running service. **You bring the Dockerfile** — Nixre only detects and builds what you point it at, so a monorepo can ship many services from one repository.
+Deploy any subdirectory of a hosted repo as a long-running service. You supply the Dockerfile, so a monorepo can ship many services.
 
 ### How it works
 
-0. **Organization board:** the space's **Deployments** tab shows every service in the space as a Railway-style card (status, domain, last deploy time/trigger) with a live Activity feed — the fastest way to see everything an organization is shipping. Cards open the service in its repo.
-1. Open a repo → its always-visible **Deployments** section → *New service*. A repo can host **multiple services** — same Dockerfile with different env vars, ports, or branches. **Duplicate…** clones an existing service's config and secrets into the wizard; just rename and adjust.
-2. Pick the **root directory**, hit **Detect Dockerfiles**, choose one, set the container port, CPU/RAM limits, and env vars.
-3. Every push to the watched branch auto-deploys (`auto_deploy` per service), or deploy manually at any ref/sha.
-4. Builds stream live over SSE; releases are blue/green — the new container must answer health probes before it receives traffic. **A failed build/release never touches the serving container**: traffic keeps flowing on the previous release while a red banner warns you about the failure. From history you can inspect logs, redeploy, roll back to an older healthy release, or delete records.
-5. On restart (server reboot included) nixre-core reconciles state and recreates service containers from their stored images — `restart: unless-stopped` plus a boot sweep mean deployments come back up with Nixre itself.
+0. **Organization board**: a space's **Deployments** tab lists its services as cards (status, domain, last deploy) with a live Activity feed.
+1. In a repo's **Deployments** section choose *New service*. A repo can host several services (for example one Dockerfile with different env vars, ports or branches). **Duplicate…** copies a service's config and secrets into the wizard.
+2. Pick the **root directory**, press **Detect Dockerfiles**, choose one, then set the container port, CPU/RAM limits and env vars.
+3. Pushes to the watched branch auto-deploy (`auto_deploy` per service). Any ref/sha can also be deployed manually.
+4. Builds stream over SSE. Releases are blue/green: the new container must pass health probes before it gets traffic. A failed build or release leaves the serving container alone and shows a red banner. History lets you inspect logs, redeploy, roll back or delete records.
+5. After a restart or reboot, nixre-core recreates service containers from stored images (`restart: unless-stopped` plus a boot sweep).
 
-Deployments are **visible immediately in the repo's Code view**, beside an expandable file tree on desktop. The **Layout** selector remembers each user's choice: **Split view** (default, file/README preview below), **Three columns** (side by side, with workspace scrolling on small screens), **Preview left**, or **Stacked**. See [repository workspace layouts](docs/repository-layouts.md). Existing `?deploys=1` and `?tab=deployments` links remain supported.
+Deployments show in the repo's Code view. A per-user **Layout** selector offers **Split view** (default), **Three columns**, **Preview left** and **Stacked**; see [repository workspace layouts](docs/repository-layouts.md). Old `?deploys=1` and `?tab=deployments` links still work.
 
-Environment variables are editable either as individual variables or as a whole `.env` file, in **two places**: the create wizard has a **Paste .env** mode (serialized rows → editable buffer → validation → merged back before create), and every service's env tab has a full **.env file** editor with client-side validation (valid names `[A-Za-z_][a-zA-Z0-9_]*`, no duplicates, ≤100 vars, `KEY=value` with optional `export` prefix, quotes stripped, `#` comments and blank lines allowed but not stored) before anything reaches the API; the backend re-validates on `PUT …/env`. Saving is a full replace and takes effect on the next deploy. The deployments workspace is embedded in the repo Code view.
+Env vars can be edited singly or as a whole `.env` file, in the create wizard (**Paste .env**) and in each service's env tab (**.env file** editor). Validation: names match `[A-Za-z_][a-zA-Z0-9_]*`, no duplicates, at most 100 vars, `KEY=value` with optional `export` prefix, quotes stripped, `#` comments and blank lines allowed but not stored. The backend re-validates on `PUT …/env`. Saving replaces the full set and applies on the next deploy.
 
 ### Routing public traffic
 
-App containers are never port-published. They sit on core's docker network behind a central reverse proxy inside nixre-core on `DEPLOY_PROXY_PORT` (**3003** default, published to loopback in compose). Route your edge to it:
+App containers are never port-published. They sit on core's docker network behind a central reverse proxy inside nixre-core on `DEPLOY_PROXY_PORT` (default **3003**, published to loopback in compose). Route your edge to it:
 
-- **Cloudflare Tunnel (used by git.nixre.dev)** — the tunnel's catch-all ingress forwards every unmatched hostname to the deploy proxy, which routes by Host header. Attach a domain in the repo's **Deployments → Domains** tab and pick *Cloudflare Tunnel*: when `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_TUNNEL_ID` are configured, nixre-core **creates the proxied CNAME (`<domain>` → `<tunnel-id>.cfargotunnel.com`) automatically via the Cloudflare API** and removes it again when the domain is detached. The UI shows the DNS status per domain (auto-managed / failed with retry / manual guidance). The API token needs `Zone:Read` + `DNS:Edit` on every zone users may attach domains from — domains can live in any zone the token can see, there is no base-domain restriction.
-- **Host Caddy / Nginx** — add a DNS A record `app.example.com → <server-ip>`, then a host block like
+- **Cloudflare Tunnel** (used by git.nixre.dev): the tunnel's catch-all ingress forwards every unmatched hostname to the deploy proxy, which routes by Host header. Attach a domain under **Deployments → Domains** and pick *Cloudflare Tunnel*. With `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_TUNNEL_ID` set, nixre-core creates the proxied CNAME (`<domain>` → `<tunnel-id>.cfargotunnel.com`) through the Cloudflare API and removes it when the domain is detached. The UI shows DNS status per domain. The token needs `Zone:Read` + `DNS:Edit` on every zone users may attach domains from.
+- **Host Caddy / Nginx**: add a DNS A record `app.example.com → <server-ip>`, then a host block like
   ```
   app.example.com {
       reverse_proxy 127.0.0.1:3003
   }
   ```
-  (TLS terminates at your host Caddy with automatic Let's Encrypt.) The UI generates the exact DNS table and snippet per domain.
-
-The compose file also ships an optional token-based `nixre-tunnel` service (`--profile tunnels`) as an alternative to a host-level cloudflared — not needed when the operator already runs cloudflared directly.
+  TLS terminates at your host Caddy (automatic Let's Encrypt). The UI generates the exact DNS table and snippet per domain.
 
 ### Observability defaults
 
-- **HTTP logs**: method/path/status/duration per request. Failures ≥ `preserve_status_min` (default **400**) are kept 7 days by default; other responses 24 hours — all tunable per service.
-- **Resources**: hard caps via container `NanoCpus`/`Memory`; live CPU % of limit and working-set memory bars sample `docker stats` every ~10s.
-- **Uptime**: an internal prober hits each running service every ~30s and charts green/red buckets (24h/7d/30d views). The dashboard shows the most active deployments across all visible spaces with fleet uptime lanes.
+- **HTTP logs**: method, path, status and duration per request. Failures at or above `preserve_status_min` (default **400**) are kept 7 days, other responses 24 hours. All are tunable per service.
+- **Resources**: hard caps via container `NanoCpus`/`Memory`. CPU % of limit and working-set memory bars sample `docker stats` about every 10s.
+- **Uptime**: a prober hits each running service about every 30s and charts green/red buckets (24h/7d/30d).
 
-### Configuration knobs
+### Configuration
 
 | Env | Default | Purpose |
 |---|---|---|
-| `DEPLOY_PROXY_PORT` | `3003` | Central app-traffic listener (set `0` to disable) |
+| `DEPLOY_PROXY_PORT` | `3003` | Central app-traffic listener (`0` disables) |
 | `DEPLOY_PROXY_BIND` | `127.0.0.1` | Compose publish binding for the proxy port |
 | `DEPLOY_BASE_DOMAIN` | — | Enables `<name>` / `svc-<id>` automatic routing |
 | `DEPLOY_HEALTH_TIMEOUT_MS` | `30000` | Max wait for a new release to answer |
 | `DEPLOY_PROBE_MS` / `DEPLOY_METRICS_MS` / `DEPLOY_SWEEP_MS` | `30s` / `10s` / `60s` | Uptime probe, stats sampling, reconcile sweeps |
 | `TUNNEL_METRICS_URL` | — | cloudflared metrics endpoint; enables tunnel health sampling |
-| `TUNNEL_PROBE_MS` | `30s` | How often tunnel health is sampled |
+| `TUNNEL_PROBE_MS` | `30s` | Tunnel health sampling interval |
 
 ## Actions (CI/CD)
 
@@ -326,36 +298,38 @@ jobs:
           service: web
 ```
 
-Runs appear in the repo's **Actions** tab with live logs. The runner is built into `nixre-core` and uses the same Docker socket as deployments, so there is nothing else to install. Syntax, security model, limits and the API: [docs/actions.md](docs/actions.md).
+Runs appear in the repo's **Actions** tab with live logs. The runner is built into `nixre-core` and uses the same Docker socket as deployments, so nothing else needs installing. Syntax, security model, limits and API: [docs/actions.md](docs/actions.md).
 
 ## Plugins
 
-Plugins ship inside the repo but stay dormant until the two-layer gate opens.
+Plugins ship in the repo and are disabled by default. A plugin is live only when both gates allow it:
 
-### Activation layers
-
-| Layer | Who | Where it lives |
+| Layer | Who | Where |
 | --- | --- | --- |
-| **Server gate** | operator | which bundled plugins the instance serves |
-| **User toggle** | any logged-in user | `/plugins` (off by default) |
+| Server gate | operator | which bundled plugins the instance serves |
+| User toggle | any logged-in user | `/plugins` |
 
-A plugin is only live when both allow it. Activation state, plugin configs, assistant profiles, chat sessions, and the passkey vault are stored server-side in Postgres via nixre-core's account API, so everything follows the account across browsers and devices. A one-time migration uploaded any `localStorage`-era data on first login after the switch.
+Plugin state, configs, assistant profiles, chats and the passkey vault are stored in Postgres per account.
 
 ### Bundled plugins
 
 | Plugin | What it does | Configuration |
 | --- | --- | --- |
-| **Nixre Assistant** | AI copilot for agentic engineering work. Add multiple providers (DeepSeek, OpenAI, Anthropic, Ollama, or any OpenAI-compatible endpoint). Each is validated against the live provider and its model list is fetched automatically; you pick which models are enabled for chat and which provider is active. API keys are stored encrypted server-side and never sent to the browser. Streaming chat in four modes (Ask, Plan, Agent, Debug) with configurable reasoning levels and interleaved thinking, available on the dashboard and per repo. The workspace selector supports Nixre-hosted repos, github.com repositories (via the user's stored personal access token, cloned/mirrored automatically with direct-to-GitHub pushes) and an Unrestricted free-form sandbox mode. The agent can read files, search code, show images, run shell commands in a clone of the target repo, and search the web, each gated by a per-repo access profile. A validated provider is required; there is no offline fallback. | per-repo profile (`/plugins` + repo **Settings**) |
-
-Everything else a forge needs is a first-class feature, not a plugin: webhooks (signed, with retries and a delivery log), spaces and members, pull requests, and SSH keys / PATs all live in nixre-core directly.
+| **Nixre Assistant** | AI copilot. Providers: DeepSeek, OpenAI, Anthropic, Ollama or any OpenAI-compatible endpoint, validated live with models fetched automatically. API keys are stored encrypted server-side and never sent to the browser. Chat modes: Ask, Plan, Agent, Debug, on the dashboard and per repo. Workspaces: Nixre repos, github.com repos (via the user's stored PAT, pushes go directly to GitHub) and an Unrestricted sandbox. The agent can read files, search code, show images, run shell commands in a clone and search the web, each gated by a per-repo access profile. A validated provider is required. | per-repo profile (`/plugins` + repo **Settings**) |
 
 ### Adding a plugin
 
 1. Describe it in `ui/src/lib/plugins.ts` (id, name, icon, category, tools, `providerFields`/`accessFields`, and whether it is repo-scoped).
-2. It appears on `/plugins` once the operator flips the server gate on.
-3. Render its surface with `PluginConfigForm` (generic key/value) or `AssistantProfileForm` (provider + per-repo access).
+2. It appears on `/plugins` once the operator enables the server gate.
+3. Render its UI with `PluginConfigForm` (generic key/value) or `AssistantProfileForm` (provider + per-repo access).
 
-A plugin is only listed in the registry when it ships a real backend path: its UI writes to nixre-core and the server enforces it. There are no prefs-only stubs.
+### Agent task controls
+
+Task checklist, change review, checkpoints, memory, permission presets and usage limits for the Assistant: [Agent task controls](docs/agent-task-controls.md).
+
+## Instance updates
+
+Admins can run staged updates of a CI-verified revision (backup, migration rehearsal, health checks, UI publication). It needs one-time host worker setup. See [safe instance updates](docs/instance-updates.md).
 
 ## Project architecture
 
@@ -390,16 +364,10 @@ npm install
 npm test
 ```
 
-### API surface (all first-party)
+### API surface
 
 `/api/v1`: `login` `register` `logout` `user` `webauthn/login` `admin/users` `user/publickeys` `user/tokens` `user/memberships` `spaces` `repos` (+ `content` `raw` `commits` `branches` `pullreq` `actions` `statuses` `star` `archive` `files` sub-resources) `prefs` `conversations` `passkeys`, plus `/git/{space}/{repo}.git` Smart HTTP.
 
 ## License
 
 MIT License © 2026 Nixre Contributors · [nixre.dev](https://nixre.dev)
-
-### Agent task controls
-
-The Assistant now includes a live checklist, per-file change review, checkpoints, verification, project memory, permission presets, local browser checks, specialist agents, explicit task recovery, and usage limits. See [Agent task controls](docs/agent-task-controls.md) for behavior and deployment requirements.
-
-Administrators can use [safe instance updates](docs/instance-updates.md) to review a CI-verified revision and run staged builds, database backup and migration rehearsal, health verification, and UI publication. An independent progress page remains available during backend restarts. One-time host worker setup is required; uncertain database changes require explicit operator recovery.

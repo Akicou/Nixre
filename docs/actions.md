@@ -1,6 +1,6 @@
 # Nixre Actions (CI/CD)
 
-Nixre runs workflows from your repository, like GitHub Actions and Gitea Actions. Nothing extra to install: the runner is built into `nixre-core` and runs each job in a throwaway Docker container.
+Nixre runs workflows from your repository in the style of GitHub Actions and Gitea Actions. The runner is built into `nixre-core` and runs each job in a throwaway Docker container.
 
 ## Where workflows live
 
@@ -10,7 +10,7 @@ Workflow files are YAML in the first of these directories that contains any `.ym
 2. `.gitea/workflows/`
 3. `.github/workflows/`
 
-So a repository mirrored from GitHub or Gitea usually works as-is, as long as its steps are `run:` commands (see [limits](#whats-not-supported)).
+A repository mirrored from GitHub or Gitea usually works as-is if its steps are `run:` commands (see [limits](#whats-not-supported)).
 
 ## A first workflow
 
@@ -30,7 +30,7 @@ jobs:
       - run: npm test
 ```
 
-Push it, open the repository's **Actions** tab, and watch the run.
+Push it and open the repository's **Actions** tab.
 
 ## Triggers
 
@@ -41,7 +41,7 @@ Push it, open the repository's **Actions** tab, and watch the run.
 | `schedule` | `- cron: '30 2 * * *'` | Five-field cron, UTC, runs on the default branch. |
 | `workflow_dispatch` | `inputs` (`string`, `boolean`, `choice`, `number`) | Adds a **Run workflow** button for people with write access. |
 
-Filters follow GitHub's rules: `*` matches within a path segment, `**` across segments, `!pattern` negates, and the last matching pattern wins. With only `tags:` a branch push does not trigger; with only `branches:` a tag push does not.
+Filters follow GitHub's rules: `*` matches within a path segment, `**` across segments, `!pattern` negates, and the last matching pattern wins. With only `tags:`, a branch push does not trigger. With only `branches:`, a tag push does not.
 
 ## Jobs
 
@@ -73,15 +73,19 @@ jobs:
 
 Supported per job: `name`, `runs-on`, `container` (string or `{ image, env }`), `needs`, `if`, `env`, `strategy.matrix` (with `include`/`exclude`), `strategy.fail-fast`, `timeout-minutes`, `continue-on-error`, `outputs`.
 
-**Images.** `ubuntu-latest`, `ubuntu-22.04`, `linux` and similar labels use `NIXRE_ACTIONS_DEFAULT_IMAGE` (default `node:22-bookworm`: Debian with git, curl, Python 3 and build tools). `runs-on: nixre-sandbox` uses the assistant sandbox image (adds ripgrep, pytest, Playwright/Chromium). Any image reference works directly: `runs-on: python:3.12` or `container: rust:1`.
+Images:
 
-Jobs run in dependency order; a job whose `needs` did not all succeed is skipped unless its `if:` uses `always()` or `failure()`.
+- `ubuntu-latest`, `ubuntu-22.04`, `linux` and similar labels use `NIXRE_ACTIONS_DEFAULT_IMAGE` (default `node:22-bookworm`: Debian with git, curl, Python 3 and build tools).
+- `runs-on: nixre-sandbox` uses the assistant sandbox image (adds ripgrep, pytest, Playwright/Chromium).
+- Any image reference works directly: `runs-on: python:3.12` or `container: rust:1`.
+
+Jobs run in dependency order. A job whose `needs` did not all succeed is skipped unless its `if:` uses `always()` or `failure()`.
 
 ## Steps
 
 Supported: `run`, `name`, `id`, `if`, `env`, `shell` (`bash`, `sh`, `python`, `node`), `working-directory`, `continue-on-error`, `timeout-minutes`.
 
-`run` steps use `bash -eo pipefail` when the image has bash, otherwise `sh -e`. The workspace is `/workspace`: a real git checkout of the commit (with `.git`), and `origin` points at this instance when `NIXRE_PUBLIC_URL` is set.
+`run` steps use `bash -eo pipefail` when the image has bash, otherwise `sh -e`. The workspace is `/workspace`, a real git checkout of the commit (with `.git`). `origin` points at this instance when `NIXRE_PUBLIC_URL` is set.
 
 Files for passing data between steps work as on GitHub:
 
@@ -89,16 +93,16 @@ Files for passing data between steps work as on GitHub:
 - `$GITHUB_ENV` for environment variables in later steps
 - `$GITHUB_PATH` for directories to prepend to `PATH`
 
-Environment available in every step: `CI=true`, `GITHUB_ACTIONS=true`, `GITHUB_SHA`, `GITHUB_REF`, `GITHUB_REF_NAME`, `GITHUB_REF_TYPE`, `GITHUB_EVENT_NAME`, `GITHUB_ACTOR`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `GITHUB_RUN_NUMBER`, `GITHUB_WORKFLOW`, `GITHUB_HEAD_REF`, `GITHUB_BASE_REF`, `GITHUB_WORKSPACE`, `GITHUB_SERVER_URL`, `RUNNER_OS`, plus `NIXRE_*` equivalents.
+Environment in every step: `CI=true`, `GITHUB_ACTIONS=true`, `GITHUB_SHA`, `GITHUB_REF`, `GITHUB_REF_NAME`, `GITHUB_REF_TYPE`, `GITHUB_EVENT_NAME`, `GITHUB_ACTOR`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `GITHUB_RUN_NUMBER`, `GITHUB_WORKFLOW`, `GITHUB_HEAD_REF`, `GITHUB_BASE_REF`, `GITHUB_WORKSPACE`, `GITHUB_SERVER_URL`, `RUNNER_OS`, plus `NIXRE_*` equivalents.
 
 ### Built-in actions
 
 | `uses:` | What it does |
 |---|---|
-| `actions/checkout@*` | Nothing to do: the repository is already checked out. Accepted so existing workflows run. |
-| `nixre/deploy@v1` | Releases one of this repository's [deploy services](deployments-runtime.md) at the run's commit and waits until it is live. `with: service: <name>`; add `wait: false` to fire and forget. |
+| `actions/checkout@*` | No-op, since the repository is already checked out. Accepted so existing workflows run. |
+| `nixre/deploy@v1` | Releases one of this repository's [deploy services](deployments-runtime.md) at the run's commit and waits until it is live. `with: service: <name>`; add `wait: false` to skip waiting. |
 
-A continuous-delivery pipeline is therefore just:
+Example continuous-delivery pipeline:
 
 ```yaml
 on:
@@ -118,7 +122,7 @@ jobs:
           service: web
 ```
 
-Turn off the service's own auto-deploy if you use this, or every push deploys twice.
+Turn off the service's own auto-deploy when you use this, or every push deploys twice.
 
 ## Expressions
 
@@ -130,15 +134,15 @@ Turn off the service's own auto-deploy if you use this, or every push deploys tw
 
 ## Secrets
 
-**Settings → Actions → Secrets** stores per-repository secrets. They are encrypted with the instance key (re-encrypted on key rotation like every other secret), can be replaced but never read back, and every occurrence of a secret value in a log is replaced by `***`. Use them as `${{ secrets.NAME }}`.
+**Settings → Actions → Secrets** stores per-repository secrets. They are encrypted with the instance key (re-encrypted on key rotation like every other secret). You can replace a secret but not read it back. Every occurrence of a secret value in a log is replaced by `***`. Use them as `${{ secrets.NAME }}`.
 
 ## Checks, required checks and badges
 
 Every job reports a commit status named `<workflow> / <job> (<event>)`. Pull requests show the checks of their head commit.
 
-**Settings → Actions → Require passing checks before merging** turns on branch protection: a pull request only merges when every status on its latest commit is green. At least one status must have reported.
+**Settings → Actions → Require passing checks before merging** turns on branch protection. A pull request merges only when every status on its latest commit is green, and at least one status must have reported.
 
-External CI can report too, with a personal access token that has write access:
+External CI can report statuses with a personal access token that has write access:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $NIXRE_TOKEN" -H 'Content-Type: application/json' \
@@ -146,20 +150,20 @@ curl -X POST -H "Authorization: Bearer $NIXRE_TOKEN" -H 'Content-Type: applicati
   https://git.example.com/api/v1/repos/acme/web/+/statuses/<full-sha>
 ```
 
-Status badges for a README:
+Status badge for a README:
 
 ```markdown
 ![CI](https://git.example.com/api/v1/repos/acme/web/+/actions/badge.svg?workflow=ci.yml&branch=main)
 ```
 
-The Actions tab shows a copy-ready snippet for each workflow. Badges of private repositories are only visible to members.
+The Actions tab shows a copy-ready snippet for each workflow. Badges of private repositories are visible only to members.
 
 ## Running jobs safely
 
-- Each job gets a fresh container, removed when the job ends. A job cannot see other jobs, the Docker socket or the database network. It joins `NIXRE_ACTIONS_NETWORK` (default: the apps network), with outbound internet for package installs.
+- Each job gets a fresh container, removed when the job ends. It cannot see other jobs, the Docker socket or the database network. It joins `NIXRE_ACTIONS_NETWORK` (default: the apps network) and has outbound internet for package installs.
 - Containers drop `NET_RAW`, `MKNOD` and `AUDIT_WRITE`, run with `no-new-privileges`, and are capped by `NIXRE_ACTIONS_MEMORY`, `NIXRE_ACTIONS_CPUS` and a PID limit.
-- Workflows run code from the repository, so anyone who can push can run code in a job and read that repository's secrets. That is the same trust as deploy services. Pull requests only come from branches of the same repository, whose authors already have write access.
-- `NIXRE_ACTIONS_CONCURRENCY` jobs run at once across the instance; others queue.
+- Workflows run code from the repository. Anyone who can push can run code in a job and read that repository's secrets, the same trust as deploy services. Pull requests only come from branches of the same repository, whose authors already have write access.
+- `NIXRE_ACTIONS_CONCURRENCY` jobs run at once across the instance. Others queue.
 - A restart of `nixre-core` marks unfinished runs as failed ("Interrupted by a restart") and removes their containers.
 
 ## Configuration
@@ -178,15 +182,15 @@ The Actions tab shows a copy-ready snippet for each workflow. Badges of private 
 
 ## What's not supported
 
-Nixre is honest about the gaps instead of silently skipping them. A workflow using any of these fails with a message naming the problem:
+A workflow using any of these fails with a message naming the problem:
 
-- Marketplace actions other than `actions/checkout` and `nixre/deploy` (`actions/setup-node`, `actions/cache`, ...). Pick an image that has the tool instead (`container: node:20`), or install it in a `run` step.
+- Marketplace actions other than `actions/checkout` and `nixre/deploy` (`actions/setup-node`, `actions/cache`, ...). Use an image that has the tool (`container: node:20`) or install it in a `run` step.
 - `services:` containers, reusable workflows (`uses:` on a job), and a matrix built from an expression.
 - Events other than the four above.
 
 ## API
 
-All under `/api/v1/repos/{space}/{repo}/+`. Reads follow repository visibility (guests can read public repositories); writes need write access.
+All under `/api/v1/repos/{space}/{repo}/+`. Reads follow repository visibility (guests can read public repositories). Writes need write access.
 
 | Method | Path | |
 |---|---|---|
