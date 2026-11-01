@@ -295,7 +295,6 @@ export const AgentWorkspace: React.FC = () => {
       /* ignore */
     }
     setModeOpen(false);
-    setPlusOpen(false);
     if (id !== mode && currentIdRef.current) {
       logTrace({
         type: 'system_prompt_change',
@@ -1248,25 +1247,37 @@ export const AgentWorkspace: React.FC = () => {
                 Attach images or files
               </button>
               <div className="my-1 border-t border-border-subtle" />
-              <p className="px-3 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
-                Mode
-              </p>
-              {ASSISTANT_MODES.map(m => (
-                <button
-                  key={m.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={m.id === mode}
-                  onClick={() => changeMode(m.id)}
-                  className={`${menuRow} ${m.id === mode ? 'text-txt-primary' : 'text-txt-secondary'}`}
+              <div className="px-2 py-1.5">
+                <div
+                  role="radiogroup"
+                  aria-label="Mode"
+                  className="relative grid grid-cols-4 h-11 p-1 rounded-full bg-surface-subtle"
                 >
-                  <span className="flex-1 min-w-0">
-                    <span className="block font-medium">{m.label}</span>
-                    <span className="block text-[11px] text-txt-tertiary leading-snug truncate">{m.description}</span>
-                  </span>
-                  {m.id === mode && <Check className="w-4 h-4 text-brand shrink-0" aria-hidden="true" />}
-                </button>
-              ))}
+                  <span
+                    aria-hidden="true"
+                    className="absolute top-1 bottom-1 left-1 rounded-full bg-surface-canvas shadow-sm transition-transform duration-200 ease-out"
+                    style={{
+                      width: `calc((100% - 0.5rem) / ${ASSISTANT_MODES.length})`,
+                      transform: `translateX(${Math.max(0, ASSISTANT_MODES.findIndex(m => m.id === mode)) * 100}%)`,
+                    }}
+                  />
+                  {ASSISTANT_MODES.map(m => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={m.id === mode}
+                      title={m.description}
+                      onClick={() => changeMode(m.id)}
+                      className={`relative z-10 rounded-full text-[13px] font-medium transition-colors ${
+                        m.id === mode ? 'text-txt-primary' : 'text-txt-tertiary hover:text-txt-secondary'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="my-1 border-t border-border-subtle" />
               <button
                 type="button"
@@ -1930,7 +1941,7 @@ export const AgentWorkspace: React.FC = () => {
             </div>
 
             {/* Docked floating composer */}
-            <div className={`px-3 sm:px-5 pt-2 flex flex-col items-center ${compact ? 'pb-3' : 'pb-5'}`}>
+            <div className={`px-3 sm:px-5 pt-2 flex flex-col items-center ${compact ? 'pb-[calc(5px_+_env(safe-area-inset-bottom))]' : 'pb-5'}`}>
               {!compact && <div className="w-full max-w-[52rem] mb-2">{contextPickers(true)}</div>}
               {queuePanel}
               {composer}

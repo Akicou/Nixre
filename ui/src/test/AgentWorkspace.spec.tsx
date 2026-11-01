@@ -221,13 +221,16 @@ describe('AgentWorkspace', () => {
       fireEvent.click(plus);
       const menu = screen.getByRole('menu', { name: 'Composer options' });
       expect(menu).toHaveTextContent(/turns?/);
-      fireEvent.click(screen.getByRole('menuitemradio', { name: /^Ask/ }));
-      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      const modes = screen.getByRole('radiogroup', { name: 'Mode' });
+      expect(screen.getByRole('radio', { name: 'Agent' })).toHaveAttribute('aria-checked', 'true');
+      expect(modes.querySelectorAll('[role=radio]')).toHaveLength(4);
+      fireEvent.click(screen.getByRole('radio', { name: 'Ask' }));
+      // The switch stays open so you see it move.
+      expect(screen.getByRole('radio', { name: 'Ask' })).toHaveAttribute('aria-checked', 'true');
       expect(screen.getByText('acme/website · Ask')).toBeInTheDocument();
       expect(screen.getByPlaceholderText('Ask anything…')).toBeInTheDocument();
 
-      // + again: drill into the model list and pick another model.
-      fireEvent.click(plus);
+      // Drill into the model list and pick another model.
       fireEvent.click(screen.getByRole('button', { name: /Change model: deepseek-chat/ }));
       expect(screen.getByText('Reasoning effort')).toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /deepseek-reasoner/ }));
