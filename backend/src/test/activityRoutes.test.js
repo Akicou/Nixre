@@ -98,6 +98,12 @@ test('merges git, PR, star and deploy events newest first', async t => {
   assert.equal(json.stats.open_prs, 2);
   assert.equal(json.stats.members, 2);
   assert.equal(json.contributors[0].uid, 'ada');
+  // 'Active of N members' only counts accounts; git authors without one (Stranger) are reported apart,
+  // so the first number can never exceed the member total.
+  const accounts = new Set(json.contributors.filter(c => c.uid).map(c => c.uid));
+  assert.equal(json.stats.contributors_7d, accounts.size);
+  assert.equal(json.stats.external_contributors_7d, 1);
+  assert.ok(json.stats.contributors_7d <= json.stats.members);
 
   // Member visibility is resolved in SQL against the viewer's uid.
   const repoQuery = log.find(q => q.sql.includes('FROM repos r'));

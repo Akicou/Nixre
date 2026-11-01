@@ -116,6 +116,18 @@ describe('Dashboard', () => {
     expect(board).toHaveTextContent('4 commits');
   });
 
+  it('keeps "active of N" about accounts and reports outside committers apart', async () => {
+    api.getActivity.mockResolvedValue({
+      ...feed,
+      stats: { ...feed.stats, contributors_7d: 1, external_contributors_7d: 1, members: 1 },
+    });
+    mount('/');
+    const hero = await screen.findByTestId('activity-pulse');
+    // One account active out of one, plus one git author with no account: never "2 of 1".
+    expect(hero).toHaveTextContent(/1\s*of 1 · \+1 outside/);
+    expect(hero).not.toHaveTextContent('2 of 1');
+  });
+
   it('filters the feed by kind', async () => {
     mount('/');
     await screen.findByText('Add pricing page');
