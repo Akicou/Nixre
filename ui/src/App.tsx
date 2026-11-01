@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Navbar } from './components/Navbar';
 import { Dashboard } from './pages/Dashboard';
@@ -10,7 +10,6 @@ import { NewSpace } from './pages/NewSpace';
 import { Settings } from './pages/Settings';
 import { AdminView } from './pages/AdminView';
 import { Plugins } from './pages/Plugins';
-import { AssistantPage } from './pages/AssistantPage';
 import { AgentWorkspace } from './pages/AgentWorkspace';
 import { Login } from './pages/Login';
 import { Register } from './pages/Register';
@@ -18,6 +17,13 @@ import { api, User } from './lib/api';
 import { migrateLegacyLocalStorage } from './lib/syncApi';
 import { BrandMark } from './components/BrandMark';
 import { UpdateProgressPage } from './components/InstanceUpdates';
+
+
+/** The per-repo assistant page was folded into the agent workspace. Old links land there, scoped to the same repo. */
+export const AssistantRedirect: React.FC = () => {
+  const { space, repo } = useParams<{ space: string; repo: string }>();
+  return <Navigate replace to={`/agent?repo=${encodeURIComponent(`${space}/${repo}`)}`} />;
+};
 
 export const App: React.FC = () => window.location.pathname === '/update-progress'
   ? <UpdateProgressPage /> : <SessionApp />;
@@ -90,7 +96,7 @@ const AppShell: React.FC<{
           <Route path="/admin" element={currentUser && currentUser.admin ? <AdminView /> : <Navigate to="/" />} />
           <Route path="/plugins" element={currentUser ? <Plugins /> : <Navigate to="/login" />} />
           <Route path="/agent" element={currentUser ? <AgentWorkspace /> : <Navigate to="/login" />} />
-          <Route path="/:space/:repo/assistant" element={currentUser ? <AssistantPage /> : <Navigate to="/login" />} />
+          <Route path="/:space/:repo/assistant" element={<AssistantRedirect />} />
 
           <Route path="/login" element={currentUser ? <Navigate to="/" /> : <Login onLoginSuccess={setCurrentUser} />} />
           <Route path="/register" element={currentUser ? <Navigate to="/" /> : <Register onRegisterSuccess={setCurrentUser} />} />

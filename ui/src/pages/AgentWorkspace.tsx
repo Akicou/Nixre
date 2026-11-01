@@ -1586,14 +1586,6 @@ export const AgentWorkspace: React.FC = () => {
                   <Download className="w-3.5 h-3.5" />
                 </button>
               )}
-              {activeKind === 'nixre' && (
-                <Link
-                  to={`/${activeRepo}/assistant`}
-                  className="text-[11px] px-2.5 py-1 rounded-md text-txt-tertiary hover:text-txt-secondary hover:bg-surface-subtle transition"
-                >
-                  Repo assistant
-                </Link>
-              )}
               <button
                 type="button"
                 onClick={startNew}

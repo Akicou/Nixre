@@ -556,8 +556,8 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     return [...map.entries()];
   }, [allConversations]);
 
-  const repoAssistantUrl = /^[\w.-]+\/[\w.-]+$/.test(repoPath)
-    ? `/${repoPath}/assistant`
+  const agentWorkspaceUrl = /^[\w.-]+\/[\w.-]+$/.test(repoPath)
+    ? `/agent?repo=${encodeURIComponent(repoPath)}`
     : null;
 
   const panelSessionList = (
@@ -684,15 +684,15 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
           ))
         )}
       </div>
-      {repoAssistantUrl && (
+      {agentWorkspaceUrl && (
         <div className="border-t border-border-subtle p-2">
           <Link
-            to={repoAssistantUrl}
-            title="Open this repo's scoped assistant"
+            to={agentWorkspaceUrl}
+            title="Open this repo in the agent workspace"
             className="flex items-center justify-center gap-1.5 text-[11px] px-2 py-2.5 rounded-md text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle transition min-h-11"
           >
             <FolderGit2 className="w-3.5 h-3.5" />
-            Repo assistant
+            Agent workspace
           </Link>
         </div>
       )}
@@ -1017,13 +1017,13 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-          {workspace && repoAssistantUrl && (
+          {workspace && agentWorkspaceUrl && (
             <Link
-              to={repoAssistantUrl}
-              title="Open this repo's scoped assistant panel"
+              to={agentWorkspaceUrl}
+              title="Open this repo in the agent workspace"
               className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border-subtle text-txt-secondary hover:text-txt-primary hover:border-brand transition min-h-11"
             >
-              Repo view
+              Open in Agent
               <ArrowUpRight className="w-3.5 h-3.5" />
             </Link>
           )}
