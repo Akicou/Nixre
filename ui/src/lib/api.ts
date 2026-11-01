@@ -906,6 +906,19 @@ class ApiClient {
     return this.request(`/user/publickeys/${identifier}`, { method: 'DELETE' });
   }
 
+  // Extra emails whose commits count as this account's.
+  async listGitEmails(): Promise<{ primary: string; emails: { email: string; created: number }[] }> {
+    return this.request('/user/emails');
+  }
+
+  async addGitEmail(email: string): Promise<{ primary: string; emails: { email: string; created: number }[] }> {
+    return this.request('/user/emails', { method: 'POST', body: JSON.stringify({ email }) });
+  }
+
+  async deleteGitEmail(email: string): Promise<void> {
+    return this.request(`/user/emails/${encodeURIComponent(email)}`, { method: 'DELETE' });
+  }
+
   async listTokens(): Promise<Token[]> {
     const res = await this.request<any>('/user/tokens');
     return res.tokens || res || [];

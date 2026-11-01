@@ -43,6 +43,11 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
   const [sshError, setSshError] = useState('');
   const [sshSuccess, setSshSuccess] = useState('');
 
+  // Commit emails
+  const [gitEmails, setGitEmails] = useState<{ email: string; created: number }[]>([]);
+  const [gitEmail, setGitEmail] = useState('');
+  const [gitEmailError, setGitEmailError] = useState('');
+
   // Tokens state
   const [tokens, setTokens] = useState<Token[]>([]);
   const [tokenTitle, setTokenTitle] = useState('');
@@ -92,6 +97,7 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
     if (!user) return;
     refreshPasskeys();
     api.listPublicKeys().then(setPublicKeys).catch(() => {});
+    api.listGitEmails().then(r => setGitEmails(r.emails)).catch(() => {});
     api.listTokens().then(setTokens).catch(() => {});
     api.listSecrets().then(list => {
       setGithubSecret(list.find(s => s.kind === 'github' && s.configured) || null);
@@ -155,6 +161,25 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
     } catch (err: any) {
       setSshError(err.message || 'Failed to add SSH key.');
     }
+  };
+
+  const handleAddGitEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setGitEmailError('');
+    try {
+      const r = await api.addGitEmail(gitEmail);
+      setGitEmails(r.emails);
+      setGitEmail('');
+    } catch (err: any) {
+      setGitEmailError(err.message || 'Could not add that email.');
+    }
+  };
+
+  const handleDeleteGitEmail = async (email: string) => {
+    try {
+      await api.deleteGitEmail(email);
+      setGitEmails(list => list.filter(x => x.email !== email));
+    } catch {}
   };
 
   const handleDeleteSshKey = async (identifier: string) => {
@@ -449,6 +474,44 @@ export const Settings: React.FC<SettingsProps> = ({ user, onUserChange }) => {
                   onChange={setSocials}
                   hint="Add links to show on your public profile — e.g. GitHub, X/Twitter, LinkedIn, or your site."
                 />
+
+                <div className="space-y-2" data-testid="git-emails">
+                  <label className="block text-xs font-semibold text-txt-secondary uppercase tracking-wider">Commit emails</label>
+                  <p className="text-[11px] text-txt-tertiary leading-relaxed">
+                    Commits made with these addresses count as yours — in activity, your contribution graph and the dashboard.
+                    Your sign-in address always counts. An address can belong to one account; the first to claim it keeps it.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {gitEmails.map(g => (
+                      <span key={g.email} className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-surface-base border border-border-subtle text-[11px] font-mono text-txt-primary">
+                        {g.email}
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteGitEmail(g.email)}
+                          className="p-0.5 rounded-full text-txt-tertiary hover:text-feedback-error-text transition"
+                          aria-label={`Remove ${g.email}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                  <form onSubmit={handleAddGitEmail} className="flex gap-2">
+                    <input
+                      type="email"
+                      value={gitEmail}
+                      onChange={e => setGitEmail(e.target.value)}
+                      placeholder="you@work.example"
+                      aria-label="Commit email"
+                      className="flex-1 min-w-0 px-3 py-2 rounded-md bg-surface-base border border-border-subtle text-txt-primary text-xs focus:border-brand transition"
+                      required
+                    />
+                    <button type="submit" className="px-3 py-2 rounded-md border border-border-subtle text-xs font-medium text-txt-primary hover:bg-surface-subtle transition">
+                      Add email
+                    </button>
+                  </form>
+                  {gitEmailError && <p className="text-[11px] text-feedback-error-text">{gitEmailError}</p>}
+                </div>
 
                 <div className="flex items-center justify-end gap-3">
                   {profileMsg && (

@@ -390,12 +390,13 @@ function escapeRegExp(value) {
 
 // Author dates only (`%aI`), for contribution heatmaps. Empty / unreadable
 // repos return []. `--all` so activity on any branch counts.
-export async function commitDates(space, repo, { since, until, authorEmail } = {}) {
+export async function commitDates(space, repo, { since, until, authorEmail, authorEmails } = {}) {
   const dir = repoDir(space, repo);
   const args = ['log', '--all', '--format=%aI'];
   if (since) args.push(`--since=${since}`);
   if (until) args.push(`--until=${until}`);
-  if (authorEmail) args.push(`--author=${escapeRegExp(authorEmail)}`);
+  // Several --author flags are OR-ed by git.
+  for (const e of authorEmails ?? (authorEmail ? [authorEmail] : [])) args.push(`--author=${escapeRegExp(e)}`);
   try {
     const out = await git(dir, args);
     return out.split('\n').map(s => s.trim()).filter(Boolean);
