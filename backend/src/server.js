@@ -262,6 +262,7 @@ async function boot() {
   await initSandbox();
   await bootDeployments();
   await bootActions();
+  await bootSecurityScan();
   createApp().listen(PORT, () => {
     console.log(`nixre-core listening on :${PORT} — sovereign, no forge dependency`);
   });
