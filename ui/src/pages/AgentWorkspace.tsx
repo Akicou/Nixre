@@ -9,7 +9,6 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowUp,
   Bot,
-  Cpu,
   ChevronDown,
   Download,
   FolderGit2,
@@ -63,6 +62,7 @@ import {
 } from '../lib/agentJobs';
 import { ChatMessageView } from '../components/assistant/ChatMessageView';
 import { HoverMarquee } from '../components/HoverMarquee';
+import { ConfirmDialog, EnvAuditConfirmBody } from '../components/ConfirmDialog';
 import { ComposerAttach } from '../components/assistant/ComposerAttach';
 import { ComposerMic } from '../components/assistant/ComposerMic';
 import { MobileDrawer } from '../components/MobileDrawer';
@@ -622,6 +622,7 @@ export const AgentWorkspace: React.FC = () => {
     void sendToJob(prompt || '(image)', images);
   };
 
+  const [confirmEnv, setConfirmEnv] = useState(false);
   const requestEnvFeedback = () => {
     if (!realAi || !activeRepo) return;
     if (streaming && currentIdRef.current) {
@@ -917,8 +918,6 @@ export const AgentWorkspace: React.FC = () => {
         aria-expanded={modelOpen}
         className="flex min-w-0 items-center gap-1.5 min-h-11 px-2.5 rounded-lg border border-transparent text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle hover:border-border-subtle transition"
       >
-        <Cpu className="w-4 h-4 shrink-0 text-brand" aria-hidden="true" />
-        <span className="text-txt-tertiary">Model</span>
         <HoverMarquee className="font-medium max-w-[9rem] sm:max-w-[16rem]">{modelLabel(activeModelLabel) || 'Choose model'}</HoverMarquee>
         <span className="text-[10px] uppercase tracking-wider text-txt-tertiary">
           {effortBadge(workingReasoning)}
@@ -1070,6 +1069,20 @@ export const AgentWorkspace: React.FC = () => {
     return { turns, steps };
   })();
 
+  const envConfirm = confirmEnv ? (
+    <ConfirmDialog
+      title="Run an environment check?"
+      confirmLabel="Run check"
+      onCancel={() => setConfirmEnv(false)}
+      onConfirm={() => {
+        setConfirmEnv(false);
+        requestEnvFeedback();
+      }}
+    >
+      <EnvAuditConfirmBody />
+    </ConfirmDialog>
+  ) : null;
+
   const composer = (
     <div
       className={`w-full rounded-2xl border border-border-subtle bg-surface-canvas shadow-sm transition focus-within:border-brand/50 ${
@@ -1112,6 +1125,7 @@ export const AgentWorkspace: React.FC = () => {
           empty ? 'text-[15px] leading-relaxed min-h-[84px]' : 'text-[13px] min-h-[44px] max-h-40'
         }`}
       />
+      {envConfirm}
       <div className="relative flex flex-wrap items-center justify-between gap-2 px-2.5 pb-2.5">
         <div className="flex items-center gap-2 flex-wrap min-w-0">
           <input
@@ -1155,7 +1169,7 @@ export const AgentWorkspace: React.FC = () => {
           {modelCard}
           <button
             type="button"
-            onClick={requestEnvFeedback}
+            onClick={() => setConfirmEnv(true)}
             disabled={!activeRepo || !realAi}
             title="Environment feedback"
             className="w-8 h-8 rounded-full flex items-center justify-center text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle disabled:opacity-25 disabled:cursor-not-allowed transition"
