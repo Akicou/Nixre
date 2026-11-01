@@ -9,7 +9,11 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowUp,
   Bot,
+  Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Paperclip,
   Download,
   FolderGit2,
   Loader2,
@@ -112,6 +116,26 @@ function effortBadge(r: string): string {
   return r.charAt(0).toUpperCase() + r.slice(1);
 }
 
+// Phone-width check (Tailwind's `sm` breakpoint). Below it, an open session
+// uses the thin composer: one row, with mode / model / attach behind the +.
+const MOBILE_QUERY = '(max-width: 639px)';
+function useIsMobile(): boolean {
+  const get = () =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(MOBILE_QUERY).matches
+      : false;
+  const [mobile, setMobile] = useState(get);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const on = () => setMobile(mq.matches);
+    on();
+    mq.addEventListener?.('change', on);
+    return () => mq.removeEventListener?.('change', on);
+  }, []);
+  return mobile;
+}
+
 export const AgentWorkspace: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const repoParam = searchParams.get('repo') ?? '';
@@ -139,6 +163,9 @@ export const AgentWorkspace: React.FC = () => {
   const [modelOpen, setModelOpen] = useState(false);
   const [repoOpen, setRepoOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
+  const [plusOpen, setPlusOpen] = useState(false);
+  const [plusView, setPlusView] = useState<'main' | 'model'>('main');
+  const isMobile = useIsMobile();
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const [trace, setTrace] = useState<SessionTraceEntry[]>([]);
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
@@ -161,6 +188,7 @@ export const AgentWorkspace: React.FC = () => {
   const modelRef = useRef<HTMLDivElement>(null);
   const repoMenuRef = useRef<HTMLDivElement>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
   const followAbortRef = useRef<AbortController | null>(null);
   const traceRef = useRef<SessionTraceEntry[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -267,6 +295,7 @@ export const AgentWorkspace: React.FC = () => {
       /* ignore */
     }
     setModeOpen(false);
+    setPlusOpen(false);
     if (id !== mode && currentIdRef.current) {
       logTrace({
         type: 'system_prompt_change',
@@ -341,10 +370,12 @@ export const AgentWorkspace: React.FC = () => {
   const changeModel = (modelId: string) => {
     if (modelId === workingModel) {
       setModelOpen(false);
+      setPlusOpen(false);
       return;
     }
     setWorkingModel(modelId);
     setModelOpen(false);
+    setPlusOpen(false);
     if (currentIdRef.current) {
       logTrace({
         type: 'model_change',
@@ -496,6 +527,7 @@ export const AgentWorkspace: React.FC = () => {
       if (modelRef.current && !modelRef.current.contains(t)) setModelOpen(false);
       if (repoMenuRef.current && !repoMenuRef.current.contains(t)) setRepoOpen(false);
       if (modeMenuRef.current && !modeMenuRef.current.contains(t)) setModeOpen(false);
+      if (plusMenuRef.current && !plusMenuRef.current.contains(t)) setPlusOpen(false);
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
@@ -504,10 +536,11 @@ export const AgentWorkspace: React.FC = () => {
   // Esc stops a running turn.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && (modelOpen || repoOpen || modeOpen)) {
+      if (e.key === 'Escape' && (modelOpen || repoOpen || modeOpen || plusOpen)) {
         setModelOpen(false);
         setRepoOpen(false);
         setModeOpen(false);
+        setPlusOpen(false);
         return;
       }
       if (e.key === 'Escape' && streaming && currentIdRef.current) {
@@ -516,7 +549,7 @@ export const AgentWorkspace: React.FC = () => {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [streaming, modelOpen, repoOpen, modeOpen]);
+  }, [streaming, modelOpen, repoOpen, modeOpen, plusOpen]);
 
   const groupedSessions = useMemo(() => {
     const map = new Map<string, Conversation[]>();
@@ -905,27 +938,8 @@ export const AgentWorkspace: React.FC = () => {
   }
 
   // --- shared chrome pieces ------------------------------------------------
-  const modelCard = (
-    <div ref={modelRef} className="static sm:relative">
-      <button
-        type="button"
-        onClick={() => {
-          setModelOpen(o => !o);
-          setRepoOpen(false);
-          setModeOpen(false);
-        }}
-        aria-label={`Select model: ${modelLabel(activeModelLabel)}`}
-        aria-expanded={modelOpen}
-        className="flex min-w-0 items-center gap-1.5 min-h-11 px-2.5 rounded-lg border border-transparent text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle hover:border-border-subtle transition"
-      >
-        <HoverMarquee className="font-medium max-w-[9rem] sm:max-w-[16rem]">{modelLabel(activeModelLabel) || 'Choose model'}</HoverMarquee>
-        <span className="text-[10px] uppercase tracking-wider text-txt-tertiary">
-          {effortBadge(workingReasoning)}
-        </span>
-        <ChevronDown className="w-3 h-3 text-txt-tertiary" />
-      </button>
-      {modelOpen && (
-        <div className="absolute right-0 bottom-[calc(100%+8px)] w-[min(22rem,calc(100vw-4rem))] max-h-[60vh] overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-xl z-40 animate-pop">
+  const modelPanelBody = (
+    <>
           <div className="px-3 py-2 border-b border-border-subtle">
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
               Model
@@ -981,6 +995,31 @@ export const AgentWorkspace: React.FC = () => {
               ))}
             </div>
           </div>
+    </>
+  );
+
+  const modelCard = (
+    <div ref={modelRef} className="static sm:relative">
+      <button
+        type="button"
+        onClick={() => {
+          setModelOpen(o => !o);
+          setRepoOpen(false);
+          setModeOpen(false);
+        }}
+        aria-label={`Select model: ${modelLabel(activeModelLabel)}`}
+        aria-expanded={modelOpen}
+        className="flex min-w-0 items-center gap-1.5 min-h-11 px-2.5 rounded-lg border border-transparent text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle hover:border-border-subtle transition"
+      >
+        <HoverMarquee className="font-medium max-w-[9rem] sm:max-w-[16rem]">{modelLabel(activeModelLabel) || 'Choose model'}</HoverMarquee>
+        <span className="text-[10px] uppercase tracking-wider text-txt-tertiary">
+          {effortBadge(workingReasoning)}
+        </span>
+        <ChevronDown className="w-3 h-3 text-txt-tertiary" />
+      </button>
+      {modelOpen && (
+        <div className="absolute right-0 bottom-[calc(100%+8px)] w-[min(22rem,calc(100vw-4rem))] max-h-[60vh] overflow-y-auto rounded-xl border border-border-subtle bg-surface-canvas shadow-xl z-40 animate-pop">
+          {modelPanelBody}
         </div>
       )}
     </div>
@@ -1083,26 +1122,42 @@ export const AgentWorkspace: React.FC = () => {
     </ConfirmDialog>
   ) : null;
 
-  const composer = (
-    <div
-      className={`w-full rounded-2xl border border-border-subtle bg-surface-canvas shadow-sm transition focus-within:border-brand/50 ${
-        empty ? 'max-w-[40rem]' : 'max-w-[52rem]'
-      }`}
-    >
-      <div className="px-3 pt-3">
-        <ComposerAttach images={pendingImages} disabled={attaching} onRemove={id => { setPendingImages(imgs => imgs.filter(i => i.id !== id)); setAttachmentError(''); }} />
-        {attachmentError && <p role="alert" className="text-xs text-feedback-error-text pb-2">{attachmentError}</p>}
-        {attaching && <p role="status" className="text-xs text-txt-secondary pb-2">Reading attachments…</p>}
-      </div>
+  // Thin, ChatGPT-style composer for phones in an open session. The repo and
+  // mode are already in the header, so the pickers above the input go away and
+  // mode / model / attach live behind the + button instead.
+  const compact = isMobile && !empty;
+  const sessionStatsLabels = [
+    `${sessionStats.turns} ${sessionStats.turns === 1 ? 'turn' : 'turns'}`,
+    `${sessionStats.steps} ${sessionStats.steps === 1 ? 'step' : 'steps'}`,
+    ...(lastTurnMetrics(trace) ? [`${lastTurnMetrics(trace)!.tokensPerSecond} tok/s`] : []),
+  ];
+
+  const fileInput = (
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        hidden
+        aria-label="Attach files"
+        disabled={!activeRepo || attaching}
+        onChange={e => {
+          const files = Array.from(e.target.files || []);
+          e.target.value = '';
+          void attachFiles(files);
+        }}
+      />
+  );
+
+  const composerTextarea = (
       <textarea
         ref={textareaRef}
-        rows={empty ? 3 : 1}
+        rows={empty && !compact ? 3 : 1}
         value={input}
         onChange={e => {
           setInput(e.target.value);
           const el = e.target;
           el.style.height = 'auto';
-          el.style.height = Math.min(el.scrollHeight, empty ? 220 : 160) + 'px';
+          el.style.height = Math.min(el.scrollHeight, empty && !compact ? 220 : 160) + 'px';
         }}
         onKeyDown={handleKeyDown}
         onPaste={async e => {
@@ -1112,7 +1167,15 @@ export const AgentWorkspace: React.FC = () => {
           await attachFiles(files);
         }}
         placeholder={
-          mode === 'agent'
+          compact
+            ? mode === 'ask'
+              ? 'Ask anything…'
+              : mode === 'plan'
+                ? 'What should we plan?'
+                : mode === 'debug'
+                  ? 'Describe the bug…'
+                  : 'Describe a task…'
+            : mode === 'agent'
             ? 'Describe a task, @file or @skill for context'
             : mode === 'plan'
               ? 'Describe what to plan…'
@@ -1121,26 +1184,189 @@ export const AgentWorkspace: React.FC = () => {
                 : 'Ask anything about this repo…'
         }
         disabled={!activeRepo}
-        className={`w-full resize-none bg-transparent text-txt-primary placeholder:text-txt-tertiary outline-none px-4 pt-3.5 pb-2 disabled:opacity-50 ${
-          empty ? 'text-[15px] leading-relaxed min-h-[84px]' : 'text-[13px] min-h-[44px] max-h-40'
+        className={`resize-none bg-transparent text-txt-primary placeholder:text-txt-tertiary outline-none disabled:opacity-50 ${
+          compact
+            ? 'flex-1 min-w-0 self-center px-1 py-2.5 text-base leading-6 min-h-[44px] max-h-40'
+            : empty
+              ? 'w-full px-4 pt-3.5 pb-2 text-[15px] leading-relaxed min-h-[84px]'
+              : 'w-full px-4 pt-3.5 pb-2 text-[13px] min-h-[44px] max-h-40'
         }`}
       />
+  );
+
+  const menuRow =
+    'w-full flex items-center gap-2.5 px-3 min-h-11 text-left text-[13px] transition hover:bg-surface-subtle disabled:opacity-40 disabled:cursor-not-allowed';
+
+  const plusMenu = (
+    <div ref={plusMenuRef} className="shrink-0 self-end">
+      <button
+        type="button"
+        aria-label="Open composer menu"
+        aria-haspopup="menu"
+        aria-expanded={plusOpen}
+        onClick={() => {
+          setPlusOpen(o => !o);
+          setPlusView('main');
+          setModelOpen(false);
+          setRepoOpen(false);
+          setModeOpen(false);
+        }}
+        className="w-11 h-11 rounded-full flex items-center justify-center text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary transition"
+      >
+        <Plus className={`w-5 h-5 transition-transform ${plusOpen ? 'rotate-45' : ''}`} aria-hidden="true" />
+      </button>
+      {plusOpen && (
+        <div
+          role="menu"
+          aria-label="Composer options"
+          className="absolute left-0 right-0 bottom-[calc(100%_+_8px)] max-h-[70vh] overflow-y-auto rounded-2xl border border-border-subtle bg-surface-canvas shadow-2xl z-40 animate-pop"
+        >
+          {plusView === 'model' ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setPlusView('main')}
+                className={`${menuRow} border-b border-border-subtle text-txt-secondary`}
+              >
+                <ChevronLeft className="w-4 h-4" aria-hidden="true" />
+                Back
+              </button>
+              {modelPanelBody}
+            </>
+          ) : (
+            <div className="py-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setPlusOpen(false);
+                  fileInputRef.current?.click();
+                }}
+                disabled={!activeRepo || attaching}
+                className={`${menuRow} text-txt-primary`}
+              >
+                <Paperclip className="w-4 h-4 text-txt-tertiary" aria-hidden="true" />
+                Attach images or files
+              </button>
+              <div className="my-1 border-t border-border-subtle" />
+              <p className="px-3 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
+                Mode
+              </p>
+              {ASSISTANT_MODES.map(m => (
+                <button
+                  key={m.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={m.id === mode}
+                  onClick={() => changeMode(m.id)}
+                  className={`${menuRow} ${m.id === mode ? 'text-txt-primary' : 'text-txt-secondary'}`}
+                >
+                  <span className="flex-1 min-w-0">
+                    <span className="block font-medium">{m.label}</span>
+                    <span className="block text-[11px] text-txt-tertiary leading-snug truncate">{m.description}</span>
+                  </span>
+                  {m.id === mode && <Check className="w-4 h-4 text-brand shrink-0" aria-hidden="true" />}
+                </button>
+              ))}
+              <div className="my-1 border-t border-border-subtle" />
+              <button
+                type="button"
+                onClick={() => setPlusView('model')}
+                aria-label={`Change model: ${modelLabel(activeModelLabel)}`}
+                className={`${menuRow} text-txt-primary`}
+              >
+                <span className="flex-1 min-w-0">
+                  <span className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">Model</span>
+                  <span className="block font-mono text-[12px] truncate">{modelLabel(activeModelLabel) || 'Choose model'}</span>
+                </span>
+                <span className="text-[10px] uppercase tracking-wider text-txt-tertiary shrink-0">
+                  {effortBadge(workingReasoning)}
+                </span>
+                <ChevronRight className="w-4 h-4 text-txt-tertiary shrink-0" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPlusOpen(false);
+                  setConfirmEnv(true);
+                }}
+                disabled={!activeRepo || !realAi}
+                className={`${menuRow} text-txt-secondary`}
+              >
+                <MessageSquareWarning className="w-4 h-4 text-txt-tertiary" aria-hidden="true" />
+                Environment feedback
+              </button>
+              {sessionStats.turns > 0 && (
+                <p data-testid="session-stats" className="px-3 pt-2 pb-1.5 border-t border-border-subtle mt-1 text-[11px] text-txt-tertiary tabular-nums">
+                  {sessionStatsLabels.join(' · ')}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  const sendOrStop = streaming ? (
+    <button
+      type="button"
+      onClick={stop}
+      title="Stop (Esc)"
+      className={`${compact ? 'w-10 h-10' : 'w-8 h-8'} rounded-full flex items-center justify-center bg-surface-subtle text-txt-primary hover:bg-surface-mid transition`}
+    >
+      <Square className="w-3.5 h-3.5 fill-current" />
+    </button>
+  ) : (
+    <button
+      type="button"
+      onClick={() => send()}
+      disabled={attaching || (!input.trim() && pendingImages.length === 0) || !activeRepo}
+      title="Send"
+      className={`${compact ? 'w-10 h-10' : 'w-8 h-8'} rounded-full flex items-center justify-center bg-txt-primary text-surface-base hover:opacity-90 disabled:opacity-25 disabled:cursor-not-allowed transition`}
+    >
+      <ArrowUp className="w-4 h-4" strokeWidth={2.5} />
+    </button>
+  );
+
+  const composerExtras = (
+    <>
+      <ComposerAttach images={pendingImages} disabled={attaching} onRemove={id => { setPendingImages(imgs => imgs.filter(i => i.id !== id)); setAttachmentError(''); }} />
+      {attachmentError && <p role="alert" className="text-xs text-feedback-error-text pb-2">{attachmentError}</p>}
+      {attaching && <p role="status" className="text-xs text-txt-secondary pb-2">Reading attachments…</p>}
+    </>
+  );
+
+  const composer = compact ? (
+    <div className="relative w-full rounded-[1.75rem] border border-border-subtle bg-surface-canvas shadow-sm transition focus-within:border-brand/50">
+      {(pendingImages.length > 0 || attachmentError || attaching) && (
+        <div className="px-3 pt-3">{composerExtras}</div>
+      )}
+      {fileInput}
+      {envConfirm}
+      <div className="flex items-end gap-1 p-1.5">
+        {plusMenu}
+        {composerTextarea}
+        <div className="flex items-center gap-1 shrink-0 self-end pb-0.5">
+          <ComposerMic
+            round
+            onTranscript={text => setInput(prev => (prev.trim() ? `${prev.trim()} ${text}` : text))}
+          />
+          {sendOrStop}
+        </div>
+      </div>
+    </div>
+  ) : (
+    <div
+      className={`w-full rounded-2xl border border-border-subtle bg-surface-canvas shadow-sm transition focus-within:border-brand/50 ${
+        empty ? 'max-w-[40rem]' : 'max-w-[52rem]'
+      }`}
+    >
+      <div className="px-3 pt-3">{composerExtras}</div>
+      {composerTextarea}
       {envConfirm}
       <div className="relative flex flex-wrap items-center justify-between gap-2 px-2.5 pb-2.5">
         <div className="flex items-center gap-2 flex-wrap min-w-0">
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            hidden
-            aria-label="Attach files"
-            disabled={!activeRepo || attaching}
-            onChange={e => {
-              const files = Array.from(e.target.files || []);
-              e.target.value = '';
-              void attachFiles(files);
-            }}
-          />
+          {fileInput}
           <button
             type="button"
             title="Attach images or files"
@@ -1180,26 +1406,7 @@ export const AgentWorkspace: React.FC = () => {
             round
             onTranscript={text => setInput(prev => (prev.trim() ? `${prev.trim()} ${text}` : text))}
           />
-          {streaming ? (
-            <button
-              type="button"
-              onClick={stop}
-              title="Stop (Esc)"
-              className="w-8 h-8 rounded-full flex items-center justify-center bg-surface-subtle text-txt-primary hover:bg-surface-mid transition"
-            >
-              <Square className="w-3.5 h-3.5 fill-current" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => send()}
-              disabled={attaching || (!input.trim() && pendingImages.length === 0) || !activeRepo}
-              title="Send"
-              className="w-8 h-8 rounded-full flex items-center justify-center bg-txt-primary text-surface-base hover:opacity-90 disabled:opacity-25 disabled:cursor-not-allowed transition"
-            >
-              <ArrowUp className="w-4 h-4" strokeWidth={2.5} />
-            </button>
-          )}
+          {sendOrStop}
         </div>
       </div>
     </div>
@@ -1723,17 +1930,13 @@ export const AgentWorkspace: React.FC = () => {
             </div>
 
             {/* Docked floating composer */}
-            <div className="px-3 sm:px-5 pb-5 pt-2 flex flex-col items-center">
-              <div className="w-full max-w-[52rem] mb-2">{contextPickers(true)}</div>
+            <div className={`px-3 sm:px-5 pt-2 flex flex-col items-center ${compact ? 'pb-3' : 'pb-5'}`}>
+              {!compact && <div className="w-full max-w-[52rem] mb-2">{contextPickers(true)}</div>}
               {queuePanel}
               {composer}
-              {sessionStats.turns > 0 && (
+              {!compact && sessionStats.turns > 0 && (
                 <p data-testid="session-stats" className="mt-2 flex flex-wrap items-center justify-center gap-x-3 text-[11px] text-txt-tertiary tabular-nums">
-                  {[
-                    `${sessionStats.turns} ${sessionStats.turns === 1 ? 'turn' : 'turns'}`,
-                    `${sessionStats.steps} ${sessionStats.steps === 1 ? 'step' : 'steps'}`,
-                    ...(lastTurnMetrics(trace) ? [`${lastTurnMetrics(trace)!.tokensPerSecond} tok/s`] : []),
-                  ].map((label, i) => (
+                  {sessionStatsLabels.map((label, i) => (
                     <span key={label}>{i > 0 && <span aria-hidden className="mr-3">·</span>}{label}</span>
                   ))}
                 </p>
