@@ -188,6 +188,64 @@ describe('AgentWorkspace', () => {
     }
   });
 
+  it('on phones, an open session uses a thin composer with mode and model behind +', async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('max-width: 639px'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      render(
+        <MemoryRouter initialEntries={['/agent']}>
+          <AgentWorkspace />
+        </MemoryRouter>,
+      );
+      fireEvent.click(await screen.findByText('Plan a feature'));
+      await screen.findByText(/suite is green/i);
+
+      // The repo / mode pickers above the input, the model card and the
+      // stats line are gone; the header still says which repo and mode.
+      expect(screen.queryByRole('button', { name: /Select model:/ })).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Environment feedback')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('session-stats')).not.toBeInTheDocument();
+      expect(screen.getByText('acme/website · Agent')).toBeInTheDocument();
+
+      // + opens the menu: switch mode to Ask.
+      const plus = screen.getByRole('button', { name: 'Open composer menu' });
+      fireEvent.click(plus);
+      const menu = screen.getByRole('menu', { name: 'Composer options' });
+      expect(menu).toHaveTextContent(/turns?/);
+      const modes = screen.getByRole('radiogroup', { name: 'Mode' });
+      expect(screen.getByRole('radio', { name: 'Agent' })).toHaveAttribute('aria-checked', 'true');
+      expect(modes.querySelectorAll('[role=radio]')).toHaveLength(4);
+      fireEvent.click(screen.getByRole('radio', { name: 'Ask' }));
+      // The switch stays open so you see it move.
+      expect(screen.getByRole('radio', { name: 'Ask' })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByText('acme/website · Ask')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Ask anything…')).toBeInTheDocument();
+
+      // Drill into the model list and pick another model.
+      fireEvent.click(screen.getByRole('button', { name: /Change model: deepseek-chat/ }));
+      expect(screen.getByText('Reasoning effort')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /deepseek-reasoner/ }));
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      fireEvent.click(plus);
+      expect(screen.getByRole('button', { name: /Change model: deepseek-reasoner/ })).toBeInTheDocument();
+
+      // Escape closes it.
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
   it('starts an environment audit job from the feedback button', async () => {
     render(
       <MemoryRouter initialEntries={['/agent']}>
