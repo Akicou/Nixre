@@ -107,6 +107,7 @@ describe('ChatSurface', () => {
   it('starts an environment audit job from the feedback button', async () => {
     await mount();
     fireEvent.click(screen.getByTitle('Environment feedback'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Run check' }));
     await waitFor(() => expect(lastAiJobBody?.kind).toBe('env_audit'));
     expect(String(lastAiJobBody?.prompt || '')).toMatch(/submit_env_feedback/);
   });

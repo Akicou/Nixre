@@ -195,7 +195,24 @@ describe('AgentWorkspace', () => {
       </MemoryRouter>,
     );
     fireEvent.click(await screen.findByTitle('Environment feedback'));
+    // It costs tokens and runs commands, so it asks first.
+    expect(await screen.findByRole('alertdialog', { name: 'Run an environment check?' })).toBeInTheDocument();
+    expect(lastAiJobBody?.kind).not.toBe('env_audit');
+    fireEvent.click(screen.getByRole('button', { name: 'Run check' }));
     await waitFor(() => expect(lastAiJobBody?.kind).toBe('env_audit'));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('does not start an environment audit when the confirmation is cancelled', async () => {
+    render(
+      <MemoryRouter initialEntries={['/agent']}>
+        <AgentWorkspace />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByTitle('Environment feedback'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(lastAiJobBody?.kind).not.toBe('env_audit');
   });
 
   it('repo picker searches sources and switches to GitHub/Unrestricted targets', async () => {

@@ -9,7 +9,6 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowUp,
   Bot,
-  Cpu,
   ChevronDown,
   Download,
   FolderGit2,
@@ -62,6 +61,8 @@ import {
   type RunQueueItem,
 } from '../lib/agentJobs';
 import { ChatMessageView } from '../components/assistant/ChatMessageView';
+import { HoverMarquee } from '../components/HoverMarquee';
+import { ConfirmDialog, EnvAuditConfirmBody } from '../components/ConfirmDialog';
 import { ComposerAttach } from '../components/assistant/ComposerAttach';
 import { ComposerMic } from '../components/assistant/ComposerMic';
 import { MobileDrawer } from '../components/MobileDrawer';
@@ -621,6 +622,7 @@ export const AgentWorkspace: React.FC = () => {
     void sendToJob(prompt || '(image)', images);
   };
 
+  const [confirmEnv, setConfirmEnv] = useState(false);
   const requestEnvFeedback = () => {
     if (!realAi || !activeRepo) return;
     if (streaming && currentIdRef.current) {
@@ -916,9 +918,7 @@ export const AgentWorkspace: React.FC = () => {
         aria-expanded={modelOpen}
         className="flex min-w-0 items-center gap-1.5 min-h-11 px-2.5 rounded-lg border border-transparent text-[12px] text-txt-secondary hover:text-txt-primary hover:bg-surface-subtle hover:border-border-subtle transition"
       >
-        <Cpu className="w-4 h-4 shrink-0 text-brand" aria-hidden="true" />
-        <span className="text-txt-tertiary">Model</span>
-        <span className="font-medium truncate max-w-[9rem] sm:max-w-[16rem]">{modelLabel(activeModelLabel) || 'Choose model'}</span>
+        <HoverMarquee className="font-medium max-w-[9rem] sm:max-w-[16rem]">{modelLabel(activeModelLabel) || 'Choose model'}</HoverMarquee>
         <span className="text-[10px] uppercase tracking-wider text-txt-tertiary">
           {effortBadge(workingReasoning)}
         </span>
@@ -1069,6 +1069,20 @@ export const AgentWorkspace: React.FC = () => {
     return { turns, steps };
   })();
 
+  const envConfirm = confirmEnv ? (
+    <ConfirmDialog
+      title="Run an environment check?"
+      confirmLabel="Run check"
+      onCancel={() => setConfirmEnv(false)}
+      onConfirm={() => {
+        setConfirmEnv(false);
+        requestEnvFeedback();
+      }}
+    >
+      <EnvAuditConfirmBody />
+    </ConfirmDialog>
+  ) : null;
+
   const composer = (
     <div
       className={`w-full rounded-2xl border border-border-subtle bg-surface-canvas shadow-sm transition focus-within:border-brand/50 ${
@@ -1111,6 +1125,7 @@ export const AgentWorkspace: React.FC = () => {
           empty ? 'text-[15px] leading-relaxed min-h-[84px]' : 'text-[13px] min-h-[44px] max-h-40'
         }`}
       />
+      {envConfirm}
       <div className="relative flex flex-wrap items-center justify-between gap-2 px-2.5 pb-2.5">
         <div className="flex items-center gap-2 flex-wrap min-w-0">
           <input
@@ -1154,7 +1169,7 @@ export const AgentWorkspace: React.FC = () => {
           {modelCard}
           <button
             type="button"
-            onClick={requestEnvFeedback}
+            onClick={() => setConfirmEnv(true)}
             disabled={!activeRepo || !realAi}
             title="Environment feedback"
             className="w-8 h-8 rounded-full flex items-center justify-center text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle disabled:opacity-25 disabled:cursor-not-allowed transition"
@@ -1222,33 +1237,35 @@ export const AgentWorkspace: React.FC = () => {
         ) : (
           groupedSessions.map(([groupPath, convs]) => (
             <div key={groupPath}>
-              <div className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] font-medium text-txt-secondary">
+              <div data-marquee-host className="flex items-center gap-2 px-2.5 py-1 text-[12px] font-medium text-txt-secondary">
                 <FolderGit2 className="w-3.5 h-3.5 shrink-0 text-brand" />
-                <span className="truncate">{workspaceLabel(groupPath)}</span>
+                <HoverMarquee>{workspaceLabel(groupPath)}</HoverMarquee>
               </div>
-              <div className="space-y-0.5">
+              <div className="space-y-px">
                 {convs.map(c => (
                   <div
                     key={c.id}
-                    className={`group flex items-center gap-1 rounded-lg pl-6 pr-1 py-2 cursor-pointer transition min-h-11 ${
+                    data-marquee-host
+                    className={`group relative flex items-center gap-2 rounded-md pl-6 pr-2 h-7 max-sm:h-auto max-sm:min-h-10 cursor-pointer transition-colors ${
                       c.id === currentId
                         ? 'bg-surface-subtle text-txt-primary'
                         : 'text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary active:bg-surface-subtle'
                     }`}
                     onClick={() => pickSession(c)}
                   >
-                    <span className="flex-1 min-w-0 truncate text-[12.5px] leading-snug flex items-center gap-1.5">
+                    <span className="flex-1 min-w-0 flex items-center gap-1.5 text-[12.5px] leading-[18px]">
                       {(c.runStatus === 'running' || c.runStatus === 'stopping') && (
                         <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" title="Agent running" />
                       )}
-                      {c.title || 'Untitled'}
+                      <HoverMarquee>{c.title || 'Untitled'}</HoverMarquee>
                     </span>
-                    <span className="text-[10px] text-txt-tertiary tabular-nums shrink-0 sm:group-hover:hidden">
+                    <span className="max-sm:hidden text-[10px] text-txt-tertiary tabular-nums shrink-0 transition-opacity group-hover:opacity-0">
                       {relativeAge(c.updatedAt)}
                     </span>
                     <button
                       type="button"
                       title="Delete"
+                      aria-label={`Delete ${c.title || 'Untitled'}`}
                       onClick={e => {
                         e.stopPropagation();
                         deleteConversation(c.id)
@@ -1258,7 +1275,7 @@ export const AgentWorkspace: React.FC = () => {
                           .catch(() => {})
                           .finally(refreshSessions);
                       }}
-                      className="opacity-70 sm:hidden sm:group-hover:flex flex min-h-11 min-w-9 items-center justify-center rounded text-txt-tertiary hover:text-rose-400 transition shrink-0"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 flex h-6 w-6 max-sm:h-9 max-sm:w-9 items-center justify-center rounded bg-surface-subtle text-txt-tertiary hover:text-rose-400 opacity-70 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1542,7 +1559,7 @@ export const AgentWorkspace: React.FC = () => {
       </MobileDrawer>
 
       {/* Left rail — desktop only */}
-      <aside className="hidden md:flex flex-col w-[15.5rem] shrink-0 border-r border-border-subtle bg-surface-canvas">
+      <aside className="hidden md:flex flex-col w-[15.5rem] shrink-0">
         {sessionListPanel}
       </aside>
 
@@ -1550,7 +1567,13 @@ export const AgentWorkspace: React.FC = () => {
       <div className="flex-1 min-w-0 flex flex-col relative">
         {/* Top chrome — only when a session is open */}
         {!empty && (
-          <div className="flex items-center justify-between gap-2 px-3 sm:px-5 py-3 border-b border-border-subtle">
+          <div className="relative z-10 flex items-center justify-between gap-2 px-3 sm:px-5 py-3 bg-surface-base">
+            <div
+              aria-hidden
+              data-testid="header-fade"
+              className="pointer-events-none absolute inset-x-0 top-full h-7"
+              style={{ background: 'linear-gradient(to bottom, var(--color-surface-base), transparent)' }}
+            />
             <div className="flex items-center gap-2 min-w-0 flex-1">
               <button
                 type="button"
@@ -1561,10 +1584,10 @@ export const AgentWorkspace: React.FC = () => {
               >
                 <PanelLeft className="w-5 h-5" />
               </button>
-              <div className="min-w-0">
-                <p className="text-[13px] font-medium text-txt-primary truncate">
+              <div className="min-w-0" data-marquee-host>
+                <HoverMarquee className="text-[13px] font-medium text-txt-primary">
                   {allConversations.find(c => c.id === currentId)?.title || 'Agent'}
-                </p>
+                </HoverMarquee>
                 <p className="text-[11px] text-txt-tertiary truncate font-mono">
                   {workspaceLabel(activeRepo)} · {getMode(mode).label}
                 </p>

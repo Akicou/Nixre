@@ -49,6 +49,7 @@ import {
   type JobStreamEvent,
 } from '../../lib/agentJobs';
 import { ChatMessageView } from './ChatMessageView';
+import { ConfirmDialog, EnvAuditConfirmBody } from '../ConfirmDialog';
 import { ComposerAttach } from './ComposerAttach';
 import { ComposerMic } from './ComposerMic';
 import { MobileDrawer } from '../MobileDrawer';
@@ -391,6 +392,7 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
     void sendToJob(prompt || '(image)', images);
   };
 
+  const [confirmEnv, setConfirmEnv] = useState(false);
   const requestEnvFeedback = () => {
     if (!realAi) return;
     if (streamingRef.current && currentIdRef.current) {
@@ -924,13 +926,26 @@ export const ChatSurface: React.FC<ChatSurfaceProps> = ({
       />
       <button
         type="button"
-        onClick={requestEnvFeedback}
+        onClick={() => setConfirmEnv(true)}
         disabled={!realAi}
         title="Environment feedback"
         className="p-2.5 rounded-md text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle disabled:opacity-40 disabled:cursor-not-allowed transition shrink-0"
       >
         <MessageSquareWarning className="w-4 h-4" />
       </button>
+      {confirmEnv && (
+        <ConfirmDialog
+          title="Run an environment check?"
+          confirmLabel="Run check"
+          onCancel={() => setConfirmEnv(false)}
+          onConfirm={() => {
+            setConfirmEnv(false);
+            requestEnvFeedback();
+          }}
+        >
+          <EnvAuditConfirmBody />
+        </ConfirmDialog>
+      )}
       <ComposerMic
         onTranscript={text => setInput(prev => (prev.trim() ? `${prev.trim()} ${text}` : text))}
       />

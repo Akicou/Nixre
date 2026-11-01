@@ -455,3 +455,13 @@
 }
 ::view-transition-old(root) { z-index: 1; }
 ::view-transition-new(root) { z-index: 2; }
+
+/* Long labels (conversation titles, model name) scroll to their end while their row is hovered.
+   See components/HoverMarquee.tsx; the distance is set per element in --mq-dist. */
+@keyframes hover-marquee {
+  0%, 14% { transform: translateX(0); }
+  86%, 100% { transform: translateX(var(--mq-dist, 0)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-marquee-active] > span { animation: none !important; }
+}
