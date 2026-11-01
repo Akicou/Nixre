@@ -113,8 +113,16 @@ export const ActivityPulse: React.FC<{ user: User | null; feed: ActivityFeed | n
             />
             <Stat icon={<GitPullRequest className="w-3.5 h-3.5" />} label="Open PRs" value={loading ? '–' : stats?.open_prs ?? 0} />
             <Stat icon={<Users className="w-3.5 h-3.5" />} label="Active · 7d" value={loading ? '–' : stats?.contributors_7d ?? 0}
-              hint={stats?.members != null && !loading && (
-                <span className="text-[11px] font-mono text-txt-tertiary">of {stats.members}</span>
+              hint={!loading && (stats?.members != null || (stats?.external_contributors_7d ?? 0) > 0) && (
+                <span
+                  className="text-[11px] font-mono text-txt-tertiary"
+                  title={(stats?.external_contributors_7d ?? 0) > 0
+                    ? 'Commit authors whose email is not on a Nixre account are counted separately'
+                    : undefined}
+                >
+                  {stats?.members != null ? `of ${stats.members}` : ''}
+                  {(stats?.external_contributors_7d ?? 0) > 0 ? `${stats?.members != null ? ' · ' : ''}+${stats!.external_contributors_7d} outside` : ''}
+                </span>
               )}
             />
             {stats && stats.live_services > 0 ? (

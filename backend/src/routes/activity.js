@@ -264,6 +264,9 @@ export function activityRoutes(pool, authenticate) {
       board.set(key, entry);
     }
     const contributors = [...board.values()].sort((a, b) => b.count - a.count).slice(0, 6);
+    // `board` is keyed by who made the change: a Nixre account when the commit email matches one,
+    // otherwise the bare git author name. Only the first kind can be compared with `members`.
+    const accountContributors = [...board.values()].filter(c => c.uid).length;
 
     let openPrs = 0;
     let liveServices = 0;
@@ -285,7 +288,8 @@ export function activityRoutes(pool, authenticate) {
         repos: repos.length,
         open_prs: openPrs,
         commits_7d: commits7d,
-        contributors_7d: board.size,
+        contributors_7d: accountContributors,
+        external_contributors_7d: board.size - accountContributors,
         live_services: liveServices,
         members: user ? userRows.length : null,
       },

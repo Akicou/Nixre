@@ -175,6 +175,8 @@ export interface ActivityFeed {
     open_prs: number;
     commits_7d: number;
     contributors_7d: number;
+    /** Commit authors in the last 7 days with no matching Nixre account. */
+    external_contributors_7d?: number;
     live_services: number;
     members: number | null;
   };
