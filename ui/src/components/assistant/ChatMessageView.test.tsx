@@ -73,3 +73,32 @@ it('does not resend an empty edit or submit while composing with an IME', () => 
   fireEvent.keyDown(input, { key: 'Enter' });
   expect(onEdit).toHaveBeenCalledWith('u', 'new text');
 });
+
+const turn = {
+  id: 'a1', role: 'assistant' as const, content: 'Done.', createdAt: 1,
+  parts: [
+    { type: 'tool' as const, tool: { id: 't1', name: 'read_file', status: 'success' as const, argsText: '{"path":"src/a.ts"}', output: 'file body' } },
+    { type: 'tool' as const, tool: { id: 't2', name: 'write_file', status: 'success' as const, argsText: '{"path":"src/a.ts"}', output: 'Updated src/a.ts (+3 -1)' } },
+    { type: 'text' as const, text: 'Done.' },
+  ],
+};
+
+it('folds finished tool steps into one line, expands on click, and lists edited files', () => {
+  render(<ChatMessageView message={turn} />);
+  const group = screen.getByTestId('work-group');
+  expect(within(group).getByRole('button', { name: /Worked on 2 steps/ })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByText('Read')).not.toBeInTheDocument();
+  const card = screen.getByTestId('edited-files');
+  expect(card).toHaveTextContent('Edited 1 file');
+  expect(card).toHaveTextContent('src/a.ts');
+  expect(card).toHaveTextContent('+3');
+  fireEvent.click(within(group).getByRole('button', { name: /Worked on 2 steps/ }));
+  expect(screen.getByText('Read')).toBeInTheDocument();
+  expect(screen.getByText('Edited')).toBeInTheDocument();
+});
+
+it('keeps the work open and the summary hidden while the turn is streaming', () => {
+  render(<ChatMessageView message={{ ...turn, content: '', parts: turn.parts.slice(0, 2) }} streaming />);
+  expect(screen.getByRole('button', { name: /Working/ })).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.queryByTestId('edited-files')).not.toBeInTheDocument();
+});

@@ -7,14 +7,28 @@ import {
   ChevronRight,
   Copy,
   FileText,
+  ListChecks,
   Loader2,
   Pencil,
   RotateCcw,
+  Search,
+  Terminal,
   X,
   XCircle,
 } from 'lucide-react';
 import type { ChatMessage, ToolCall } from '../../lib/assistantEngine';
 import { messageParts } from '../../lib/assistantEngine';
+import {
+  countWork,
+  describeTool,
+  editedFiles,
+  groupParts,
+  summarizeWork,
+  totalChanges,
+  type EditedFile,
+  type StepKind,
+  type WorkItem,
+} from '../../lib/workSummary';
 import { Markdown } from '../Markdown';
 import { CommandApproval } from './CommandApproval';
 import { isImageAttachment, parseShownImages, type ChatImage } from '../../lib/chatImages';
@@ -52,6 +66,8 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({
   const hasReasoning = parts.some(p => p.type === 'reasoning');
   const hasTools = parts.some(p => p.type === 'tool');
   const waiting = streaming && !hasText && !hasReasoning && !hasTools;
+  const blocks = groupParts(parts);
+  const edited = !isUser && !streaming ? editedFiles(parts) : [];
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
 
@@ -99,7 +115,7 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({
                   <ImageStrip images={message.images} />
                 )}
                 {message.content && (
-                  <div className="rounded-lg rounded-tr-sm px-3 py-2 bg-brand text-white text-xs leading-relaxed chat-part-in">
+                  <div className="rounded-2xl rounded-tr-md px-4 py-2.5 bg-surface-subtle border border-border-subtle text-txt-primary text-[13px] leading-relaxed chat-part-in">
                     <span className="whitespace-pre-line break-words">{message.content}</span>
                   </div>
                 )}
@@ -127,33 +143,24 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({
             </>
           )
         ) : (
-          <div className="min-w-0 space-y-2">
-            {parts.map((part, i) => {
-              const isLast = i === parts.length - 1;
-              if (part.type === 'reasoning') {
+          <div className="min-w-0 space-y-3">
+            {blocks.map((block, bi) => {
+              const isLast = bi === blocks.length - 1;
+              if (block.kind === 'work') {
                 return (
-                  <div key={part.id} className="chat-part-in">
-                    <ReasoningPanel
-                      text={part.text}
-                      thinking={streaming && isLast && part.type === 'reasoning' && !hasText}
-                    />
-                  </div>
-                );
-              }
-              if (part.type === 'tool') {
-                return (
-                  <div key={part.tool.id} className="chat-part-in">
-                    <ToolBlock tool={part.tool} />
+                  <div key={block.key} className="chat-part-in">
+                    <WorkGroup items={block.items} live={streaming && isLast} thinkingTail={streaming && isLast && !hasText} />
                   </div>
                 );
               }
               return (
-                <div key={`text-${i}`} className="chat-part-in text-xs leading-relaxed text-txt-primary max-w-none">
-                  <Markdown content={part.text} />
+                <div key={block.key} className="chat-part-in text-[13.5px] leading-[1.7] text-txt-primary max-w-none">
+                  <Markdown content={block.text} />
                   {streaming && isLast && <StreamingCaret />}
                 </div>
               );
             })}
+            {edited.length > 0 && <EditedFilesCard files={edited} />}
             {waiting && (
               <div className="flex items-center gap-2 text-xs text-txt-tertiary chat-part-in">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -165,17 +172,18 @@ export const ChatMessageView: React.FC<ChatMessageViewProps> = ({
       </div>
 
       {!isUser && !streaming && (
-        <div className="mt-1 flex items-center gap-2">
+        <div className="mt-2 flex items-center gap-1.5 text-txt-tertiary">
           {message.content && <CopyButton text={message.content} />}
           {onRegenerate && (
             <button
               onClick={() => onRegenerate(message.id)}
               title="Regenerate this response"
-              className="text-[10px] text-txt-tertiary hover:text-txt-primary flex items-center gap-1 py-1 px-1.5 rounded hover:bg-surface-subtle transition"
+              className="text-[11px] text-txt-tertiary hover:text-txt-primary flex items-center gap-1 py-1 px-1.5 rounded hover:bg-surface-subtle transition"
             >
               <RotateCcw className="w-3 h-3" /> regenerate
             </button>
           )}
+          {clock(message.createdAt) && <span className="ml-1 text-[11px] tabular-nums">{clock(message.createdAt)}</span>}
         </div>
       )}
     </div>
@@ -251,6 +259,15 @@ interface ToolBlockProps {
   tool: ToolCall;
 }
 
+const STEP_ICON: Record<StepKind, React.FC<{ className?: string }>> = {
+  read: FileText,
+  search: Search,
+  edit: Pencil,
+  run: Terminal,
+  other: ListChecks,
+};
+
+/** One quiet line per tool call. Click to see the raw output. */
 const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
   const shown = tool.name === 'show_images' && tool.output ? parseShownImages(tool.output) : [];
   const [open, setOpen] = useState(shown.length > 0);
@@ -258,48 +275,146 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ tool }) => {
   useEffect(() => {
     if (hasShownImages) setOpen(true);
   }, [hasShownImages]);
+  const step = describeTool(tool);
+  const Icon = STEP_ICON[step.kind];
+  const showArgs = !step.subject && tool.status !== 'approval' && tool.argsText && tool.argsText !== '{}';
   return (
-    <div className="rounded-md border border-border-subtle bg-surface-base overflow-hidden max-w-xl">
+    <div className="max-w-full">
       <button
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between px-3 py-1.5 text-xs font-mono hover:bg-surface-subtle/40 transition"
+        aria-expanded={open}
+        className="group w-full flex items-center gap-2 py-1 text-left text-[12px] text-txt-secondary hover:text-txt-primary transition"
       >
-        <span className="flex items-center gap-2 truncate">
-          {tool.status === 'approval' ? (
-            <span className="text-brand" aria-hidden="true">?</span>
-          ) : tool.status === 'running' ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin text-brand" />
-          ) : tool.status === 'success' ? (
-            <Check className="w-3.5 h-3.5 text-txt-open" />
-          ) : (
-            <XCircle className="w-3.5 h-3.5 text-feedback-error-text" />
-          )}
-          <span className="text-txt-primary">{tool.name}</span>
-          {tool.status === 'approval' && <span className="text-brand">Approval needed</span>}
-          {tool.argsText && tool.argsText !== '{}' && (
-            <span className="text-txt-tertiary truncate max-w-[16rem]">{tool.argsText}</span>
-          )}
-        </span>
-        {open ? (
-          <ChevronDown className="w-3.5 h-3.5 text-txt-tertiary shrink-0" />
+        {tool.status === 'approval' ? (
+          <span className="w-3.5 text-center text-brand" aria-hidden="true">?</span>
+        ) : tool.status === 'running' ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-brand shrink-0" />
+        ) : tool.status === 'success' ? (
+          <Icon className="w-3.5 h-3.5 text-txt-tertiary shrink-0" />
         ) : (
-          <ChevronRight className="w-3.5 h-3.5 text-txt-tertiary shrink-0" />
+          <XCircle className="w-3.5 h-3.5 text-feedback-error-text shrink-0" />
+        )}
+        <span className="shrink-0">{step.verb}</span>
+        {step.subject && tool.status !== 'approval' && <span className="font-mono text-[11.5px] text-txt-tertiary truncate max-w-[26rem]">{step.subject}</span>}
+        {showArgs && <span className="font-mono text-[11.5px] text-txt-tertiary truncate max-w-[26rem]">{tool.argsText}</span>}
+        {tool.status === 'approval' && <span className="text-brand shrink-0">Approval needed</span>}
+        {open ? (
+          <ChevronDown className="w-3 h-3 text-txt-tertiary shrink-0 ml-auto" />
+        ) : (
+          <ChevronRight className="w-3 h-3 text-txt-tertiary shrink-0 ml-auto opacity-0 group-hover:opacity-100 transition" />
         )}
       </button>
       {tool.status === 'approval' && tool.approvalId && tool.conversationId && <CommandApproval key={tool.approvalId} tool={tool} />}
       {open && shown.length > 0 && (
-        <div className="px-3 pb-3 pt-1">
+        <div className="pb-2 pt-1">
           <ImageStrip images={shown} />
         </div>
       )}
       {open && shown.length === 0 && tool.output != null && (
-        <pre className="px-3 pb-2 text-[11px] font-mono text-txt-secondary overflow-x-auto whitespace-pre leading-relaxed">
+        <pre className="mt-1 mb-2 rounded-lg border border-border-subtle bg-surface-base px-3 py-2 text-[11px] font-mono text-txt-secondary overflow-x-auto whitespace-pre leading-relaxed max-h-64 overflow-y-auto">
           {tool.output}
         </pre>
       )}
     </div>
   );
 };
+
+/**
+ * Consecutive reasoning and tool steps, folded into one disclosure. Open while
+ * the agent works or when something needs the user (approval), folded after.
+ */
+const WorkGroup: React.FC<{ items: WorkItem[]; live: boolean; thinkingTail: boolean }> = ({ items, live, thinkingTail }) => {
+  const counts = countWork(items);
+  const attention = counts.pending > 0 && items.some(i => i.type === 'tool' && i.tool.status === 'approval');
+  const [open, setOpen] = useState(live || attention);
+  const wasLive = useRef(live);
+  useEffect(() => {
+    if (live && !wasLive.current) setOpen(true);
+    if (!live && wasLive.current && !attention) setOpen(false);
+    wasLive.current = live;
+  }, [live, attention]);
+  useEffect(() => {
+    if (attention) setOpen(true);
+  }, [attention]);
+  const summary = summarizeWork(counts);
+  const label = live ? 'Working…' : counts.steps > 0 ? `Worked on ${counts.steps} ${counts.steps === 1 ? 'step' : 'steps'}` : 'Thought process';
+  const lastIndex = items.length - 1;
+  return (
+    <div className="max-w-full" data-testid="work-group">
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className={`flex items-center gap-2 text-[12px] transition ${live ? 'text-brand' : 'text-txt-tertiary hover:text-txt-secondary'}`}
+      >
+        {live ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ListChecks className="w-3.5 h-3.5" />}
+        <span className="font-medium">{label}</span>
+        {summary && !live && <span className="hidden sm:inline text-txt-tertiary">· {summary}</span>}
+        {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+      </button>
+      {open && (
+        <div className="mt-1.5 ml-[7px] border-l border-border-subtle pl-4 space-y-0.5">
+          {items.map((item, i) =>
+            item.type === 'reasoning' ? (
+              <ReasoningPanel key={item.id} text={item.text} thinking={thinkingTail && i === lastIndex} />
+            ) : (
+              <ToolBlock key={item.tool.id} tool={item.tool} />
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/** "Edited 3 files +14 -2" with one row per file. */
+const EditedFilesCard: React.FC<{ files: EditedFile[] }> = ({ files }) => {
+  const [all, setAll] = useState(false);
+  const total = totalChanges(files);
+  const shown = all ? files : files.slice(0, 4);
+  const counts = (f: { added: number | null; removed: number | null }) =>
+    f.added === null || f.removed === null ? null : (
+      <span className="font-mono text-[11px] tabular-nums shrink-0">
+        <span className="text-txt-open">+{f.added}</span> <span className="text-feedback-error-text">-{f.removed}</span>
+      </span>
+    );
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-canvas overflow-hidden chat-part-in" data-testid="edited-files">
+      <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border-subtle">
+        <Pencil className="w-4 h-4 text-txt-secondary shrink-0" />
+        <span className="text-[13px] font-medium text-txt-primary">
+          Edited {files.length} {files.length === 1 ? 'file' : 'files'}
+        </span>
+        {(total.added > 0 || total.removed > 0) && (
+          <span className="ml-auto font-mono text-[11px] tabular-nums">
+            <span className="text-txt-open">+{total.added}</span> <span className="text-feedback-error-text">-{total.removed}</span>
+          </span>
+        )}
+      </div>
+      <ul className="divide-y divide-border-subtle">
+        {shown.map(f => (
+          <li key={f.path} className="flex items-center justify-between gap-3 px-4 py-2 text-[12px]">
+            <span className="font-mono text-txt-secondary truncate">{f.path}</span>
+            {counts(f)}
+          </li>
+        ))}
+      </ul>
+      {files.length > 4 && (
+        <button
+          onClick={() => setAll(a => !a)}
+          className="w-full flex items-center gap-1 px-4 py-2 border-t border-border-subtle text-[12px] text-txt-tertiary hover:text-txt-primary hover:bg-surface-subtle transition"
+        >
+          {all ? 'Show fewer' : `All ${files.length} files`}
+          <ChevronDown className={`w-3 h-3 ${all ? 'rotate-180' : ''}`} />
+        </button>
+      )}
+    </div>
+  );
+};
+
+function clock(ms: number | undefined): string {
+  if (!ms || !Number.isFinite(ms)) return '';
+  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
 
 export const ImageStrip: React.FC<{ images: ChatImage[] }> = ({ images }) => {
   const [lightbox, setLightbox] = useState<ChatImage | null>(null);
