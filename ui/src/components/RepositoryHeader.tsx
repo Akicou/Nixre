@@ -1,7 +1,8 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, ChevronDown, Copy, Download, FileArchive, GitBranch, GitPullRequest, Star } from 'lucide-react';
+import { Check, ChevronDown, Copy, Download, FileArchive, GitBranch, GitPullRequest, Sparkles, Star } from 'lucide-react';
 import { api, type Repository } from '../lib/api';
+import { isPluginLive } from '../lib/pluginPreferences';
 import { useOutsideClick } from '../lib/useOutsideClick';
 import { Avatar } from './Avatar';
 
@@ -19,6 +20,16 @@ export function RepositoryHeader({ repo, space, branchCount, signedIn = false, g
   const [downloadError, setDownloadError] = useState('');
   const ref = gitRef || repo.default_branch;
   const repoRef = `${space}/${repo.uid}`;
+  // The agent workspace only exists while the assistant plugin is on.
+  const [agentLive, setAgentLive] = useState(false);
+  useEffect(() => {
+    if (!signedIn) return;
+    let cancelled = false;
+    try {
+      isPluginLive('nixre-assistant').then(live => { if (!cancelled) setAgentLive(Boolean(live)); }).catch(() => {});
+    } catch { /* plugin state unavailable: leave the button off */ }
+    return () => { cancelled = true; };
+  }, [signedIn]);
   const toggleStar = () => {
     setStarBusy(true);
     api
@@ -55,6 +66,16 @@ export function RepositoryHeader({ repo, space, branchCount, signedIn = false, g
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
+      {signedIn && agentLive && (
+        <Link
+          to={`/agent?repo=${encodeURIComponent(repoRef)}`}
+          title="Open this repository in the agent workspace"
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-border-subtle bg-surface-canvas text-xs font-medium text-txt-primary hover:bg-surface-subtle hover:border-brand transition"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-brand" />
+          Ask the agent
+        </Link>
+      )}
       {signedIn ? (
         <button
           type="button"
