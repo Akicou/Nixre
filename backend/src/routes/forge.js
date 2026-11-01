@@ -21,6 +21,7 @@ import {
 import { openPrCounts } from './pullreq.js';
 import { canReadRepo, loadReadableRepo } from '../lib/repoAccess.js';
 import { sanitizeSocials } from '../lib/socials.js';
+import { allEmails } from '../lib/userEmails.js';
 
 function now() {
   return Date.now();
@@ -204,13 +205,13 @@ async function profileReadmeStatus(pool, uid, user) {
 }
 
 // True when any of the repos has a commit authored by the given email.
-async function userCommitted(pool, repoRows, email) {
-  if (repoRows.length === 0 || !email) return false;
-  const lower = email.toLowerCase();
+async function userCommitted(pool, repoRows, emails) {
+  if (repoRows.length === 0 || !emails.length) return false;
+  const mine = new Set(emails);
   for (const r of repoRows) {
     try {
       const commits = await listCommits(r.space_uid, r.uid, r.default_branch, { page: 1, limit: 100 });
-      if (commits.some(c => String(c.author?.email || '').toLowerCase() === lower)) return true;
+      if (commits.some(c => mine.has(String(c.author?.email || '').toLowerCase()))) return true;
     } catch {
       /* unreadable/branch missing */
     }
@@ -261,11 +262,11 @@ function serializeContributions(year, map) {
   return { year, total, days };
 }
 
-async function collectCommitDays(repos, { since, until, authorEmail }) {
+async function collectCommitDays(repos, { since, until, authorEmails }) {
   const map = new Map();
   const slice = repos.slice(0, CONTRIB_REPO_CAP);
   await Promise.all(slice.map(async r => {
-    const dates = await commitDates(r.space_uid, r.uid, { since, until, authorEmail });
+    const dates = await commitDates(r.space_uid, r.uid, { since, until, authorEmails });
     for (const d of dates) bumpDay(map, dayFromIso(d));
   }));
   return map;
@@ -288,11 +289,16 @@ async function enrichCommits(pool, commits) {
     if (c.author?.identity?.email) emails.add(c.author.identity.email.toLowerCase());
     if (c.committer?.identity?.email) emails.add(c.committer.identity.email.toLowerCase());
   }
+  // Primary addresses first; claimed extras (user_emails) fill the gaps.
   const { rows } = await pool.query(
-    'SELECT uid, email, display_name, avatar_data FROM users WHERE lower(email) = ANY($1)',
+    `SELECT uid, email, display_name, avatar_data FROM users WHERE lower(email) = ANY($1)
+     UNION ALL
+     SELECT u.uid, e.email, u.display_name, u.avatar_data
+       FROM user_emails e JOIN users u ON u.uid = e.user_uid WHERE e.email = ANY($1)`,
     [[...emails]],
   );
-  const byEmail = new Map(rows.map(r => [r.email.toLowerCase(), r]));
+  const byEmail = new Map();
+  for (const r of rows) if (!byEmail.has(r.email.toLowerCase())) byEmail.set(r.email.toLowerCase(), r);
   for (const c of commits) {
     for (const key of ['author', 'committer']) {
       const ident = c[key]?.identity;
@@ -1163,8 +1169,9 @@ export function forgeRoutes(pool, authenticate) {
         ? await pool.query('SELECT * FROM repos WHERE space_uid = ANY($1)', [orgSpaceUids])
         : { rows: [] };
 
-    const personalCommit = await userCommitted(pool, personalRes.rows, u.email);
-    const orgCommit = await userCommitted(pool, orgRes.rows, u.email);
+    const myEmails = await allEmails(pool, u);
+    const personalCommit = await userCommitted(pool, personalRes.rows, myEmails);
+    const orgCommit = await userCommitted(pool, orgRes.rows, myEmails);
 
     res.json({
       goals: [
@@ -1224,7 +1231,7 @@ export function forgeRoutes(pool, authenticate) {
       `SELECT * FROM repos WHERE space_uid = ANY($1) ${canSeeAll ? '' : 'AND is_public = TRUE'} ORDER BY uid`,
       [spaceUids],
     );
-    const map = await collectCommitDays(reposRes.rows, { since, until, authorEmail: u.email });
+    const map = await collectCommitDays(reposRes.rows, { since, until, authorEmails: await allEmails(pool, u) });
     const prs = await pool.query(
       `SELECT pr.created FROM pull_requests pr
        JOIN repos r ON r.id = pr.repo_id

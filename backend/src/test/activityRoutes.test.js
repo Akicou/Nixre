@@ -26,14 +26,26 @@ for (const [n, email, name] of [[1, 'ada@example.com', 'Ada'], [2, 'ada@example.
   git('-c', `user.name=${name}`, '-c', `user.email=${email}`, 'commit', '-q', '-m', `commit ${n}`);
 }
 
+// A second repo: one person under two spellings, plus Bob committing from a second address.
+const lib = path.join(root, 'acme', 'lib.git');
+mkdirSync(lib, { recursive: true });
+const gitLib = (...args) => execFileSync('git', ['-C', lib, ...args], { encoding: 'utf8' });
+gitLib('init', '-q', '-b', 'main');
+for (const [n, email, name] of [[1, 'sam@home.example', 'Sam'], [2, 'sam@home.example', 'S. Am'], [3, 'bob@laptop.example', 'robert']]) {
+  writeFileSync(path.join(lib, `g${n}.txt`), `${n}
+`);
+  gitLib('add', '-A');
+  gitLib('-c', `user.name=${name}`, '-c', `user.email=${email}`, 'commit', '-q', '-m', `lib ${n}`);
+}
+
 const now = Date.now();
 
-function fixturePool(log) {
+function fixturePool(log, { repo = 'web', claimed = [], pushers = [] } = {}) {
   return {
     async query(sql, params = []) {
       log.push({ sql, params });
       if (sql.includes('FROM repos r')) {
-        return { rows: [{ id: 1, space_uid: 'acme', uid: 'web', created: now - 1000, created_by: 'ada', updated: now }] };
+        return { rows: [{ id: 1, space_uid: 'acme', uid: repo, created: now - 1000, created_by: 'ada', updated: now }] };
       }
       if (sql.includes('FROM users')) {
         return { rows: [
@@ -41,6 +53,8 @@ function fixturePool(log) {
           { uid: 'bob', email: 'bob@example.com', display_name: 'Bob', created: now - 90 * 86400000, has_avatar: false },
         ] };
       }
+      if (sql.includes('FROM user_emails')) return { rows: claimed };
+      if (sql.includes('FROM push_events')) return { rows: pushers };
       if (sql.includes('COUNT(*)')) return { rows: [{ n: 2 }] };
       if (sql.includes('FROM pull_requests')) {
         return { rows: [{ repo_id: 1, number: 7, title: 'Ship it', state: 'merged', is_draft: false, author_uid: 'bob', merged_by_uid: 'ada', created: now - 5000, updated: now - 100, merged: now - 100 }] };
@@ -125,4 +139,19 @@ test('blocked users get an empty feed without touching the database', async t =>
   const { json } = await serve(t, fixturePool(log), { uid: 'x', blocked: true });
   assert.equal(json.events.length, 0);
   assert.equal(log.length, 0);
+});
+
+test('one email is one person; claimed emails and pushers count as accounts', async t => {
+  // Without help: Sam (two name spellings, one email) is ONE outsider, Bob's laptop address is another.
+  const plain = await serve(t, fixturePool([], { repo: 'lib' }), { uid: 'ada', admin: false });
+  assert.equal(plain.json.stats.external_contributors_7d, 2);
+  assert.equal(plain.json.stats.contributors_7d, 2, 'ada and bob, from the fixture PR and star');
+  assert.equal(JSON.stringify(plain.json).includes('home.example'), false, 'grouping key never leaves the server');
+
+  // Bob claims his laptop address and Sam's pushes are on record: both are accounts now.
+  const claimed = [{ email: 'bob@laptop.example', user_uid: 'bob' }];
+  const fixed = await serve(t, fixturePool([], { repo: 'lib', claimed, pushers: [{ user_uid: 'sam' }] }), { uid: 'ada', admin: false });
+  assert.equal(fixed.json.stats.external_contributors_7d, 1);
+  assert.equal(fixed.json.stats.contributors_7d, 3, 'ada, bob and pusher sam');
+  assert.ok(fixed.json.events.some(e => e.kind === 'push' && e.actor.uid === 'bob'));
 });

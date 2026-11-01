@@ -9,6 +9,7 @@ import { sha256, newPatSecret } from '../lib/auth.js';
 import { encryptSecret, maskSecret } from '../lib/ai.js';
 import { assertPublicUrl } from '../lib/netGuard.js';
 import { aiNetworkPolicy } from '../lib/aiNetwork.js';
+import { listEmails, claimEmail, normalizeEmail } from '../lib/userEmails.js';
 
 function fingerprintKey(content) {
   // ssh key line: "<type> <base64> [comment]"
@@ -75,6 +76,49 @@ export function accountRoutes(pool, authenticate) {
       req.params.identifier,
     ]);
     res.json({});
+  });
+
+  // --- commit emails -----------------------------------------------------------
+  // Extra addresses whose commits count as this account's. First claim wins; an
+  // admin can reassign one with PUT /admin/users/:uid/emails.
+
+  api.get('/user/emails', auth, async (req, res) => {
+    res.json({ primary: req.auth.user.email, emails: await listEmails(pool, req.auth.user.uid) });
+  });
+
+  api.post('/user/emails', auth, async (req, res) => {
+    const r = await claimEmail(pool, req.auth.user.uid, req.body?.email);
+    if (!r.ok) {
+      res.status(r.status).json({ message: r.message });
+      return;
+    }
+    res.status(201).json({ primary: req.auth.user.email, emails: await listEmails(pool, req.auth.user.uid) });
+  });
+
+  api.delete('/user/emails/:email', auth, async (req, res) => {
+    await pool.query('DELETE FROM user_emails WHERE user_uid = $1 AND email = $2', [
+      req.auth.user.uid,
+      normalizeEmail(req.params.email) || '',
+    ]);
+    res.json({ primary: req.auth.user.email, emails: await listEmails(pool, req.auth.user.uid) });
+  });
+
+  api.put('/admin/users/:uid/emails', auth, async (req, res) => {
+    if (!req.auth.user.admin) {
+      res.status(403).json({ message: 'Admin only' });
+      return;
+    }
+    const { rows } = await pool.query('SELECT uid FROM users WHERE uid = $1', [req.params.uid]);
+    if (!rows.length) {
+      res.status(404).json({ message: 'No such user' });
+      return;
+    }
+    const r = await claimEmail(pool, rows[0].uid, req.body?.email, { override: true });
+    if (!r.ok) {
+      res.status(r.status).json({ message: r.message });
+      return;
+    }
+    res.json({ emails: await listEmails(pool, rows[0].uid) });
   });
 
   // --- personal access tokens -----------------------------------------------------

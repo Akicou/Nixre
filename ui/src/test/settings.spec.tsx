@@ -7,6 +7,9 @@ import { user } from './fixtures';
 const { api } = vi.hoisted(() => ({
   api: {
     listPublicKeys: vi.fn(),
+    listGitEmails: vi.fn(),
+    addGitEmail: vi.fn(),
+    deleteGitEmail: vi.fn(),
     listTokens: vi.fn(),
     addPublicKey: vi.fn(),
     deletePublicKey: vi.fn(),
@@ -40,6 +43,7 @@ describe('Settings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.listPublicKeys.mockResolvedValue([]);
+    api.listGitEmails.mockResolvedValue({ primary: 'jane@nixre.dev', emails: [{ email: 'jane@work.example', created: 1 }] });
     api.listTokens.mockResolvedValue([]);
     api.listSecrets.mockResolvedValue([]);
     api.getStt.mockResolvedValue({ configured: false, base_url: null, model: null, key_mask: null });
@@ -49,6 +53,19 @@ describe('Settings', () => {
     mount();
     expect(await screen.findByText('jane')).toBeInTheDocument();
     expect(screen.getByText('jane@nixre.dev')).toBeInTheDocument();
+  });
+
+  it('lists, adds and surfaces a rejected commit email', async () => {
+    mount();
+    expect(await screen.findByText('jane@work.example')).toBeInTheDocument();
+    api.addGitEmail.mockRejectedValueOnce(new Error('That email is already claimed by another account'));
+    fireEvent.change(screen.getByLabelText('Commit email'), { target: { value: 'taken@x.dev' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add email' }));
+    expect(await screen.findByText(/already claimed/)).toBeInTheDocument();
+    api.addGitEmail.mockResolvedValueOnce({ primary: 'jane@nixre.dev', emails: [{ email: 'jane@work.example', created: 1 }, { email: 'new@x.dev', created: 2 }] });
+    fireEvent.change(screen.getByLabelText('Commit email'), { target: { value: 'new@x.dev' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add email' }));
+    expect(await screen.findByText('new@x.dev')).toBeInTheDocument();
   });
 
   it('opens the passkeys tab from the URL hash', async () => {

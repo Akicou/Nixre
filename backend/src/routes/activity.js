@@ -4,7 +4,9 @@
 // rules as lib/repoAccess.js canReadRepo, expressed as SQL).
 
 import express from 'express';
+import crypto from 'node:crypto';
 import { recentCommits } from '../git/repo.js';
+import { claimedOwners } from '../lib/userEmails.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WINDOW_DAYS = 30;
@@ -36,18 +38,21 @@ function readableReposQuery(user) {
 }
 
 // Group a single author's commits to one repo on one day into a "push".
-function groupCommits(repo, commits, byEmail) {
+function groupCommits(repo, commits, byEmail, keys) {
   const groups = new Map();
   for (const c of commits) {
     const at = Date.parse(c.when);
     if (!Number.isFinite(at)) continue;
     const user = byEmail.get(String(c.email).toLowerCase());
-    const actorKey = user ? `u:${user.uid}` : `g:${c.name}`;
+    // A person without an account is identified by email, not by however they spelled their name.
+    const actorKey = user ? `u:${user.uid}` : `g:${String(c.email).toLowerCase() || c.name}`;
+    // The id goes to clients, so an outsider's email is hashed, never embedded.
+    const publicKey = user ? actorKey : `g:${crypto.createHash('sha1').update(actorKey).digest('hex').slice(0, 10)}`;
     const key = `${actorKey}|${isoDay(at)}`;
     let g = groups.get(key);
     if (!g) {
       g = {
-        id: `push:${repo.id}:${key}`,
+        id: `push:${repo.id}:${publicKey}|${isoDay(at)}`,
         kind: 'push',
         at,
         actor: user
@@ -58,6 +63,7 @@ function groupCommits(repo, commits, byEmail) {
         commits: [],
       };
       groups.set(key, g);
+      keys.set(g.id, actorKey);
     }
     g.count += 1;
     g.at = Math.max(g.at, at);
@@ -106,6 +112,11 @@ export function activityRoutes(pool, authenticate) {
     );
     const byUid = new Map(userRows.map(u => [u.uid, u]));
     const byEmail = new Map(userRows.map(u => [String(u.email).toLowerCase(), u]));
+    // Extra emails an account has claimed; a primary address always wins.
+    for (const [email, owner] of await claimedOwners(pool)) {
+      if (byUid.has(owner) && !byEmail.has(email)) byEmail.set(email, byUid.get(owner));
+    }
+    const actorKeys = new Map(); // event id -> who, for the leaderboard (never sent to clients)
     const actor = uid => {
       const u = byUid.get(uid);
       if (!u) return uid ? { uid, display_name: uid, avatar_url: '' } : null;
@@ -129,7 +140,7 @@ export function activityRoutes(pool, authenticate) {
         ticks.push([at, 'commits']);
         if (at >= weekAgo) commits7d += 1;
       }
-      events.push(...groupCommits(r, commits.filter(c => Date.parse(c.when) >= since), byEmail));
+      events.push(...groupCommits(r, commits.filter(c => Date.parse(c.when) >= since), byEmail, actorKeys));
     }
 
     if (ids.length) {
@@ -255,7 +266,7 @@ export function activityRoutes(pool, authenticate) {
     const board = new Map();
     for (const e of events) {
       if (e.at < weekAgo || !e.actor || e.kind === 'user_joined') continue;
-      const key = e.actor.uid ? `u:${e.actor.uid}` : `g:${e.actor.display_name}`;
+      const key = actorKeys.get(e.id) ?? (e.actor.uid ? `u:${e.actor.uid}` : `g:${e.actor.display_name}`);
       const entry = board.get(key) || { ...e.actor, count: 0, commits: 0, prs: 0 };
       const weight = e.kind === 'push' ? e.count : 1;
       entry.count += weight;
@@ -265,8 +276,18 @@ export function activityRoutes(pool, authenticate) {
     }
     const contributors = [...board.values()].sort((a, b) => b.count - a.count).slice(0, 6);
     // `board` is keyed by who made the change: a Nixre account when the commit email matches one,
-    // otherwise the bare git author name. Only the first kind can be compared with `members`.
-    const accountContributors = [...board.values()].filter(c => c.uid).length;
+    // otherwise the author's email. Only accounts can be compared with `members`.
+    const accounts = new Set([...board.values()].filter(c => c.uid).map(c => c.uid));
+    const external = board.size - accounts.size;
+    // Whoever pushed this week is active too, whatever name their commits carry.
+    if (repos.length) {
+      const { rows: pushers } = await pool.query(
+        `SELECT DISTINCT p.user_uid FROM push_events p JOIN users u ON u.uid = p.user_uid
+          WHERE p.created >= $1 AND NOT u.blocked AND (p.space || '/' || p.repo) = ANY($2)`,
+        [weekAgo, repos.map(r => r.path)],
+      );
+      for (const p of pushers) accounts.add(p.user_uid);
+    }
 
     let openPrs = 0;
     let liveServices = 0;
@@ -288,8 +309,8 @@ export function activityRoutes(pool, authenticate) {
         repos: repos.length,
         open_prs: openPrs,
         commits_7d: commits7d,
-        contributors_7d: accountContributors,
-        external_contributors_7d: board.size - accountContributors,
+        contributors_7d: accounts.size,
+        external_contributors_7d: external,
         live_services: liveServices,
         members: user ? userRows.length : null,
       },

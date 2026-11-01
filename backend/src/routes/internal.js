@@ -110,6 +110,19 @@ export function internalRoutes(pool, authenticate) {
     // Workflows are discovered and queued in the background so a push never
     // waits on reading workflow files.
     const actor = pusher && pusher !== 'webhook' ? String(pusher) : '';
+    // Remember who pushed (authenticated by the transport, unlike commit
+    // authors). Skips unknown names such as 'webhook'.
+    if (actor) {
+      try {
+        await pool.query(
+          'INSERT INTO push_events (user_uid, space, repo, created) SELECT uid, $2, $3, $4 FROM users WHERE uid = $1',
+          [actor, String(space), String(repo), Date.now()],
+        );
+        await pool.query('DELETE FROM push_events WHERE created < $1', [Date.now() - 90 * 24 * 60 * 60 * 1000]);
+      } catch (err) {
+        console.error('push-event record failed:', err.message);
+      }
+    }
     void import('../lib/actionsRuntime.js')
       .then(({ actionsEngine }) =>
         actionsEngine.onPush({ space, repo, ref, before: String(before || ''), after: String(after || ''), pusher: actor }),

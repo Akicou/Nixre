@@ -117,7 +117,7 @@ export const ActivityPulse: React.FC<{ user: User | null; feed: ActivityFeed | n
                 <span
                   className="text-[11px] font-mono text-txt-tertiary"
                   title={(stats?.external_contributors_7d ?? 0) > 0
-                    ? 'Commit authors whose email is not on a Nixre account are counted separately'
+                    ? 'Commit authors whose email is not on a Nixre account. Add it under Settings → Commit emails to claim it.'
                     : undefined}
                 >
                   {stats?.members != null ? `of ${stats.members}` : ''}
