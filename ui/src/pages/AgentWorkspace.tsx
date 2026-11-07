@@ -1,4 +1,5 @@
 import { AgentTaskPanel } from '../components/assistant/AgentTaskPanel';
+import { PresetSelect } from '../components/assistant/PresetSelect';
 // Agentic engineering workspace — Cursor-inspired void + floating composer.
 //
 // Deliberately not a chat panel. Empty state is a near-black canvas with one
@@ -1388,19 +1389,7 @@ export const AgentWorkspace: React.FC = () => {
             <Plus className="w-4 h-4" aria-hidden="true" />
             Attach
           </button>
-          {!currentId && (
-            <select
-              aria-label="New task permissions"
-              title="What the agent may do in this task: ask first (review edits and approve commands), read only, or auto (edits applied, commands reviewed by Jev on OpenRouter)"
-              value={taskPreset}
-              onChange={e => setTaskPreset(e.target.value)}
-              className="min-h-11 max-w-[10rem] rounded-lg bg-transparent px-2 text-xs text-txt-secondary hover:bg-surface-subtle hover:text-txt-primary outline-none cursor-pointer transition"
-            >
-              <option value="workspace" title="Review edits and approve commands">Ask first</option>
-              <option value="read_only" title="The agent can only read">Read only</option>
-              <option value="auto" title="Edits are applied; each shell command is reviewed by Jev before it runs (needs an OpenRouter provider)">Auto</option>
-            </select>
-          )}
+          <PresetSelect conversationId={currentId || null} newPreset={taskPreset} onNewPreset={setTaskPreset} running={streaming} />
         </div>
         <div className="flex items-center gap-1.5 flex-wrap justify-end">
           {modelCard}

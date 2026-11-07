@@ -352,6 +352,7 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     if (name === 'write_file') {
       if (job.mode === 'plan') throw new Error('Plan mode cannot edit files');
       assertWritableAgentPath(args.path, permissions);
+      if (permissions.canRunBash === false) throw new Error('File editing is disabled by the repository profile');
     }
     if (['run_command', 'verify_project'].includes(name) && permissions.canRunBash === false && permissions.canRunTests === false) throw new Error('Command execution is disabled by the repository profile');
     if (job.mode === 'plan' && ['run_command', 'verify_project', 'browser_check'].includes(name)) throw new Error('Plan mode cannot execute commands or browser checks');
