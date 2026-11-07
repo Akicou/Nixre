@@ -221,9 +221,6 @@ export class HostDriver {
     await rm(path.join(ui, 'dist'), { recursive: true, force: true });
     await mkdir(path.join(ui, 'dist'));
     await this.run('docker', ['cp', `${context.uiContainer}:/work/ui/dist/.`, path.join(ui, 'dist')]);
-    if ((await this.run('git', ['status', '--porcelain', 'ui/dist'], { cwd: context.candidate })).output) {
-      throw new Error('Built UI does not match committed ui/dist. Update blocked.');
-    }
     for (const [image, directory] of [[context.image, 'backend'], [context.sandboxImage, 'backend/agent-sandbox']]) {
       await this.run('docker', ['build', '-t', image,
         ...(directory === 'backend' ? ['--build-arg', `NIXRE_REVISION=${context.plan.target}`] : []),

@@ -342,7 +342,7 @@ Nixre architecture (no external forge)
  │    ├── src/lib/assistant*        # Assistant engine + profiles (server-backed)
  │    ├── src/components/           # PullRequestForm/Detail, ChatSurface, PluginToggle, ...
  │    ├── src/pages/                # Views (RepoView, Settings, Admin, Plugins, ...)
- │    └── dist/                     # Production build output (committed)
+ │    └── dist/                     # Production build output (gitignored; `npm run build`)
  ├── backend/                       # nixre-core, the entire backend
  │    ├── src/routes/               # auth, sync, forge (spaces/repos/git), pullreq, account
  │    ├── src/git/                  # git CLI wrappers + Smart HTTP transport

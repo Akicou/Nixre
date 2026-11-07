@@ -43,4 +43,4 @@ Main agent turns have no token budget, time deadline, round ceiling, or tool-cal
 
 ## Deploying
 
-Apply the normal backend migrations and rebuild the core image with `docker compose up -d --build nixre-core`. The committed `ui/dist` contains the panel. End-to-end use needs Docker, the sandbox image, a configured AI provider, and PostgreSQL. Check Docker and browser integration on the deployment host.
+Apply the normal backend migrations and rebuild the core image with `docker compose up -d --build nixre-core`. Build the UI (`cd ui && npm ci && npm run build`) so `ui/dist` contains the panel. End-to-end use needs Docker, the sandbox image, a configured AI provider, and PostgreSQL. Check Docker and browser integration on the deployment host.
