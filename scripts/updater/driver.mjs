@@ -70,8 +70,11 @@ export class HostDriver {
         child.once('close', resolve);
       });
       await transferred;
-      if (transferError) throw transferError;
+      // A failing exit code is the real error; a child that dies early also breaks our stdin pipe.
       if (code !== 0 && !allowFailure) throw new Error(`${command} operation failed (${code ?? 'timeout'}). See the private worker log.`);
+      // `pg_restore --list` exits 0 after reading only the table of contents, so a dump larger
+      // than the pipe buffer hits EPIPE while still being written. That is not a failure.
+      if (transferError && !(code === 0 && transferError.code === 'EPIPE')) throw transferError;
       return { code, output: output.trim() };
     } finally { clearTimeout(timer); await log.close(); }
   }

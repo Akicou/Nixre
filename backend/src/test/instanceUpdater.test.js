@@ -270,3 +270,13 @@ test('published images are used only when pulled and labelled with the reviewed 
   pullFails = true;
   assert.equal(await driver.pullPublished('nixre-core', target, 'nixre-update-core:x'), false);
 });
+test('a child that exits 0 without reading all of its input is not an error', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'nixre-epipe-'));
+  const inputFile = path.join(dir, 'big.dump');
+  await writeFile(inputFile, Buffer.alloc(8 * 1024 * 1024, 1));
+  const driver = new HostDriver({ root: dir, stateDir: dir, logFile: path.join(dir, 'log'), fetchImpl: async () => ({}) });
+  const early = ['-e', "process.stdin.once('data', () => process.exit(0))"];
+  assert.equal((await driver.run(process.execPath, early, { inputFile })).code, 0);
+  await assert.rejects(driver.run(process.execPath, ['-e', 'process.exit(3)'], { inputFile }), /operation failed \(3\)/);
+  await rm(dir, { recursive: true, force: true });
+});
