@@ -10,9 +10,12 @@ export const workspaceActions = new Set();
 const approvals = new Map();
 const id = () => crypto.randomUUID();
 const failure = (message, status = 400) => Object.assign(new Error(message), { status });
+// The old 'restricted' preset was replaced by 'auto'; saved tasks fall back to the stricter 'workspace'.
+const normalizePreset = p => (p === 'restricted' ? 'workspace' : p);
 export function validateSettings(input = {}) {
   const result = { ...DEFAULT_SETTINGS, ...input };
-  if (!['read_only', 'workspace', 'restricted'].includes(result.preset)) throw failure('Invalid permission preset');
+  result.preset = normalizePreset(result.preset);
+  if (!['read_only', 'workspace', 'auto'].includes(result.preset)) throw failure('Invalid permission preset');
   for (const key of ['maxCost', 'inputPrice', 'outputPrice']) {
     if (typeof result[key] !== 'number' || !Number.isFinite(result[key]) || result[key] < 0 || result[key] > 1000000) throw failure(`Invalid ${key}`);
   }
@@ -28,6 +31,7 @@ export async function readTaskState(pool, conversationId) {
   const { rows } = await pool.query('SELECT state FROM agent_task_state WHERE conversation_id = $1', [conversationId]);
   const state = rows[0]?.state || {};
   const settings = { ...DEFAULT_SETTINGS, ...state.settings };
+  settings.preset = normalizePreset(settings.preset);
   // Old conversations and older clients may still contain token/time budgets.
   // Expose and persist only supported settings so those caps cannot return.
   return { ...emptyTaskState(), ...state,
@@ -97,7 +101,17 @@ export function taskController(pool, context, deps = {}) {
     await mutate(s => addCheckpoint(s, result, label));
     return result;
   }
+  // Auto preset: the judge model replaces the human. Fails closed on any error or unclear answer.
+  async function judgeCommand(tool, args) {
+    let verdict = '';
+    try { verdict = String(await deps.judge?.(tool, args) ?? '').trim(); } catch (e) { verdict = `DENY: reviewer failed (${e.message})`; }
+    const allowed = /^ALLOW\b/i.test(verdict);
+    const reason = verdict.replace(/^(ALLOW|DENY)\s*:?\s*/i, '').slice(0, 500) || (allowed ? '' : 'no verdict');
+    await mutate(s => { s.approvals.push({ id: id(), toolId: undefined, tool, args, status: allowed ? 'approved' : 'rejected', by: 'judge', reason, createdAt: Date.now() }); s.approvals = s.approvals.slice(-100); });
+    if (!allowed) throw failure(`Command denied by the auto-mode safety reviewer: ${reason}`);
+  }
   async function requestApproval(tool, args, toolId) {
+    if ((await read()).settings.preset === 'auto') return judgeCommand(tool, args);
     const requestId = id();
     let resolveDecision;
     const decision = new Promise(resolve => { resolveDecision = resolve; });
@@ -117,6 +131,10 @@ export function taskController(pool, context, deps = {}) {
       context.signal?.removeEventListener('abort', onAbort);
       await mutate(s => { const a = s.approvals.find(a => a.id === requestId); if (a?.status === 'pending') a.status = 'cancelled'; });
     }
+  }
+  async function applyProposal(proposal) {
+    const result = await operation(context, { op: 'apply', ...proposal });
+    await mutate(s => { s.proposals.find(p => p.id === proposal.id).status = 'accepted'; addCheckpoint(s, result.checkpoint, `Before accepting ${proposal.path}`); });
   }
   async function verify(approved = false, toolId) {
     const state = await read();
@@ -191,9 +209,12 @@ export function taskController(pool, context, deps = {}) {
             if (s.proposals.filter(p => p.status === 'pending').length >= 30) throw failure('Review pending files before proposing more');
             s.proposals.push(proposal);
           });
-          output = `Proposed ${args.path}. Awaiting user review; workspace unchanged. Proposal ${proposal.id}`;
+          if (state.settings.preset === 'auto') {
+            await applyProposal(proposal);
+            output = `Applied ${args.path}`;
+          } else output = `Proposed ${args.path}. Awaiting user review; workspace unchanged. Proposal ${proposal.id}`;
         } else if (name === 'run_command') {
-          if (state.settings.preset !== 'workspace') throw failure('This preset does not allow arbitrary shell commands');
+          if (!['workspace', 'auto'].includes(state.settings.preset)) throw failure('This preset does not allow arbitrary shell commands');
           await requestApproval(name, args, callId);
           output = await execute(name, args);
         } else if (name === 'verify_project') {
@@ -248,8 +269,7 @@ export function taskController(pool, context, deps = {}) {
         if (!proposal || proposal.status !== 'pending') throw failure('Proposal not pending', 409);
         if (action.accept === true) {
           if (state.settings.preset === 'read_only') throw failure('Read-only mode cannot apply edits');
-          const result = await operation(context, { op: 'apply', ...proposal });
-          await mutate(s => { s.proposals.find(p => p.id === action.id).status = 'accepted'; addCheckpoint(s, result.checkpoint, `Before accepting ${proposal.path}`); });
+          await applyProposal(proposal);
           // User explicitly opts into running project scripts when accepting an edit.
           if (state.settings.autoVerify) await verify(true);
         } else await mutate(s => { s.proposals.find(p => p.id === action.id).status = 'rejected'; });

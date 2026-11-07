@@ -9,7 +9,7 @@ The Assistant workspace has a **Task controls** panel above the transcript. Choo
 | Checkpoints and undo | A checkpoint is saved before an editable task and before accepting a file. Manual checkpoints and restores are available while idle. Every restore first saves another checkpoint. |
 | Automatic verification | Accepting an edit runs detected test/lint/build scripts when enabled. Checks can also be launched explicitly; agent-requested checks need approval. Exit codes and bounded output are saved. |
 | Project memory | User-scoped repository memory persists across conversations. Edit it in the panel; the agent can update it with `update_project_memory`. Do not store secrets there. |
-| Permission presets | Read only: inspection tools only. Workspace: stages edits, and every arbitrary command needs approval. Restricted: stages edits, allows approved checks, no arbitrary commands. Repository profile restrictions still apply. |
+| Permission presets | Read only: inspection tools only. Workspace: stages edits, and every arbitrary command needs approval. Auto: applies edits immediately (a checkpoint is saved first), and every shell command or check is reviewed before it runs, by the Jev decision model (`typesafe/jev-1.14`, via OpenRouter's decisions API). A command rated 40% or more likely unsafe is denied. Auto needs an OpenRouter provider: on any other provider every command is denied with a message saying so, and edits still apply. Review failures also deny, and the reason goes back to the agent. Saved tasks that used the old Restricted preset now behave as Workspace. Repository profile restrictions still apply. |
 | Browser checks | Chromium visits a local HTTP preview, saves a screenshot, and reports HTTP status, JavaScript errors, and console output. The panel shows the screenshot. |
 | Specialist agents | The lead can delegate frontend/backend/testing/review inspections, up to six assignments per task. Specialists are read-only, get at most eight model rounds, and cannot delegate. Their reports and usage are kept. |
 | Resume | Provider threads and tool outcomes are saved. After a restart, choose **Resume saved task**. Completed tool calls are reused. Unknown outcomes become warnings to the model instead of being replayed. |
@@ -17,7 +17,7 @@ The Assistant workspace has a **Task controls** panel above the transcript. Choo
 
 ## Review and permissions
 
-Shell commands can change files or publish changes, so the workspace preset shows the full command for one-time approval. The restricted preset has no arbitrary shell access. **Accept file and run checks** and **Run tests, lint, and build** authorize repository scripts.
+Shell commands can change files or publish changes, so the workspace preset shows the full command for one-time approval. The auto preset skips the prompt and lets the reviewer decide; the verdicts are kept in the task's approvals list. **Accept file and run checks** and **Run tests, lint, and build** authorize repository scripts.
 
 Accepting proposals, restoring files, and running manual checks are disabled while an agent runs. Approval decisions stay available. A file changed since its proposal was created cannot be accepted; request a new proposal. Inspection tools read the live sandbox, so accepted edits are visible to the lead and specialists.
 

@@ -84,12 +84,38 @@ test('write proposals never execute writes until accepted and stale content is r
   assert.equal(content, 'after'); assert.equal((await c.read()).checkpoints.length, 1);
   await assert.rejects(c.action({ type: 'proposal', id: proposal.id, accept: true }), /not pending/);
 });
-test('read-only and restricted presets block arbitrary commands without calling executors', async () => {
-  for (const preset of ['read_only', 'restricted']) {
-    const c = taskController(pool(), ctx);
-    await c.action({ type: 'settings', settings: { preset } });
-    await assert.rejects(c.execute('run_command', { command: 'echo hi' }, {}, () => assert.fail()), /does not allow/);
+test('read-only preset blocks arbitrary commands without calling executors', async () => {
+  const c = taskController(pool(), ctx);
+  await c.action({ type: 'settings', settings: { preset: 'read_only' } });
+  await assert.rejects(c.execute('run_command', { command: 'echo hi' }, {}, () => assert.fail()), /does not allow/);
+});
+test('legacy restricted preset is read as workspace', async () => {
+  assert.equal(validateSettings({ preset: 'restricted' }).preset, 'workspace');
+  const db = pool(); db.states.set('c', { settings: { preset: 'restricted' } });
+  assert.equal((await readTaskState(db, 'c')).settings.preset, 'workspace');
+});
+test('auto preset applies edits directly and lets the judge gate commands', async () => {
+  let content = 'before'; const verdicts = ['ALLOW', 'DENY: rm -rf outside workspace', 'maybe', ''];
+  const db = pool(), c = taskController(db, ctx, {
+    judge: async () => verdicts.shift(),
+    operation: async (_c, op) => {
+      if (op.op === 'read') return { content };
+      if (op.op === 'apply') { content = op.content; return { checkpoint: { id: 'cp', files: 1 } }; }
+    },
+  });
+  await c.action({ type: 'settings', settings: { preset: 'auto' } });
+  assert.match(await c.execute('write_file', { path: 'a.js', content: 'after' }, { callId: 'w' }, () => assert.fail()), /Applied/);
+  assert.equal(content, 'after'); assert.equal((await c.read()).proposals[0].status, 'accepted');
+  assert.equal(await c.execute('run_command', { command: 'npm test' }, { callId: '1' }, async () => 'ok'), 'ok');
+  for (const callId of ['2', '3', '4']) {
+    await assert.rejects(c.execute('run_command', { command: 'x' }, { callId }, () => assert.fail('ran')), /safety reviewer/);
   }
+  assert.equal((await c.read()).approvals.filter(a => a.by === 'judge').length, 4);
+});
+test('auto preset denies commands when no judge is available', async () => {
+  const c = taskController(pool(), ctx);
+  await c.action({ type: 'settings', settings: { preset: 'auto' } });
+  await assert.rejects(c.execute('run_command', { command: 'ls' }, {}, () => assert.fail()), /safety reviewer/);
 });
 test('command approval is one-time and bound to its conversation', async () => {
   const events = [];

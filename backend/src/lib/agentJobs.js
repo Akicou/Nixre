@@ -14,6 +14,7 @@ import {
   workspaceGitDir,
 } from './workspaces.js';
 import { runAgentLoop } from './agentLoop.js';
+import { isOpenRouter, jevJudge } from './jev.js';
 import { listSkills, formatSkillCatalog, expandMentions } from './agentSkills.js';
 import {
   SUBMIT_ENV_FEEDBACK_SCHEMA,
@@ -323,7 +324,12 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
     liveReads: true,
     space, repo,
   };
-  const control = taskController(pool, toolCtx);
+  // Auto preset: each shell command is reviewed by the Jev decision model, which
+  // OpenRouter hosts. Other providers have no such model, so Auto denies commands there.
+  const judge = isOpenRouter(providerRow.base_url)
+    ? (tool, args) => jevJudge(tool, args, { apiKey, baseUrl: providerRow.base_url })
+    : async () => 'DENY: Auto mode reviews commands with the Jev model, which this provider does not offer. Use an OpenRouter provider or switch the task to Ask first';
+  const control = taskController(pool, toolCtx, { judge });
   job.control = control;
   const priorState = await control.read();
   const resumeThread = job.resume ? recoverThread(priorState) : undefined;
@@ -445,7 +451,6 @@ async function runTurn(pool, job, { prompt, images, existingUser, jobKind }) {
 
   const preset = (await control.read()).settings.preset;
   if (tools && preset === 'read_only') tools = tools.filter(t => !['write_file', 'run_command', 'verify_project', 'browser_check'].includes(t.name));
-  if (tools && preset === 'restricted') tools = tools.filter(t => t.name !== 'run_command');
 
   const touch = () =>
     touchSandbox({
