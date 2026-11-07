@@ -22,7 +22,7 @@ Plus:
 
 **Files you see in this repo:**
 - `backend/` — node src. The real logic.
-- `ui/` — react frontend. `ui/dist` is the BUILT output (must commit it).
+- `ui/` — react frontend. `ui/dist` is the BUILT output (gitignored, never commit it; the server builds it).
 - `docker-compose.yml` — how everything start.
 - `Caddyfile` — host web server rules.
 - `scripts/` — helper shell scripts.
@@ -35,7 +35,7 @@ Plus:
 
 1. **NEVER `reset --hard` here.** This branch have local commits not pushed yet. Reset = lose work = sad.
 2. **`update-nixre.sh` NEVER wipe local commits.** It fast-forward. If it get stuck, stop and look by hand. Do not "fix" by deleting local work.
-3. **Frontend changes:** edit in `ui/src`, then `npm run build` in `ui/`, then the new files land in `ui/dist/`. **You MUST commit `ui/dist`** (it's what gets served). Forgetting = web page show OLD version.
+3. **Frontend changes:** edit in `ui/src` and run `npm run build` in `ui/` to check it builds. **`ui/dist` is gitignored — do NOT commit it.** `update-nixre.sh` and the updater build it on the server. A fresh clone must run `cd ui && npm ci && npm run build` before Caddy has anything to serve.
 4. **Backend changes:** rebuild the docker image: `docker compose up -d --build nixre-core`. The backend is baked into the image (not live-reloaded). Change code + rebuild + restart, else new code never runs.
 5. **Secrets live in `.env`** (local only). It is GITIGNORED. **NEVER commit `.env`** or past real tokens into commits — GitHub secret scanner blocks the push AND leaks password. If need doc, use `.env.example` (placeholder only). If a real secret got committed, `git filter-branch` it out and ROTATE the secret at the provider.
    - `.env` is now **required**: `NIXRE_INTERNAL_TOKEN`, `NIXRE_AI_SECRET` and `POSTGRES_PASSWORD` have no defaults. Compose refuses to start without them, and core refuses to boot if the first two match a known published value (they used to fall back to `dev-internal-token-change-me`, which is in this public repo while `/api/v1/internal/*` is reachable through Caddy).
@@ -62,7 +62,7 @@ Plus:
 - `.env` `NIXRE_REGISTRATION_CLOSED` + admin console toggle (that is API state, not git).
 
 ### If add a feature to the UI
-- Edit `ui/src/...`, then `cd ui && npm run build`, then commit `ui/dist`.
+- Edit `ui/src/...`, then `cd ui && npm run build` to check it builds (do not commit `ui/dist`).
 - Add a test in `ui/src/test/*.spec.tsx` (matches vibe of existing tests). Run `cd ui && npx vitest run` before commit.
 - **You MUST `cd ui` first.** There is no root vite config, so `npx vitest run` from the repo root finds no jsdom environment and fails every UI test with `document is not defined`. `npm test` at the root does it correctly (it also runs the backend suite).
 - Rebuild backend if backend changed.
@@ -89,7 +89,7 @@ Tests passing is not proof the thing looks or works right. Human must see it.
 
 ### If someone says "pubic still says nayhein.com"
 - That stale text is in the `nixre.dev` REPO (`index.html`, `llms.txt`). Fix THERE, not in forge repo. Push `nixre.dev`. (Forge repo also needs the same fix in README/llms.)
-- Already fixed here once: `allow-registering.sh` / `no-more-register.sh` hard-coded `git.nayhein.com` in their verification curl, so BOTH exited 1 even when they succeeded. They now use `${NIXRE_HOST:-http://127.0.0.1:3000}` and `${NIXRE_DIR:-/opt/nixre}`. `ui/public/llms.txt` (and therefore `ui/dist/llms.txt`) had it too — rebuild the UI after editing it.
+- Already fixed here once: `allow-registering.sh` / `no-more-register.sh` hard-coded `git.nayhein.com` in their verification curl, so BOTH exited 1 even when they succeeded. They now use `${NIXRE_HOST:-http://127.0.0.1:3000}` and `${NIXRE_DIR:-/opt/nixre}`. `ui/public/llms.txt` (and therefore `ui/dist/llms.txt`) had it too — rebuild the UI after editing it (CI keeps the two `llms.txt` copies in sync).
 - CI (`.github/workflows/ci.yml`) greps for `nayhein.com` and fails the build, so it cannot come back silently.
 
 ### If push to github fails with "secret scanner" / "permission denied"
