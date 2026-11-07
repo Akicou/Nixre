@@ -101,6 +101,39 @@ test('CI gate binds to the latest push run of the exact reviewed main revision',
     await assert.rejects(driver.checkCI(target), /has not passed/);
   }
 });
+test('a passing merged-PR CI run replaces a pending push run only for identical code', async () => {
+  const prHead = 'c'.repeat(40);
+  const state = {
+    push: [{ id: 1, head_sha: target, head_branch: 'main', event: 'push', status: 'in_progress', conclusion: null }],
+    pulls: [{ merged_at: 'now', base: { ref: 'main' }, merge_commit_sha: target, head: { sha: prHead } }],
+    pr: [{ id: 5, head_sha: prHead, event: 'pull_request', status: 'completed', conclusion: 'success', html_url: 'https://github.com/example/pr-run' }],
+    trees: { [target]: 't1', [prHead]: 't1' }, fail: false,
+  };
+  const fetchImpl = async url => {
+    if (state.fail) return { ok: false };
+    const body = url.includes('event=push') ? { workflow_runs: state.push }
+      : url.includes('event=pull_request') ? { workflow_runs: state.pr }
+        : url.includes('/pulls') ? state.pulls
+          : { commit: { tree: { sha: state.trees[url.split('/commits/')[1]] } } };
+    return { ok: true, json: async () => body };
+  };
+  const driver = new HostDriver({ root: '/tmp', stateDir: '/tmp', logFile: '/tmp/unused', fetchImpl });
+  assert.equal(await driver.checkCI(target), 'https://github.com/example/pr-run');
+  state.push = [];
+  assert.equal(await driver.checkCI(target), 'https://github.com/example/pr-run');
+  state.pulls[0].head.sha = target; state.pr[0].head_sha = target;
+  assert.equal(await driver.checkCI(target), 'https://github.com/example/pr-run');
+  state.pulls[0].head.sha = prHead; state.pr[0].head_sha = prHead;
+  const rejected = async change => { const saved = structuredClone(state); change(); await assert.rejects(driver.checkCI(target), /has not passed|Could not verify/); Object.assign(state, saved); };
+  await rejected(() => { state.trees[prHead] = 't2'; });
+  await rejected(() => { state.pr[0].conclusion = 'failure'; });
+  await rejected(() => { state.pr[0].status = 'in_progress'; });
+  await rejected(() => { state.pulls[0].merge_commit_sha = base; });
+  await rejected(() => { state.pulls[0].base.ref = 'other'; });
+  await rejected(() => { state.pulls[0].merged_at = null; });
+  await rejected(() => { state.push = [{ id: 2, head_sha: target, head_branch: 'main', event: 'push', status: 'completed', conclusion: 'failure' }]; });
+  await rejected(() => { state.fail = true; });
+});
 test('database safety gate rejects external URLs and backup / migration target mismatches', () => {
   const config = { services: { 'nixre-core': { environment: { PGHOST: 'nixre-db', PGUSER: 'u', PGDATABASE: 'db', PGPASSWORD: 'fixture' } },
     'nixre-db': { environment: { POSTGRES_USER: 'u', POSTGRES_DB: 'db', POSTGRES_PASSWORD: 'fixture' } } } };
