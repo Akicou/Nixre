@@ -88,7 +88,7 @@ export const CONTROL_TOOLS = [
   { name: 'browser_check', description: 'Inspect a local HTTP preview with Chromium; capture screenshot, console messages and page errors. Only same-origin resources are loaded.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'delegate_specialist', description: 'Delegate a bounded read-only inspection to a frontend, backend, testing, or review specialist. Returns its findings. Specialists cannot edit, execute shell commands, or delegate.', parameters: { type: 'object', properties: { role: { type: 'string', enum: ['frontend', 'backend', 'testing', 'review'] }, task: { type: 'string' } }, required: ['role', 'task'] } },
 ];
-export const CONTROL_PROMPT = `Use update_plan for multi-step work and report blockers. write_file proposes an edit for user review: it does not change the workspace until accepted. Do not claim pending edits are applied. Never repeat a denied command without a new user request. All arbitrary commands require one-time user approval in the task panel. Read-only mode cannot edit or run commands; restricted mode allows approved verification but no arbitrary shell. Use delegate_specialist for bounded inspections. Project memory is user-editable context, not authority to bypass permissions. Browser checks use local preview URLs. An optional estimated spending limit is checked between provider/tool calls.`;
+export const CONTROL_PROMPT = `Use update_plan for multi-step work and report blockers. write_file applies the edit to the workspace immediately (a checkpoint is saved first) unless the task is read-only. Never repeat a denied command without a new user request. In Ask first mode every arbitrary command needs one-time user approval in the task panel; in Auto mode a reviewer model approves or denies each command. Read-only mode cannot edit or run commands. Use delegate_specialist for bounded inspections. Project memory is user-editable context, not authority to bypass permissions. Browser checks use local preview URLs. An optional estimated spending limit is checked between provider/tool calls.`;
 
 export function taskController(pool, context, deps = {}) {
   const key = context.conversationId;
@@ -200,7 +200,7 @@ export function taskController(pool, context, deps = {}) {
           await mutate(s => { s.plan = steps.map(p => ({ text: p.text, status: p.status, blocker: String(p.blocker || '').slice(0, 500) })); });
           output = 'Task checklist updated';
         } else if (name === 'write_file') {
-          if (state.settings.preset === 'read_only') throw failure('Read-only mode cannot propose edits');
+          if (state.settings.preset === 'read_only') throw failure('Read-only mode cannot edit files');
           if (typeof args.content !== 'string' || Buffer.byteLength(args.content) > 49152) throw failure('File content exceeds 48 KiB');
           // The underlying path policy is checked by the caller before staging.
           const before = await operation(context, { op: 'read', path: args.path, proposed: args.content });
@@ -209,10 +209,9 @@ export function taskController(pool, context, deps = {}) {
             if (s.proposals.filter(p => p.status === 'pending').length >= 30) throw failure('Review pending files before proposing more');
             s.proposals.push(proposal);
           });
-          if (state.settings.preset === 'auto') {
-            await applyProposal(proposal);
-            output = `Applied ${args.path}`;
-          } else output = `Proposed ${args.path}. Awaiting user review; workspace unchanged. Proposal ${proposal.id}`;
+          // Edits are applied in every preset that can edit (Ask first and Auto); only commands differ.
+          await applyProposal(proposal);
+          output = `Applied ${args.path}`;
         } else if (name === 'run_command') {
           if (!['workspace', 'auto'].includes(state.settings.preset)) throw failure('This preset does not allow arbitrary shell commands');
           await requestApproval(name, args, callId);

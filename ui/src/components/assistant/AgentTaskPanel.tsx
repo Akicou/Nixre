@@ -14,7 +14,7 @@ interface State {
   verification: null | { status: string; error?: string; results: { label: string; exitCode: number; output: string }[] };
   browser: null | { title: string; status: number; path: string; errors: string[]; console: { type: string; text: string }[]; blocked: string[]; dataUrl?: string };
 }
-async function request(id: string, action?: unknown, signal?: AbortSignal): Promise<State & { resumed?: string }> {
+export async function request(id: string, action?: unknown, signal?: AbortSignal): Promise<State & { resumed?: string }> {
   const res = await fetch(`/api/v1/ai/jobs/${encodeURIComponent(id)}/controls`, {
     method: action ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('nixre_token') || ''}` },
     signal,
@@ -93,7 +93,7 @@ export function AgentTaskPanel({ conversationId, running, onResume }: { conversa
     </div></details>}
     {!!state?.specialists.length && <details><summary className="cursor-pointer font-medium">Specialist findings ({state.specialists.length})</summary>{state.specialists.map(c => <div key={c.id} className="mt-2 border-l-2 border-brand pl-3"><strong>{c.role} · {c.status}</strong><p>{c.task}</p><Markdown content={c.report} /></div>)}</details>}
     {settings && <details><summary className="cursor-pointer font-medium">Permissions, spending, and project memory</summary><div className="mt-3 space-y-3">
-      <label className="flex flex-wrap gap-2 items-center">Permission preset<select className={field} disabled={blocked} value={settings.preset} onChange={e => { dirty.current = true; setSettings({ ...settings, preset: e.target.value }); }}><option value="read_only">Read only</option><option value="workspace">Review edits and approve commands</option><option value="auto">Auto: apply edits, Jev-reviewed commands</option></select></label>
+      <label className="flex flex-wrap gap-2 items-center">Permission preset<select className={field} disabled={blocked} value={settings.preset} onChange={e => { dirty.current = true; setSettings({ ...settings, preset: e.target.value }); }}><option value="read_only">Read only</option><option value="workspace">Ask first: apply edits, approve commands</option><option value="auto">Auto: apply edits, Jev-reviewed commands</option></select></label>
       <label className="flex gap-2"><input type="checkbox" disabled={blocked} checked={settings.autoVerify} onChange={e => { dirty.current = true; setSettings({ ...settings, autoVerify: e.target.checked }); }} />Run repository checks when accepting edits</label>
       <div className="grid sm:grid-cols-2 gap-2">{([['maxCost', 'Spending limit USD (0 = off)'], ['inputPrice', 'Input price USD / million tokens'], ['outputPrice', 'Output price USD / million tokens']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1">{label}<input type="number" min="0" step="any" className={field} disabled={blocked} value={settings[key]} onChange={e => { dirty.current = true; setSettings({ ...settings, [key]: Number(e.target.value) }); }} /></label>)}</div>
       <p className="text-txt-tertiary">Token usage and elapsed time are tracked without task-level caps. Enter provider prices for the selected model. The optional spending limit is checked between calls; an in-flight response can exceed it. Update prices when changing models.</p><button type="button" className={btn} disabled={blocked} onClick={() => act({ type: 'settings', settings })}>Save task settings</button>

@@ -69,20 +69,24 @@ test('concurrent state updates do not overwrite one another', async () => {
   await Promise.all(Array.from({ length: 20 }, () => mutateTaskState(db, 'c', s => { s.usage.input++; })));
   assert.equal((await readTaskState(db, 'c')).usage.input, 20);
 });
-test('write proposals never execute writes until accepted and stale content is rejected', async () => {
+test('Ask first applies edits immediately but still asks before commands; read-only cannot edit', async () => {
   let content = 'before'; const operations = [];
   const db = pool(), c = taskController(db, ctx, { operation: async (_ctx, op) => {
     operations.push(op.op);
     if (op.op === 'read') return { content };
-    if (op.op === 'apply') { assert.equal(op.before, content, 'stale'); content = op.content; return { checkpoint: { id: 'cp', files: 1 } }; }
+    if (op.op === 'apply') { content = op.content; return { checkpoint: { id: 'cp', files: 1 } }; }
   } });
-  await c.action({ type: 'settings', settings: { autoVerify: false } });
-  await c.execute('write_file', { path: 'a.js', content: 'after' }, { callId: 'w' }, () => assert.fail('raw write called'));
-  assert.equal(content, 'before'); assert.deepEqual(operations, ['read']);
-  const proposal = (await c.read()).proposals[0];
-  await c.action({ type: 'proposal', id: proposal.id, accept: true });
-  assert.equal(content, 'after'); assert.equal((await c.read()).checkpoints.length, 1);
-  await assert.rejects(c.action({ type: 'proposal', id: proposal.id, accept: true }), /not pending/);
+  assert.equal((await c.read()).settings.preset, 'workspace');
+  assert.match(await c.execute('write_file', { path: 'a.js', content: 'after' }, { callId: 'w' }, () => assert.fail('raw write called')), /Applied/);
+  assert.equal(content, 'after'); assert.deepEqual(operations, ['read', 'apply']);
+  assert.equal((await c.read()).proposals.filter(p => p.status === 'pending').length, 0);
+  const pending = c.execute('run_command', { command: 'ls' }, { callId: 'cmd' }, () => 'ran');
+  let approval; for (let i = 0; i < 30 && !approval; i++) { await new Promise(r => setImmediate(r)); approval = (await c.read()).approvals[0]; }
+  assert.equal(approval.status, 'pending');
+  await c.action({ type: 'approval', id: approval.id, accept: false });
+  await assert.rejects(pending, /denied/);
+  await c.action({ type: 'settings', settings: { preset: 'read_only' } });
+  await assert.rejects(c.execute('write_file', { path: 'a.js', content: 'x' }, { callId: 'w2' }, () => assert.fail()), /cannot edit/);
 });
 test('read-only preset blocks arbitrary commands without calling executors', async () => {
   const c = taskController(pool(), ctx);
