@@ -48,7 +48,7 @@ Optional worker-only settings in that root-controlled file:
 
 ## Pipeline and failure boundaries
 
-1. Recheck the reviewed base/target SHA and Compose/environment fingerprint. Require the latest `push` CI run for that `main` SHA to pass. Refuse dirty, ahead, diverged, non-main, or unexpected-origin checkouts. Reviews expire after ten minutes.
+1. Recheck the reviewed base/target SHA and Compose/environment fingerprint. Require the latest `push` CI run for that `main` SHA to pass. While that run is still queued or running (or absent), the updater accepts a passing `pull_request` CI run instead, if the merged PR produced exactly that SHA and its tested head has the same tree (a fast-forward, or a squash/rebase onto an unmoved `main`). A finished failing `push` run is never overridden. Refuse dirty, ahead, diverged, non-main, or unexpected-origin checkouts. Reviews expire after ten minutes.
 2. Build from a detached worktree. Run UI install, tests, and build in a Node 22 container with no host secrets or Docker socket. Require `ui/dist` to match the commit. Build separate backend/sandbox images without touching running containers. Git hooks are disabled.
 3. Dump PostgreSQL (custom format), restore into a disposable database with no published ports, and run the candidate migration runner there. Compare every applied migration filename with the candidate files. Production keeps serving.
 4. Pause new HTTP mutations, reject active agents/deployments, recheck checkout/configuration/CI, and stop core and SSH. Take a final dump and verify its archive structure.

@@ -89,19 +89,39 @@ export class HostDriver {
     assertDatabaseConfiguration(config);
     return { args, config, raw, fingerprint: digest(raw) };
   }
-  async checkCI(target) {
-    const url = `https://api.github.com/repos/${this.repository}/actions/workflows/ci.yml/runs?head_sha=${target}&event=push&branch=main&per_page=10`;
-    const response = await this.fetchImpl(url, { headers: { Accept: 'application/vnd.github+json',
+  async github(pathname) {
+    const response = await this.fetchImpl(`https://api.github.com/repos/${this.repository}/${pathname}`, { headers: { Accept: 'application/vnd.github+json',
       ...(process.env.NIXRE_UPDATE_GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.NIXRE_UPDATE_GITHUB_TOKEN}` } : {}) },
     signal: AbortSignal.timeout(15_000), redirect: 'error' });
     if (!response.ok) throw new Error('Could not verify GitHub CI. Update is blocked; retry after connectivity/rate limits recover.');
-    const data = await response.json();
+    return response.json();
+  }
+  async checkCI(target) {
+    const data = await this.github(`actions/workflows/ci.yml/runs?head_sha=${target}&event=push&branch=main&per_page=10`);
     const latest = data.workflow_runs?.filter(run => run.head_sha === target && run.event === 'push' && run.head_branch === 'main')
       .sort((a, b) => b.id - a.id)[0];
-    if (!latest || latest.status !== 'completed' || latest.conclusion !== 'success') {
-      throw new Error('The latest main-branch CI run for this exact revision has not passed.');
+    if (latest?.status === 'completed' && latest.conclusion === 'success') return latest.html_url;
+    // A finished failing push run is final. Only a missing/queued/running one may be
+    // replaced by the passing CI of the PR that produced this exact code.
+    const prRun = !latest || latest.status !== 'completed' ? await this.mergedPullRequestCI(target) : null;
+    if (prRun) return prRun;
+    throw new Error('The latest main-branch CI run for this exact revision has not passed.');
+  }
+  // CI that passed on the merged PR's head counts when `target` is that head, or has an
+  // identical tree (squash/rebase onto an unmoved main). Anything else keeps waiting.
+  async mergedPullRequestCI(target) {
+    const pulls = await this.github(`commits/${target}/pulls`);
+    const pr = Array.isArray(pulls) ? pulls.find(p => p.merged_at && p.base?.ref === 'main' && p.merge_commit_sha === target) : null;
+    const head = pr?.head?.sha;
+    if (!head) return null;
+    const runs = await this.github(`actions/workflows/ci.yml/runs?head_sha=${head}&event=pull_request&per_page=10`);
+    const run = runs.workflow_runs?.filter(r => r.head_sha === head && r.event === 'pull_request').sort((a, b) => b.id - a.id)[0];
+    if (run?.status !== 'completed' || run.conclusion !== 'success') return null;
+    if (head !== target) {
+      const [merged, tested] = await Promise.all([this.github(`commits/${target}`), this.github(`commits/${head}`)]);
+      if (!merged.commit?.tree?.sha || merged.commit.tree.sha !== tested.commit?.tree?.sha) return null;
     }
-    return latest.html_url;
+    return run.html_url;
   }
   async plan() {
     if (await this.git('status', '--porcelain')) throw new Error('Checkout has uncommitted changes. Preserve them before updating.');
