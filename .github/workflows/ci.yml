@@ -14,9 +14,8 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# AGENTS.md requires "build the UI, run the tests, commit ui/dist" before every
-# push. Nothing enforced it, so a broken or stale build reached main. This
-# workflow is that enforcement.
+# Tests and builds everything. ui/dist is not committed: the server (update-nixre.sh
+# or the updater) builds it, and the UI job below proves it still builds.
 jobs:
   backend:
     name: Backend tests
@@ -64,8 +63,8 @@ jobs:
   # The Docker upgrade check takes ~9 minutes and only exercises the images and
   # compose stack. A PR that touches none of their inputs (UI-only, docs) skips
   # it. A skipped job counts as passing for required checks. Pushes to main
-  # always run it. ui/dist is deliberately not listed: the check only has Caddy
-  # serve it as static files, and the UI job already verifies the bundle.
+  # always run it. ui/ is deliberately not listed: the check only has Caddy
+  # serve the built bundle, and the UI job already verifies it builds.
   changes:
     name: Detect Docker-relevant changes
     runs-on: ubuntu-latest
@@ -100,6 +99,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      # The check serves the built SPA, and ui/dist is not committed.
+      - name: Build the UI
+        working-directory: ui
+        run: npm ci && npm run build
 
       - name: Build and verify the real stack in a disposable daemon
         run: |
@@ -141,20 +145,6 @@ jobs:
         working-directory: ui
         run: npm run build
 
-      # ui/dist is what Caddy serves, so it is committed. If a source change
-      # landed without a rebuild, the built output no longer matches — fail
-      # here rather than shipping a stale SPA.
-      - name: Verify ui/dist is in sync with ui/src
-        working-directory: ui
-        run: |
-          npm run build
-          if [ -n "$(git status --porcelain dist)" ]; then
-            echo "::error::ui/dist is out of date. Run 'cd ui && npm run build' and commit the result."
-            git --no-pager diff --stat dist
-            exit 1
-          fi
-          echo "ui/dist is up to date."
-
       - name: Install browser for responsive layout tests
         working-directory: ui
         run: npx playwright install --with-deps chromium
@@ -180,13 +170,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: llms.txt copies are in sync
-        # ui/public/llms.txt is copied into ui/dist and served at /llms.txt, so
+        # ui/public/llms.txt is copied into the UI build and served at /llms.txt, so
         # it IS the public-facing agent documentation. It had drifted badly
         # (missing the whole Deployments section, and claiming there was no
         # server-side registration flag). AGENTS.md requires these stay in sync.
         run: |
           if ! diff -q <(sed 's/\r$//' llms.txt) <(sed 's/\r$//' ui/public/llms.txt) >/dev/null; then
-            echo "::error::ui/public/llms.txt differs from llms.txt. Copy the root file over it and rebuild ui/dist."
+            echo "::error::ui/public/llms.txt differs from llms.txt. Copy the root file over it."
             diff -u llms.txt ui/public/llms.txt | head -40
             exit 1
           fi

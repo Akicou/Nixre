@@ -59,6 +59,7 @@ fi
 chown "$update_owner":1000 "$NIXRE_DIR/data/update-control/key"
 chmod 0640 "$NIXRE_DIR/data/update-control/key"
 if [ ! -e "$NIXRE_DIR/data/update-web/current" ]; then
+  [ -f "$NIXRE_DIR/ui/dist/index.html" ] || { echo 'Build the UI first: cd ui && npm ci && npm run build' >&2; exit 1; }
   update_revision="$(git -c safe.directory="$NIXRE_DIR" -C "$NIXRE_DIR" rev-parse HEAD)"
   install -d -m 0755 "$NIXRE_DIR/data/update-web/releases/$update_revision"
   cp -a "$NIXRE_DIR/ui/dist/." "$NIXRE_DIR/data/update-web/releases/$update_revision/"
