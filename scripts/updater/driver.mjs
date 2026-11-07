@@ -207,6 +207,19 @@ export class HostDriver {
   async compose(context, override, ...args) {
     return this.run('docker', [...context.args, ...(override ? ['-f', override] : []), ...args], { timeout: 20 * 60_000 });
   }
+  // CI publishes ghcr.io/<owner>/<name>:<full sha> only after the main-branch tests pass.
+  // Use that image when it exists and was built from exactly this revision; otherwise
+  // (not published yet, private package, offline) the caller builds from the worktree.
+  async pullPublished(name, sha, local) {
+    const ref = `ghcr.io/${this.repository.split('/')[0].toLowerCase()}/${name}:${sha}`;
+    try {
+      await this.run('docker', ['pull', ref], { timeout: 10 * 60_000 });
+      const revision = (await this.run('docker', ['image', 'inspect', '--format', '{{index .Config.Labels "org.opencontainers.image.revision"}}', ref])).output;
+      if (revision !== sha) return false;
+      await this.run('docker', ['tag', ref, local]);
+      return true;
+    } catch { return false; }
+  }
   async build(context) {
     await this.git('worktree', 'add', '--detach', context.candidate, context.plan.target);
     const ui = path.join(context.candidate, 'ui');
@@ -221,7 +234,8 @@ export class HostDriver {
     await rm(path.join(ui, 'dist'), { recursive: true, force: true });
     await mkdir(path.join(ui, 'dist'));
     await this.run('docker', ['cp', `${context.uiContainer}:/work/ui/dist/.`, path.join(ui, 'dist')]);
-    for (const [image, directory] of [[context.image, 'backend'], [context.sandboxImage, 'backend/agent-sandbox']]) {
+    for (const [image, directory, published] of [[context.image, 'backend', 'nixre-core'], [context.sandboxImage, 'backend/agent-sandbox', 'nixre-agent-sandbox']]) {
+      if (await this.pullPublished(published, context.plan.target, image)) continue;
       await this.run('docker', ['build', '-t', image,
         ...(directory === 'backend' ? ['--build-arg', `NIXRE_REVISION=${context.plan.target}`] : []),
         path.join(context.candidate, directory)], { timeout: 20 * 60_000 });
