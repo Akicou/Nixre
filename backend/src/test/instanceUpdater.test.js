@@ -250,3 +250,23 @@ test('maintenance pauses HTTP mutations and Git push while allowing reads', asyn
     assert.equal(result.status, 503); assert.equal(result.headers.get('Retry-After'), '30');
   }
 });
+test('published images are used only when pulled and labelled with the reviewed revision', async () => {
+  const calls = []; let label = target; let pullFails = false;
+  class D extends HostDriver {
+    async run(command, args) {
+      calls.push(args.join(' '));
+      if (args[0] === 'pull' && pullFails) throw new Error('denied');
+      return { code: 0, output: args[0] === 'image' ? label : '' };
+    }
+  }
+  const driver = new D({ root: '/tmp', stateDir: '/tmp', logFile: '/tmp/unused', fetchImpl: async () => ({}) });
+  driver.repository = 'Akicou/Nixre';
+  assert.equal(await driver.pullPublished('nixre-core', target, 'nixre-update-core:x'), true);
+  assert.equal(calls[0], `pull ghcr.io/akicou/nixre-core:${target}`);
+  assert.equal(calls.at(-1), `tag ghcr.io/akicou/nixre-core:${target} nixre-update-core:x`);
+  calls.length = 0; label = base;
+  assert.equal(await driver.pullPublished('nixre-core', target, 'nixre-update-core:x'), false);
+  assert.ok(!calls.some(call => call.startsWith('tag ')));
+  pullFails = true;
+  assert.equal(await driver.pullPublished('nixre-core', target, 'nixre-update-core:x'), false);
+});
