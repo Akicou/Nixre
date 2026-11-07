@@ -37,6 +37,16 @@ handle /update-status/* {
 root * /opt/nixre/data/update-web/current
 ```
 
+**SELinux (Fedora/RHEL).** With SELinux enforcing, host Caddy (`httpd_t`) cannot connect to the worker's socket (`unconfined_service_t`) and `/update-status/health` returns 502, with `avc: denied { connectto } ... path="/opt/nixre/data/update-status/status.sock"` in the audit log. Allow that one connection with a local policy module:
+
+```bash
+cd /tmp
+sudo ausearch -m avc -ts recent | grep status.sock | audit2allow -M nixre-updater-status
+cat nixre-updater-status.te   # should only allow httpd_t unconfined_service_t:unix_stream_socket connectto
+sudo semodule -i nixre-updater-status.pp
+curl -s http://127.0.0.1:3000/update-status/health   # {"ok":true,"protocol":1}
+```
+
 Validate the host Caddy configuration before reloading. Do not replace a production site block with the container `:3000` Caddyfile. Recreate core with the read-only `data/update-control` mount and supplemental group 1000. Do not start Docker `nixre-web` if host Caddy owns port 3000.
 
 The worker probes `http://127.0.0.1:3000`. If your host edge uses another local port, set `NIXRE_UPDATE_PUBLIC_URL=http://127.0.0.1:PORT` in `/etc/nixre-updater.env`, then restart `nixre-updater`. That endpoint must serve the managed SPA and `/update-status/health`. The worker checks the served release marker before cutover.
