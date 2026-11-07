@@ -81,6 +81,13 @@ Tests passing is not proof the thing looks or works right. Human must see it.
 - **Where media lives:** attach to the PR description or a PR comment. Do NOT commit screenshots or videos into the repo (it bloats clones). Check them for secrets, tokens, emails and real hostnames before uploading, same as the `skills/` cleaning rule.
 - Say in the PR which screenshot or video proves which claim.
 
+### If the UI change is big (promo video)
+The promo video on nixre.dev (repo `Akicou/nixre.dev`, `media/nixre-promo.mp4`) redraws the real screens. When the UI changes a lot, it goes stale.
+- **Use the skill:** [git.nixre.dev/Lyan/motion-promo-video](https://git.nixre.dev/Lyan/motion-promo-video). Read its `SKILL.md`, then `references/nixre-video.md` (what UI each scene copies, when to regenerate, exact commands).
+- **Regenerate when:** a screen shown in the video is redesigned, a new headline feature lands, or brand colour, font or logo changes. Small tweaks: skip.
+- **The music is not ours.** Keep the credit text from the skill next to the video, in the site footer and in `media/CREDITS.md`. The track file is not in any repo; ask the owner for it.
+- Open a PR on `nixre.dev`. Never push to its `main`.
+
 ### If change the deployment feature
 - Backend: `backend/src/routes/deployments.js`, `backend/src/lib/deploy*`.
 - Frontend: `ui/src/pages/DeploymentsPage.tsx`, `ui/src/components/SpaceDeployments.tsx`, `DeploymentsOverview.tsx`, `ui/src/lib/api.ts`, `ui/src/lib/deployEvents.ts`.
