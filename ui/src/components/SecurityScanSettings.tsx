@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ShieldAlert } from 'lucide-react';
+import { ChevronRight, ShieldAlert } from 'lucide-react';
 import { api, SecurityScanState, SecurityScanSettings as Settings, SecurityScanRun } from '../lib/api';
 import { Markdown } from './Markdown';
 
@@ -9,6 +9,10 @@ const STATUS_CLS: Record<SecurityScanRun['status'], string> = {
   error: 'bg-surface-closed text-txt-closed',
   skipped: 'bg-surface-subtle text-txt-secondary',
 };
+
+// Columns: when · findings · issues filed · status (only shown when not ok).
+const ROW = 'grid grid-cols-[1fr_5rem_6rem_4rem] items-center gap-3';
+const RECENT = 5;
 
 export function formatCountdown(ms: number): string {
   if (ms <= 0) return 'due now';
@@ -24,6 +28,7 @@ export const SecurityScanSettings: React.FC = () => {
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const [reports, setReports] = useState<Record<number, SecurityScanRun>>({});
   const loaded = useRef(false);
 
@@ -152,31 +157,54 @@ export const SecurityScanSettings: React.FC = () => {
         {msg && <span className="text-xs text-txt-secondary" role="status">{msg}</span>}
       </div>
 
-      <div className="border-y border-border-subtle divide-y divide-border-subtle">
-        {state.runs.length === 0 ? (
-          <div className="p-6 text-center text-xs text-txt-tertiary">No scans yet.</div>
-        ) : state.runs.map(r => (
-          <div key={r.id}>
-            <button onClick={() => toggleRun(r)} className="w-full text-left py-2.5 flex items-center justify-between gap-3 hover:bg-surface-subtle/50">
-              <div className="min-w-0">
-                <p className="text-xs text-txt-primary truncate">{r.summary || r.error || 'No summary'}</p>
-                <p className="text-[11px] text-txt-tertiary font-mono">
-                  {new Date(r.started).toLocaleString()} · {r.trigger} · {r.findings} findings · {r.issues_created} issues
-                </p>
-              </div>
-              <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold shrink-0 ${STATUS_CLS[r.status]}`}>{r.status}</span>
-            </button>
-            {open === r.id && (
-              <div className="pb-3">
-                {r.error && <p className="text-xs text-red-400 mb-2">{r.error}</p>}
-                {reports[r.id]?.report
-                  ? <Markdown content={reports[r.id].report!.markdown} />
-                  : <p className="text-xs text-txt-tertiary">{reports[r.id] ? 'No report.' : 'Loading report…'}</p>}
-              </div>
-            )}
+      {state.runs.length === 0 ? (
+        <p className="py-6 text-center text-xs text-txt-tertiary border-y border-border-subtle">No scans yet.</p>
+      ) : (
+        <div className="max-w-3xl">
+          <div className={`${ROW} text-[11px] uppercase tracking-wider text-txt-tertiary pb-1.5`}>
+            <span>Scan</span><span className="text-right">Findings</span><span className="text-right">Issues filed</span><span />
           </div>
-        ))}
-      </div>
+          <div className="border-y border-border-subtle divide-y divide-border-subtle">
+            {(showAll ? state.runs : state.runs.slice(0, RECENT)).map((r, i) => {
+              const prev = state.runs[i + 1];
+              const delta = prev && r.status !== 'error' ? r.findings - prev.findings : 0;
+              return (
+                <div key={r.id}>
+                  <button onClick={() => toggleRun(r)} aria-expanded={open === r.id} className={`${ROW} w-full text-left py-2 text-sm hover:bg-surface-subtle/50`}>
+                    <span className="flex items-center gap-2 min-w-0">
+                      <ChevronRight className={`w-3.5 h-3.5 shrink-0 text-txt-tertiary transition-transform ${open === r.id ? 'rotate-90' : ''}`} />
+                      <span className="truncate">{new Date(r.started).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                      {r.trigger === 'manual' && <span className="text-[11px] text-txt-tertiary">manual</span>}
+                    </span>
+                    <span className="text-right tabular-nums">
+                      {r.findings}
+                      {delta !== 0 && <span className={`ml-1.5 text-[11px] ${delta > 0 ? 'text-txt-closed' : 'text-txt-open'}`}>{delta > 0 ? `+${delta}` : delta}</span>}
+                    </span>
+                    <span className={`text-right tabular-nums ${r.issues_created ? '' : 'text-txt-tertiary'}`}>{r.issues_created || '–'}</span>
+                    <span className="text-right">
+                      {r.status !== 'ok' && <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded font-semibold ${STATUS_CLS[r.status]}`}>{r.status}</span>}
+                    </span>
+                  </button>
+                  {open === r.id && (
+                    <div className="pb-3 pl-6 space-y-2">
+                      <p className="text-xs text-txt-secondary">{r.summary}</p>
+                      {r.error && <p className="text-xs text-red-400">{r.error}</p>}
+                      {reports[r.id]?.report
+                        ? <Markdown content={reports[r.id].report!.markdown} />
+                        : <p className="text-xs text-txt-tertiary">{reports[r.id] ? 'No report.' : 'Loading report…'}</p>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {state.runs.length > RECENT && (
+            <button onClick={() => setShowAll(!showAll)} className="mt-2 text-xs text-txt-secondary hover:text-txt-primary">
+              {showAll ? 'Show fewer' : `Show ${state.runs.length - RECENT} older scans`}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 };

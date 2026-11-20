@@ -46,8 +46,19 @@ describe('SecurityScanSettings', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Run now' }));
     await waitFor(() => expect(api.runSecurityScan).toHaveBeenCalled());
 
-    fireEvent.click(await screen.findByText('2 findings'));
+    fireEvent.click(document.querySelector('[aria-expanded]')!);
     expect(await screen.findByText('clear')).toBeInTheDocument();
+    expect(screen.getByText('2 findings')).toBeInTheDocument();
+  });
+
+  it('shows the finding delta and hides older runs behind a toggle', async () => {
+    const runs = Array.from({ length: 7 }, (_, i) => ({ ...run, id: 10 - i, findings: i === 0 ? 5 : 2 }));
+    api.getSecurityScan.mockResolvedValue({ settings, providers, running: false, nextRunAt: null, runs });
+    render(<SecurityScanSettings />);
+    expect(await screen.findByText('+3')).toBeInTheDocument();
+    expect(document.querySelectorAll('[aria-expanded]')).toHaveLength(5);
+    fireEvent.click(screen.getByRole('button', { name: 'Show 2 older scans' }));
+    expect(document.querySelectorAll('[aria-expanded]')).toHaveLength(7);
   });
 });
 
